@@ -16,7 +16,9 @@ using LlmAgents.Llm;
 //
 // Scripted events: a hull breach at t=8s, a fire at t=20s, a crawler boarding at t=35s,
 // and player chat orders at t=14s ("Механики, откачайте воду насосами"), t=28s ("Анна, иди в медотсек"),
-// t=33s ("Всем надеть водолазные костюмы, идёт бой"), t=40s ("Анна, вылечи Макса, только бинтами") and t=44s ("Ольга, перезаряди реактор").
+// t=33s ("Всем надеть водолазные костюмы, идёт бой"), t=40s ("Анна, вылечи Макса, только бинтами"), t=44s ("Ольга, перезаряди реактор"),
+// t=47s ("Механики, приоритет: сначала тушить пожар, потом течи") and at t=50s the player gives Ivan the "Full AI control" order.
+// At the end every bot writes a round summary into its long-term memory (sim_memory/sim.json by default).
 // While it runs you can also type your own chat orders into the console (as the player "Daniil").
 // Bots react via their LLM. Actions change the fake world (fix_leaks seals the breach, etc.).
 // ---------------------------------------------------------------------------------------------
@@ -24,6 +26,7 @@ using LlmAgents.Llm;
 string configPath = Path.Combine("Content", "llm_config.json");
 double seconds = 60, speed = 1;
 string? forceProvider = null;
+string memoryDir = "sim_memory";
 bool quiet = false, scriptedChat = true;
 for (int i = 0; i < args.Length; i++)
 {
@@ -35,6 +38,7 @@ for (int i = 0; i < args.Length; i++)
         case "--provider": forceProvider = args[++i]; break;
         case "--quiet": quiet = true; break;
         case "--no-chat": scriptedChat = false; break;
+        case "--memory": memoryDir = args[++i]; break;
         case "-h":
         case "--help":
             Console.WriteLine("usage: LlmAgents.Sim [--config path] [--seconds N] [--speed X] [--provider name] [--quiet]");
@@ -57,7 +61,9 @@ Log.Sink = (level, msg) =>
 };
 
 var world = new SimWorld();
-using var mgr = new AgentManager(settings, world, new LlmRouter(settings), () => SimClock.Now);
+var memory = new LlmAgents.Memory.MemoryStore(memoryDir);
+using var mgr = new AgentManager(settings, world, new LlmRouter(settings), () => SimClock.Now, memory);
+mgr.BeginRound("sim");
 
 Console.WriteLine($"Simulating {seconds}s at x{speed} with providers: {string.Join(", ", settings.Providers.Select(p => $"{p.Name}={p.BaseUrl} ({p.Model})"))}");
 var typed = new System.Collections.Concurrent.ConcurrentQueue<string>();
@@ -74,6 +80,7 @@ if (scriptedChat)
     script.Add((33, "Всем надеть водолазные костюмы, идёт бой"));
     script.Add((40, "Анна, вылечи Макса, только бинтами"));
     script.Add((44, "Ольга, перезаряди реактор"));
+    script.Add((47, "Механики, приоритет: сначала тушить пожар, потом течи"));
 
 }
 
@@ -90,18 +97,28 @@ while (SimClock.Now < seconds)
     SimClock.Now = wall.Elapsed.TotalSeconds * speed;
     world.Tick(SimClock.Now);
     while (script.Count > 0 && script[0].At <= SimClock.Now) { SendChat(script[0].Text); script.RemoveAt(0); }
+    if (scriptedChat && SimClock.Now >= 50 && world.GiveControlOnce(1, "Daniil"))
+        lock (Console.Out) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"[{SimClock.Now,6:0.0}s] Daniil gives Ivan Petrov the order: Full AI control"); Console.ResetColor(); }
     while (typed.TryDequeue(out var line)) if (!string.IsNullOrWhiteSpace(line)) SendChat(line.Trim());
     mgr.Update();
     Thread.Sleep(20);
 }
 mgr.WhenIdle().Wait(TimeSpan.FromSeconds(30));
 mgr.Update();
+mgr.EndRound();
+mgr.WhenIdle().Wait(TimeSpan.FromSeconds(60));
+memory.Flush();
 
 Console.WriteLine();
 Console.WriteLine("=== Summary ===");
 Console.WriteLine($"Actions taken: {world.ActionLog.Count}");
 foreach (var a in world.ActionLog) Console.WriteLine("  " + a);
 Console.WriteLine("Decisions per bot: " + string.Join(", ", mgr.Agents.Select(a => $"{a.Name}={a.Notes().Count(n => n.StartsWith("Player order"))} orders")));
+Console.WriteLine($"Memory ({memory.FilePath}):");
+foreach (var b in memory.Read(d => d.Bots.Values.ToList()))
+    Console.WriteLine($"  {b.Name}: rounds={b.Rounds}, control={b.AiControl}, facts={b.Facts.Count}, relationships={b.Relationships.Count}; last: {b.Journal.LastOrDefault()}");
+foreach (var (player, prefs) in memory.Read(d => d.Players.Select(kv => (kv.Key, kv.Value.ToList())).ToList()))
+    Console.WriteLine($"  player {player}: {string.Join("; ", prefs)}");
 Console.WriteLine($"Final state: breach={(world.Breach ? "OPEN" : "sealed")}, fire={(world.Fire ? "BURNING" : "out")}, intruder={(world.Intruder ? "ABOARD" : "gone")}");
 return 0;
 
@@ -111,8 +128,19 @@ sealed class SimWorld : IGameApi
 {
     sealed class Bot
     {
-        public int Id; public string Name = ""; public string Job = ""; public string Room = ""; public string Order = "none";
+        public int Id; public string Name = ""; public string Job = ""; public string Room = "";
         public int Health = 100;
+        /// <summary>Like vanilla: up to 3 orders, priority 3 = most important.</summary>
+        public readonly List<(string Id, int P)> Orders = new();
+        public bool Has(string id) => Orders.Any(o => o.Id == id);
+        public string Order => Orders.Count == 0 ? "none" : string.Join(", ", Orders.OrderByDescending(o => o.P).Select(o => $"{o.Id} [p{o.P}]"));
+        public void Add(string id, int p)
+        {
+            Orders.RemoveAll(o => o.Id == id);
+            for (int i = 0; i < Orders.Count; i++) if (Orders[i].P <= p) Orders[i] = (Orders[i].Id, Orders[i].P - 1);
+            Orders.RemoveAll(o => o.P <= 0);
+            Orders.Add((id, p));
+        }
     }
 
     readonly List<Bot> bots = new()
@@ -141,15 +169,15 @@ sealed class SimWorld : IGameApi
         if (!fired.Add("tick" + (int)t)) return;
         if (Breach) water = Math.Min(100, water + 3);
         else water = Math.Max(0, water - 5);
-        if (Breach && bots.Any(b => b.Order == "fixleaks") && ++fixProgress >= 4) { Breach = false; Console.WriteLine($"[{t,6:0.0}s] *** breach sealed"); }
-        if (Fire && bots.Any(b => b.Order == "extinguishfires") && ++fireProgress >= 3) { Fire = false; Console.WriteLine($"[{t,6:0.0}s] *** fire is out"); }
+        if (Breach && bots.Any(b => b.Has("fixleaks")) && ++fixProgress >= 4) { Breach = false; Console.WriteLine($"[{t,6:0.0}s] *** breach sealed"); }
+        if (Fire && bots.Any(b => b.Has("extinguishfires")) && ++fireProgress >= 3) { Fire = false; Console.WriteLine($"[{t,6:0.0}s] *** fire is out"); }
         if (Intruder)
         {
             var victim = bots.FirstOrDefault(b => b.Room == "Crew Quarters [h3]");
             if (victim != null) victim.Health = Math.Max(5, victim.Health - 4);
-            if (bots.Any(b => b.Order == "fightintruders") && ++fightProgress >= 4) { Intruder = false; Console.WriteLine($"[{t,6:0.0}s] *** crawler killed"); }
+            if (bots.Any(b => b.Has("fightintruders")) && ++fightProgress >= 4) { Intruder = false; Console.WriteLine($"[{t,6:0.0}s] *** crawler killed"); }
         }
-        foreach (var b in bots.Where(b => b.Order == "rescue" && b.Health > 0))
+        foreach (var b in bots.Where(b => b.Has("rescue") && b.Health > 0))
             foreach (var p in bots.Where(p => p.Health < 100)) p.Health = Math.Min(100, p.Health + 5);
     }
 
@@ -179,27 +207,62 @@ sealed class SimWorld : IGameApi
         };
     }
 
-    string Do(int id, string order, string? room = null)
+    /// <summary>An action that is not an order (equip, treat...): logged only.</summary>
+    string Do(int id, string what)
     {
-        var b = B(id);
-        b.Order = order;
-        if (room != null) b.Room = room;
-        ActionLog.Add($"[{SimClock.Now,6:0.0}s] {b.Name}: {order}{(room != null ? " -> " + room : "")}");
+        ActionLog.Add($"[{SimClock.Now,6:0.0}s] {B(id).Name}: {what}");
         return "ok";
     }
 
-    public string GoToRoom(int botId, string roomId) =>
-        rooms.Contains(roomId) ? Do(botId, "wait", roomId) : $"error: unknown room '{roomId}'";
-
-    public string Follow(int botId, string targetName)
+    string Order(int id, string order, int priority, string? room = null)
     {
-        var t = bots.FirstOrDefault(b => b.Name.Contains(targetName, StringComparison.OrdinalIgnoreCase));
-        return t == null ? $"error: no crew member '{targetName}'" : Do(botId, "follow", t.Room);
+        var b = B(id);
+        if (order is "wait" or "follow") b.Orders.RemoveAll(o => o.Id is "wait" or "follow"); // movement orders replace each other
+        b.Add(order, priority);
+        if (room != null) b.Room = room;
+        ActionLog.Add($"[{SimClock.Now,6:0.0}s] {b.Name}: {order} [p{priority}]{(room != null ? " -> " + room : "")}  => {b.Order}");
+        return priority == Tools.TopPriority ? "ok" : $"ok [p{priority}]";
     }
 
-    public string SimpleOrder(int botId, string orderKey) => Do(botId, Tools.SimpleOrders[orderKey]);
-    public string Operate(int botId, string role, string? option) => Do(botId, $"operate {role} {option}".Trim());
-    public string Dismiss(int botId) => Do(botId, "none");
+    public string GoToRoom(int botId, string roomId, int priority = Tools.TopPriority) =>
+        rooms.Contains(roomId) ? Order(botId, "wait", priority, roomId) : $"error: unknown room '{roomId}'";
+
+    public string Follow(int botId, string targetName, int priority = Tools.TopPriority)
+    {
+        var t = bots.FirstOrDefault(b => b.Name.Contains(targetName, StringComparison.OrdinalIgnoreCase));
+        return t == null ? $"error: no crew member '{targetName}'" : Order(botId, "follow", priority, t.Room);
+    }
+
+    public string SimpleOrder(int botId, string orderKey, int priority = Tools.TopPriority) => Order(botId, Tools.SimpleOrders[orderKey], priority);
+    public string Operate(int botId, string role, string? option, int priority = Tools.TopPriority) =>
+        Order(botId, (Tools.OrderAliases.TryGetValue(role, out var id) ? id : role) + (option != null ? ":" + option : ""), priority);
+    public string Dismiss(int botId) { B(botId).Orders.Clear(); return Do(botId, "dismiss all orders"); }
+
+    public string SetOrderPriority(int botId, string order, int priority)
+    {
+        var b = B(botId);
+        var q = order.Split(' ', '[')[0].ToLowerInvariant();
+        var id = Tools.OrderAliases.TryGetValue(q, out var alias) ? alias : q;
+        var o = b.Orders.FirstOrDefault(x => x.Id == id || x.Id.StartsWith(id + ":"));
+        if (o.Id == null) return $"error: no current order '{order}'; your orders: {b.Order}";
+        b.Orders.Remove(o);
+        if (priority > 0) b.Add(o.Id, priority);
+        ActionLog.Add($"[{SimClock.Now,6:0.0}s] {b.Name}: priority {o.Id} -> {priority}  => {b.Order}");
+        return priority > 0 ? $"ok, {o.Id} is now priority {priority}" : $"ok, dropped {o.Id}";
+    }
+
+    readonly HashSet<int> controlled = new();
+    readonly List<ControlEvent> controlEvents = new();
+    bool controlGiven;
+    public bool GiveControlOnce(int botId, string by)
+    {
+        if (controlGiven) return false;
+        controlGiven = true;
+        controlEvents.Add(new ControlEvent(botId, !controlled.Contains(botId), by));
+        return true;
+    }
+    public void SetAiControl(int botId, bool on) { if (on) controlled.Add(botId); else controlled.Remove(botId); }
+    public IReadOnlyList<ControlEvent> DrainControlEvents() { var r = controlEvents.ToList(); controlEvents.Clear(); return r; }
 
     readonly List<GameReport> reports = new();
     public void BeginCommand(int botId, bool playerAuthority) { }

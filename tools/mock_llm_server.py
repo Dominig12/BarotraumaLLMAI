@@ -53,17 +53,51 @@ def route(prompt: str) -> list[str]:
     return []
 
 
+ORDER_WORDS = [
+    (["пожар", "туш", "fire"], "extinguish_fires"),
+    (["течь", "течи", "пробоин", "leak"], "fix_leaks"),
+    (["реактор", "reactor"], "operate"),
+    (["насос", "pump"], "operate"),
+]
+
+
+def prioritized(text: str) -> list[dict]:
+    """'сначала X, потом Y' -> X с приоритетом 3, Y с приоритетом 2 (выдаются в этом порядке)."""
+    parts = [p for p in text.replace("затем", "потом").replace("then", "потом").split("потом")]
+    calls, prio = [], 3
+    for part in parts:
+        for words, tool in ORDER_WORDS:
+            if any(w in part for w in words):
+                args = {"priority": prio}
+                if tool == "operate":
+                    args["role"] = "reactor" if "реактор" in part or "reactor" in part else "pumps"
+                calls.append({"name": tool, "arguments": args})
+                prio -= 1
+                break
+    return calls
+
+
 def decide(obs: dict) -> list[dict]:
     """Возвращает список {name, arguments}."""
     calls = []
     for order in obs.get("playerOrders", []):
         text = order.lower()
+        if "full control" in text:
+            granted = "handed you full control" in text
+            calls.append({"name": "say", "arguments": {"text": "Принял командование." if granted else "Возвращаюсь к обычной службе."}})
+            if granted:
+                calls.append({"name": "order_crew", "arguments": {"to": "mechanic", "order": "Проверить и заварить все течи, приоритет 3"}})
+            return calls
         calls.append({"name": "say", "arguments": {"text": "Есть, выполняю!"}})
+        if "приоритет" in text or "сначала" in text or "first" in text:
+            return (calls + prioritized(text))[:3]
         crew = [c["name"] for c in obs.get("crew", [])]
         if any(w in text for w in ["леч", "heal", "treat", "перевяж"]):
             target = next((n for n in crew if latin(n.split()[0])[:3] in latin(text)), obs.get("name"))
             item = "bandage" if ("бинт" in text or "bandage" in text) else None
             calls.append({"name": "treat", "arguments": {"target": target, **({"item": item} if item else {})}})
+            if item:
+                calls.append({"name": "note_preference", "arguments": {"player": "Daniil", "preference": "бережёт медикаменты: лечить бинтами, если хватает"}})
         elif any(w in text for w in ["топлив", "заряд", "refuel", "fuel"]):
             calls.append({"name": "refuel_reactor", "arguments": {}})
         elif any(w in text for w in ["скрафт", "сделай", "изготов", "craft"]):
@@ -121,6 +155,14 @@ class Handler(BaseHTTPRequestHandler):
         tool_names = [t["function"]["name"] for t in body.get("tools", [])]
         prompt_mode = not tool_names  # toolMode=prompt: tools are described in the system prompt, reply is JSON text
         system = body["messages"][0]["content"] if body.get("messages") else ""
+        if "The round just ended" in system:
+            events = [l[2:] for l in last_user["content"].splitlines() if l.startswith("- ")]
+            text = "Раунд позади: " + "; ".join(events[-3:])[:250]
+            return self._send(200, {
+                "id": "mock-" + uuid.uuid4().hex[:8], "object": "chat.completion",
+                "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": text}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 40, "total_tokens": 140},
+            })
         if "route_message" in tool_names or (prompt_mode and "route_message" in system):
             calls = [{"name": "route_message", "arguments": {"recipients": route(last_user["content"]), "reason": "mock"}}]
         else:

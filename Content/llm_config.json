@@ -16,6 +16,7 @@
     "historyTurns": 6,
     "maxNotes": 5,
     "syncOrdersToClients": true,
+    "showBotMessagesInChat": true,
     "logFile": "llm_agents.log",
     "logPrompts": true,
     "speechChannel": "auto",
@@ -66,6 +67,8 @@
     },
     "disabledJobs": [],
     "allowedTools": [],
+    "autonomy": "always",
+    "controlDecisionIntervalSeconds": 6,
     "extraPromptByJob": {
       "captain": "You are the captain: keep the big picture, coordinate the crew with message_crew, and keep the sub on course.",
       "medicaldoctor": "You are the medic: your first priority is keeping the crew alive (rescue_injured)."
@@ -79,5 +82,16 @@
     "directIfSingleListener": true,
     "maxQueue": 10,
     "maxAgeSeconds": 30
+  },
+  "memory": {
+    "enabled": true,
+    "folder": "memory",
+    "maxFacts": 12,
+    "maxJournal": 10,
+    "journalInPrompt": 3,
+    "maxRelationships": 15,
+    "maxPreferencesPerPlayer": 6,
+    "roundSummary": true,
+    "summaryProvider": ""
   }
 }

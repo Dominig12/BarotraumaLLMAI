@@ -11,3 +11,4 @@ Refs/*
 # Build output of the mod package
 dist/
 *.log
+sim_memory/

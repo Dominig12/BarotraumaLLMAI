@@ -7,6 +7,9 @@ public sealed record BotHandle(int Id, string Name, string Job);
 /// <summary>A message from the game about one bot, e.g. a multi-step task that finished or failed.</summary>
 public sealed record GameReport(int BotId, string Text);
 
+/// <summary>A player gave (Granted) or took back full AI control of a bot through the mod's command-menu order.</summary>
+public sealed record ControlEvent(int BotId, bool Granted, string By);
+
 /// <summary>
 /// Everything the agent layer needs from the game. The only real implementation is
 /// LlmAgents.Server/GameAdapter.cs; tests use a fake. All methods are called on the game thread.
@@ -25,14 +28,19 @@ public interface IGameApi
     /// </summary>
     void BeginCommand(int botId, bool playerAuthority);
 
-    string GoToRoom(int botId, string roomId);
-    string Follow(int botId, string targetName);
+    // Orders. priority: 1..3 (3 = most important, the vanilla scale). A new order at priority p moves the bot's
+    // orders at p or lower one step down; at most 3 orders, the lowest falls off.
+    string GoToRoom(int botId, string roomId, int priority = Tools.TopPriority);
+    string Follow(int botId, string targetName, int priority = Tools.TopPriority);
 
     /// <summary>orderKey is one of <see cref="Tools.SimpleOrders"/> keys.</summary>
-    string SimpleOrder(int botId, string orderKey);
+    string SimpleOrder(int botId, string orderKey, int priority = Tools.TopPriority);
 
     /// <summary>role: reactor | navigation | weapons | pumps. option: e.g. "powerup"/"shutdown" for reactor, "pumpout"/"pumpin" for pumps.</summary>
-    string Operate(int botId, string role, string? option);
+    string Operate(int botId, string role, string? option, int priority = Tools.TopPriority);
+
+    /// <summary>Change the priority of one of the bot's current orders; 0 = drop it. order = identifier, tool name or role.</summary>
+    string SetOrderPriority(int botId, string order, int priority);
 
     /// <summary>Hand control back to the vanilla AI (dismiss the bot's own orders; player orders stay).</summary>
     string Dismiss(int botId);
@@ -61,4 +69,10 @@ public interface IGameApi
 
     /// <summary>Task results and other events since the last call.</summary>
     IReadOnlyList<GameReport> DrainReports();
+
+    /// <summary>Full AI control: the bot may override orders from the command menu and decides everything itself.</summary>
+    void SetAiControl(int botId, bool on);
+
+    /// <summary>Control orders given by players through the command menu since the last call.</summary>
+    IReadOnlyList<ControlEvent> DrainControlEvents();
 }

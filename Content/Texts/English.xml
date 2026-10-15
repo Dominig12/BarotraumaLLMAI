@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<infotexts language="English" nowhitespace="false" translatedname="English">
+  <OrderName.llmcontrol>Full AI control</OrderName.llmcontrol>
+  <OrderNameContextual.llmcontrol>Hand over full control to the AI</OrderNameContextual.llmcontrol>
+  <OrderDialog.llmcontrol>[name], you are in full control now. Run things as you see fit.</OrderDialog.llmcontrol>
+  <OrderDialogSelf.llmcontrol>I'll run things myself.</OrderDialogSelf.llmcontrol>
+</infotexts>

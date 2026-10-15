@@ -28,6 +28,20 @@ public static class Tools
 
     public const int MaxCraftAmount = 10;
 
+    /// <summary>Vanilla order priorities: 1..3, 3 = most important.</summary>
+    public const int TopPriority = 3;
+
+    /// <summary>Tool / role names the LLM may use to refer to a current order, mapped to vanilla order identifiers.</summary>
+    public static readonly IReadOnlyDictionary<string, string> OrderAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["go_to_room"] = "wait", ["follow"] = "follow",
+        ["reactor"] = "operatereactor", ["navigation"] = "steer", ["weapons"] = "operateweapons", ["pumps"] = "pumpwater",
+        ["operate_reactor"] = "operatereactor", ["steer"] = "steer", ["operate_weapons"] = "operateweapons", ["pump_water"] = "pumpwater",
+    }.Concat(SimpleOrders).GroupBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().Value, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Tools offered only to bots under full AI control.</summary>
+    public static readonly IReadOnlyCollection<string> ControlOnlyTools = new[] { "order_crew" };
+
     public const int MaxSayLength = 160;
     public const int MaxMessageLength = 300;
     public const int MaxInspectLength = 700;
@@ -48,29 +62,51 @@ public static class Tools
 
     static JsonObject NoArgs() => new() { ["type"] = "object", ["properties"] = new JsonObject() };
 
+    static readonly (string, string, string, string[]?, bool) PriorityArg =
+        ("priority", "integer", "1-3, default 3 = do this first. Your other orders at this priority or lower move one step down (max 3 orders, the lowest is dropped). Lower = only when more important orders have nothing to do", null, false);
+
+    static JsonObject OrderArgs(params (string Name, string Type, string Desc, string[]? Enum, bool Required)[] props) =>
+        Schema(props.Append(PriorityArg).ToArray());
+
     public static readonly IReadOnlyList<ToolSpec> All = new List<ToolSpec>
     {
         new("go_to_room", "Walk to a room of the submarine and stay there. Use a room id exactly as listed in 'rooms'.",
-            Schema(("room", "string", "Room id from the 'rooms' list, e.g. \"Engine Room [h57]\"", null, true))),
+            OrderArgs(("room", "string", "Room id from the 'rooms' list, e.g. \"Engine Room [h57]\"", null, true))),
         new("follow", "Follow a crew member (a player or another bot).",
-            Schema(("target", "string", "Crew member name from 'crew'", null, true))),
-        new("fix_leaks", "Weld hull breaches / leaks anywhere on the sub.", NoArgs()),
-        new("repair_systems", "Repair damaged devices and machinery.", NoArgs()),
-        new("extinguish_fires", "Put out fires.", NoArgs()),
-        new("fight_intruders", "Fight hostile creatures or intruders aboard.", NoArgs()),
-        new("rescue_injured", "Treat injured crew and carry unconscious crew to safety.", NoArgs()),
-        new("clean_up", "Tidy up loose items.", NoArgs()),
+            OrderArgs(("target", "string", "Crew member name from 'crew'", null, true))),
+        new("fix_leaks", "Weld hull breaches / leaks anywhere on the sub.", OrderArgs()),
+        new("repair_systems", "Repair damaged devices and machinery.", OrderArgs()),
+        new("extinguish_fires", "Put out fires.", OrderArgs()),
+        new("fight_intruders", "Fight hostile creatures or intruders aboard.", OrderArgs()),
+        new("rescue_injured", "Treat injured crew and carry unconscious crew to safety.", OrderArgs()),
+        new("clean_up", "Tidy up loose items.", OrderArgs()),
         new("operate", "Take a station and operate it.",
-            Schema(("role", "string", "Station to operate", OperateRoles.ToArray(), true),
+            OrderArgs(("role", "string", "Station to operate", OperateRoles.ToArray(), true),
                    ("option", "string", "Optional mode: reactor 'powerup'|'shutdown'; pumps 'pumpout'|'pumpin'", null, false))),
-        new("wait", "Stay where you are.", NoArgs()),
+        new("wait", "Stay where you are.", OrderArgs()),
+        new("set_order_priority", "Reorder your current orders ('currentOrder' shows them as name [pN]). 3 = most important. 0 = drop that order.",
+            Schema(("order", "string", "The order as shown in currentOrder (e.g. 'fixleaks', 'operatereactor') or the tool name (e.g. 'fix_leaks', 'reactor')", null, true),
+                   ("priority", "integer", "0-3", null, true))),
         new("return_to_default", "Drop your orders and let your normal instincts take over. Use when nothing special is needed.", NoArgs()),
         new("say", "Say something out loud in the game chat (players see it). Keep it short and in character.",
             Schema(("text", "string", $"What to say (max {MaxSayLength} chars)", null, true))),
-        new("message_crew", "Private message to another AI crew member (not shown in chat). Use for coordination.",
+        new("message_crew", "Message to other AI crew members, for coordination. It lands in their inbox; human players also hear it on the radio, so keep it short and in character.",
             Schema(("to", "string", "Crew member name, a job (all AI crew with that job, e.g. 'mechanic'), or 'all'", null, true), ("text", "string", "Message", null, true))),
-        new("remember", "Save a short note to your own memory (shown to you in later turns).",
-            Schema(("note", "string", "One short sentence", null, true))),
+        new("remember", "Save a short note to your memory. Normal notes last this round; long_term notes are kept across rounds (shown in 'memory.facts').",
+            Schema(("note", "string", "One short sentence", null, true),
+                   ("long_term", "boolean", "true = keep it for future rounds (important lasting facts only)", null, false))),
+        new("forget", "Remove long-term facts that are no longer true.",
+            Schema(("text", "string", "Part of the fact to remove", null, true))),
+        new("note_relationship", "Remember how you feel about a crew member (kept across rounds). Update it when something important happens between you.",
+            Schema(("person", "string", "Crew member name", null, true),
+                   ("feeling", "string", "Your attitude", Memory.MemoryStore.Feelings.ToArray(), true),
+                   ("note", "string", "Why, in a few words (e.g. 'saved me from a crawler')", null, true))),
+        new("note_preference", "Remember what a human player likes or wants from the crew (kept across rounds, shared with the whole AI crew), e.g. 'wants short radio reports', 'reactor at 50%'.",
+            Schema(("player", "string", "Player name", null, true),
+                   ("preference", "string", "The preference, one short sentence", null, true))),
+        new("order_crew", "FULL AI CONTROL ONLY: give an order to other AI crew members. They must follow it like an order from a player. Speak it in the chat too.",
+            Schema(("to", "string", "Crew member name, a job (e.g. 'mechanic') or 'all'", null, true),
+                   ("order", "string", "The order, short and concrete (what, where, priority)", null, true))),
 
         // ---- items and machinery (multi-step tasks; the result is reported in lastActionResults when done)
         new("equip", "Take an item from the sub (or your inventory) and equip / wear it, e.g. a diving suit, a weapon, a welding tool, a headset.",
@@ -99,8 +135,33 @@ public static class Tools
                    ("query", "string", "Crew member name (patient) or item name (items, recipe)", null, true))),
     };
 
-    public static IReadOnlyList<ToolSpec> Filtered(ICollection<string> allowed) =>
-        allowed.Count == 0 ? All : All.Where(t => allowed.Contains(t.Name, StringComparer.OrdinalIgnoreCase)).ToList();
+    public static IReadOnlyList<ToolSpec> Filtered(ICollection<string> allowed) => For(allowed, aiControl: true);
+
+    /// <summary>Tools for one bot: the allowed list, without the control-only tools unless it is under full AI control.</summary>
+    public static IReadOnlyList<ToolSpec> For(ICollection<string> allowed, bool aiControl, bool memory = true) =>
+        All.Where(t => allowed.Count == 0 || allowed.Contains(t.Name, StringComparer.OrdinalIgnoreCase))
+           .Where(t => aiControl || !ControlOnlyTools.Contains(t.Name))
+           .Where(t => memory || t.Name is not ("forget" or "note_relationship" or "note_preference"))
+           .ToList();
+
+    /// <summary>Reads the optional priority argument: 1..3, default 3.</summary>
+    public static int Priority(JsonObject a, int fallback = TopPriority)
+    {
+        var v = Str(a, "priority")?.ToLowerInvariant();
+        if (string.IsNullOrEmpty(v)) return fallback;
+        if (v is "high" or "top" or "highest") return 3;
+        if (v is "normal" or "medium") return 2;
+        if (v is "low" or "lowest") return 1;
+        return double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d)
+            ? Math.Clamp((int)Math.Round(d), 1, TopPriority) : fallback;
+    }
+
+    static bool? Bool(JsonObject a, string key) => Str(a, key)?.ToLowerInvariant() switch
+    {
+        "true" or "on" or "1" or "yes" => true,
+        "false" or "off" or "0" or "no" => false,
+        _ => null,
+    };
 
     /// <summary>Reads a string argument, tolerating models that send numbers/bools instead of strings.</summary>
     public static string? Str(JsonObject a, string key)
@@ -124,21 +185,21 @@ public static class Tools
         try
         {
             var a = call.Arguments;
-            if (SimpleOrders.ContainsKey(call.Name)) return game.SimpleOrder(agent.Id, call.Name);
+            if (SimpleOrders.ContainsKey(call.Name)) return game.SimpleOrder(agent.Id, call.Name, Priority(a));
 
             switch (call.Name)
             {
                 case "go_to_room":
-                    return Need(Str(a, "room"), "room", v => game.GoToRoom(agent.Id, v));
+                    return Need(Str(a, "room"), "room", v => game.GoToRoom(agent.Id, v, Priority(a)));
                 case "follow":
-                    return Need(Str(a, "target"), "target", v => game.Follow(agent.Id, v));
+                    return Need(Str(a, "target"), "target", v => game.Follow(agent.Id, v, Priority(a)));
                 case "operate":
                     return Need(Str(a, "role"), "role", v =>
                     {
                         var role = v.ToLowerInvariant();
                         if (!OperateRoles.Contains(role)) return $"error: role must be one of {string.Join(", ", OperateRoles)}";
                         var option = Str(a, "option");
-                        return game.Operate(agent.Id, role, string.IsNullOrEmpty(option) ? null : option!.ToLowerInvariant());
+                        return game.Operate(agent.Id, role, string.IsNullOrEmpty(option) ? null : option!.ToLowerInvariant(), Priority(a));
                     });
                 case "return_to_default":
                     return game.Dismiss(agent.Id);
@@ -155,8 +216,40 @@ public static class Tools
                     if (string.IsNullOrEmpty(to) || string.IsNullOrEmpty(text)) return "error: 'to' and 'text' are required";
                     return mgr.DeliverMessage(agent, to!, Clip(text!, MaxMessageLength));
                 }
+                case "set_order_priority":
+                    return Need(Str(a, "order"), "order", v =>
+                    {
+                        var p = Str(a, "priority");
+                        if (p == null || !int.TryParse(p, out var n) || n < 0 || n > TopPriority) return $"error: priority must be 0-{TopPriority}";
+                        return game.SetOrderPriority(agent.Id, v, n);
+                    });
                 case "remember":
-                    return Need(Str(a, "note"), "note", v => { agent.AddNote(v, mgr.Settings.Global.MaxNotes); return "ok"; });
+                    return Need(Str(a, "note"), "note", v => mgr.Remember(agent, v, Bool(a, "long_term") == true));
+                case "forget":
+                    return Need(Str(a, "text"), "text", v => mgr.Forget(agent, v));
+                case "note_relationship":
+                {
+                    var person = Str(a, "person");
+                    var feeling = Str(a, "feeling")?.ToLowerInvariant();
+                    if (string.IsNullOrEmpty(person)) return "error: missing 'person'";
+                    if (feeling == null || !Memory.MemoryStore.Feelings.Contains(feeling))
+                        return $"error: feeling must be one of {string.Join(", ", Memory.MemoryStore.Feelings)}";
+                    return mgr.NoteRelationship(agent, person!, feeling, Str(a, "note") ?? "");
+                }
+                case "note_preference":
+                {
+                    var player = Str(a, "player");
+                    var pref = Str(a, "preference");
+                    if (string.IsNullOrEmpty(player) || string.IsNullOrEmpty(pref)) return "error: 'player' and 'preference' are required";
+                    return mgr.NotePreference(agent, player!, pref!);
+                }
+                case "order_crew":
+                {
+                    var to = Str(a, "to");
+                    var order = Str(a, "order");
+                    if (string.IsNullOrEmpty(to) || string.IsNullOrEmpty(order)) return "error: 'to' and 'order' are required";
+                    return mgr.OrderCrew(agent, to!, Clip(order!, MaxMessageLength));
+                }
                 case "equip":
                     return Need(Str(a, "item"), "item", v => game.Equip(agent.Id, v));
                 case "refuel_reactor":
@@ -189,9 +282,9 @@ public static class Tools
                 }
                 case "keep_gear":
                 {
-                    var on = Str(a, "on")?.ToLowerInvariant();
-                    if (on is not ("true" or "false" or "on" or "off" or "1" or "0" or "yes" or "no")) return "error: 'on' must be true or false";
-                    return game.KeepGear(agent.Id, on is "true" or "on" or "1" or "yes");
+                    var on = Bool(a, "on");
+                    if (on == null) return "error: 'on' must be true or false";
+                    return game.KeepGear(agent.Id, on.Value);
                 }
                 case "inspect":
                 {

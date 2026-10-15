@@ -41,6 +41,10 @@ public sealed class Observation
     public List<string> Inbox { get; set; } = new();
     public List<string> Notes { get; set; } = new();
     public List<string> LastActionResults { get; set; } = new();
+    /// <summary>"FULL AI CONTROL (given by X)" while a player has handed this bot full control.</summary>
+    public string? Control { get; set; }
+    /// <summary>Long-term memory from previous rounds.</summary>
+    public MemoryView? Memory { get; set; }
 
     [JsonIgnore]
     public bool Urgent =>
@@ -61,6 +65,20 @@ public sealed class Observation
     };
 
     public string ToJson() => JsonSerializer.Serialize(this, Opts);
+}
+
+public sealed class MemoryView
+{
+    public List<string>? Facts { get; set; }
+    /// <summary>Summaries of the latest rounds, oldest first.</summary>
+    public List<string>? PastRounds { get; set; }
+    /// <summary>"Name: feeling - note".</summary>
+    public List<string>? Relationships { get; set; }
+    /// <summary>"Player: preference", for players aboard.</summary>
+    public List<string>? PlayerPreferences { get; set; }
+
+    [JsonIgnore]
+    public bool IsEmpty => (Facts?.Count ?? 0) + (PastRounds?.Count ?? 0) + (Relationships?.Count ?? 0) + (PlayerPreferences?.Count ?? 0) == 0;
 }
 
 public sealed record RoomInfo(string Id, int WaterPercent, int Fires);

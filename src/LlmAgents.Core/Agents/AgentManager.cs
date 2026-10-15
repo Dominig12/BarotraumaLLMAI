@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using LlmAgents.Llm;
+using LlmAgents.Memory;
 
 namespace LlmAgents.Agents;
 
@@ -27,6 +28,7 @@ public sealed class AgentManager : IDisposable
     readonly IGameApi game;
     readonly LlmRouter router;
     readonly Func<double> clock;
+    readonly MemoryStore memory;
     readonly Dictionary<int, BotAgent> agents = new();
     readonly ConcurrentQueue<AgentCommand> commands = new();
     readonly ConcurrentQueue<(int Generation, ChatCommand Cmd, List<RosterEntry> Recipients)> routedChats = new();
@@ -34,17 +36,24 @@ public sealed class AgentManager : IDisposable
     readonly ConcurrentDictionary<Task, byte> inFlight = new();
     readonly CancellationTokenSource cts = new();
     double nextTick = double.NegativeInfinity;
+    double nextFlush;
     int generation; // bumped on Reset, so late answers from a previous round are dropped
 
     public const int MaxCommandsPerUpdate = 32;
+    /// <summary>Echoed bot-to-bot messages are clipped to this (the game's chat limit is about 200).</summary>
+    public const int MaxChatEcho = 190;
+    const double FlushSeconds = 15;
+    /// <summary>How long a round summary waits for a free LLM slot before the plain summary is used.</summary>
+    public const double SummaryWaitSeconds = 45;
 
     enum Tier { PlayerOrder = 0, Urgent = 1, Routine = 2 }
 
     sealed record Candidate(BotAgent Agent, Observation Obs, Tier Tier, bool Due);
 
-    public AgentManager(ModSettings settings, IGameApi game, LlmRouter router, Func<double>? clock = null)
+    public AgentManager(ModSettings settings, IGameApi game, LlmRouter router, Func<double>? clock = null, MemoryStore? memory = null)
     {
         Settings = settings;
+        this.memory = memory ?? new MemoryStore(null);
         this.game = game;
         this.router = router;
         if (clock == null)
@@ -58,6 +67,14 @@ public sealed class AgentManager : IDisposable
     public IReadOnlyCollection<BotAgent> Agents => agents.Values;
     public BotAgent? GetAgent(int id) => agents.TryGetValue(id, out var a) ? a : null;
     public int PendingChatCount => pendingChats.Count;
+    public MemoryStore Memory => memory;
+    bool MemoryOn => Settings.Memory.Enabled;
+
+    /// <summary>Selects the long-term memory for this round (one scope per campaign save). Call at round start.</summary>
+    public void BeginRound(string scope)
+    {
+        if (MemoryOn) memory.Open(scope);
+    }
 
     /// <summary>For tests and diagnostics: completes when all in-flight LLM requests have finished.</summary>
     public async Task WhenIdle()
@@ -87,9 +104,16 @@ public sealed class AgentManager : IDisposable
         DrainCommands();
         SyncAgents();
         DrainReports();
+        DrainControl();
         DeliverRoutedChats();
         DispatchChats(now);   // chat routing gets LLM slots before routine thinking
         ScheduleDecisions(now);
+
+        if (now >= nextFlush)
+        {
+            nextFlush = now + FlushSeconds;
+            if (MemoryOn) memory.Flush();
+        }
     }
 
     void SyncAgents()
@@ -104,6 +128,14 @@ public sealed class AgentManager : IDisposable
                 agent = new BotAgent(h);
                 agents[h.Id] = agent;
                 Log.Info($"agent created: {h.Name} ({h.Job}) -> provider '{Settings.ProviderFor(h.Job)}'");
+                // full AI control given in an earlier round stays until a player takes it back
+                if (MemoryOn && memory.Bot(h.Name) is { AiControl: true } m)
+                {
+                    agent.AiControl = true;
+                    agent.ControlBy = m.AiControlBy;
+                    game.SetAiControl(h.Id, true);
+                    Log.Info($"[{h.Name}] full AI control restored (given by {m.AiControlBy})");
+                }
             }
             else
             {
@@ -128,7 +160,33 @@ public sealed class AgentManager : IDisposable
             var result = Tools.Execute(cmd.Call, agent, game, this);
             var line = $"{cmd.Call.Name}({Tools.ArgsToString(cmd.Call)}) -> {result}";
             agent.RecordResult(line);
+            // the round log feeds the end-of-round summary: keep what matters, skip routine noise
+            if (cmd.Call.Name is not ("inspect" or "remember" or "return_to_default" or "wait" or "keep_gear" or "forget")
+                && !result.Contains("already")) agent.LogEvent(line);
             Log.Info($"[{agent.Name}] {line}");
+        }
+    }
+
+    /// <summary>A player gave or took back full AI control through the command menu.</summary>
+    void DrainControl()
+    {
+        foreach (var e in game.DrainControlEvents())
+        {
+            if (!agents.TryGetValue(e.BotId, out var a))
+            {
+                game.SetAiControl(e.BotId, false); // not an AI agent (disabled job): nothing would act on it
+                continue;
+            }
+            a.AiControl = e.Granted;
+            a.ControlBy = e.Granted ? e.By : null;
+            game.SetAiControl(a.Id, e.Granted);
+            if (MemoryOn) memory.SetControl(a.Name, a.Job, e.Granted, e.By);
+            a.ReceivePlayerOrder(e.Granted
+                ? $"{e.By} handed you FULL CONTROL: from now on you decide everything yourself (see 'control'). Confirm briefly with say."
+                : $"{e.By} took back full control: you are a normal crew member again. Confirm briefly with say.");
+            a.LogEvent(e.Granted ? $"{e.By} gave me full control" : $"{e.By} took back full control");
+            nextTick = double.NegativeInfinity;
+            Log.Info($"[{a.Name}] full AI control {(e.Granted ? "given" : "taken back")} by {e.By}");
         }
     }
 
@@ -139,6 +197,7 @@ public sealed class AgentManager : IDisposable
         {
             if (!agents.TryGetValue(r.BotId, out var agent)) continue;
             agent.RecordResult(r.Text);
+            agent.LogEvent(r.Text);
             agent.WakeUp = true;
             Log.Info($"[{agent.Name}] {r.Text}");
         }
@@ -197,11 +256,15 @@ public sealed class AgentManager : IDisposable
 
         double since = now - agent.LastRequestAt;
         bool playerOrder = agent.HasPlayerOrder;
+        // "order" autonomy: without full AI control a bot only thinks when asked (orders, messages, task results).
+        bool autonomous = Settings.Bots.Autonomy == "always" || agent.AiControl;
+        double interval = agent.AiControl ? Math.Min(g.DecisionIntervalSeconds, Settings.Bots.ControlDecisionIntervalSeconds) : g.DecisionIntervalSeconds;
         // A player's order is answered right away; everything else respects the minimum gap.
         if (!playerOrder && since < g.MinSecondsBetweenCallsPerBot) return null;
         if (playerOrder && since < Math.Min(g.RetrySeconds, g.MinSecondsBetweenCallsPerBot)) return null;
 
-        bool due = playerOrder || since >= g.DecisionIntervalSeconds || agent.WakeUp || agent.HasMail;
+        bool due = playerOrder || agent.WakeUp || agent.HasMail || (autonomous && since >= interval);
+        if (!due && !autonomous) return null;
 
         // Observe() walks hulls/gaps/characters, so between scheduled decisions only check urgency now and then.
         if (!due && now < agent.NextUrgencyCheckAt) return null;
@@ -222,10 +285,14 @@ public sealed class AgentManager : IDisposable
     void StartDecision(BotAgent agent, Observation obs, LlmRouter.Reservation reservation, double now)
     {
         var g = Settings.Global;
-        obs.PlayerOrders = agent.DrainPlayerOrders();
+        var takenOrders = agent.DrainOrders();
+        obs.PlayerOrders = takenOrders.Select(o => o.Text).ToList();
         obs.Inbox = agent.DrainInbox();
         obs.Notes = agent.Notes();
         obs.LastActionResults = agent.TakeResults();
+        if (agent.AiControl) obs.Control = $"FULL AI CONTROL (given by {agent.ControlBy ?? "a player"})";
+        if (MemoryOn) obs.Memory = MemoryFor(agent, obs);
+        foreach (var o in takenOrders) agent.LogEvent("order: " + o.Text);
 
         agent.WakeUp = false;
         agent.Pending = true;
@@ -233,13 +300,12 @@ public sealed class AgentManager : IDisposable
 
         string obsJson = obs.ToJson();
         Settings.Bots.ExtraPromptByJob.TryGetValue(agent.Job, out var extra);
-        string system = Prompts.System(agent, g.MaxActionsPerDecision, extra);
+        string system = Prompts.System(agent, g.MaxActionsPerDecision, extra, agent.AiControl, MemoryOn);
         var history = agent.HistorySnapshot();
-        var takenOrders = obs.PlayerOrders;
         var takenInbox = obs.Inbox;
         var takenResults = obs.LastActionResults;
         history.Add(new LlmTurn("user", obsJson));
-        var tools = Tools.Filtered(Settings.Bots.AllowedTools);
+        var tools = Tools.For(Settings.Bots.AllowedTools, agent.AiControl, MemoryOn);
         int botId = agent.Id;
         int gen = generation;
         var token = cts.Token;
@@ -273,11 +339,13 @@ public sealed class AgentManager : IDisposable
                     Log.Warn($"[{agent.Name}] reply had no recognizable tool call ({r.Provider}); if this repeats, set \"toolMode\": \"prompt\" for this provider. Reply: {Tools.Clip(JsonUtil.OneLine(r.Response.Text), 300)}");
                 }
                 // keep player orders visible after this exchange scrolls out of the history
-                foreach (var o in takenOrders) agent.AddNote("Player order: " + o, g.MaxNotes);
+                foreach (var o in takenOrders) agent.AddNote((o.Authority ? "Player order: " : "Order: ") + o.Text, g.MaxNotes);
 
                 if (g.LogPrompts) Log.Info($"[{agent.Name}] <- {r.Provider}: {summary}" +
                     (g.LogRawReplies && !string.IsNullOrWhiteSpace(r.Response.Text) ? $"  [raw: {Tools.Clip(JsonUtil.OneLine(r.Response.Text), 500)}]" : ""));
-                bool authority = takenOrders.Count > 0;
+                // A human player's order may replace orders given through the command menu (under full AI control the
+                // game adapter allows that anyway, but a locked diving suit still needs a human's word).
+                bool authority = takenOrders.Any(o => o.Authority);
                 foreach (var c in calls) commands.Enqueue(new AgentCommand(botId, c, authority));
             }
             catch (OperationCanceledException) { }
@@ -436,32 +504,204 @@ public sealed class AgentManager : IDisposable
     {
         if (!from.TryConsumeMessageQuota(clock(), Settings.Global.MaxMessagesPerMinute))
             return $"error: you already sent {Settings.Global.MaxMessagesPerMinute} messages this minute; act instead of talking";
-        string line = $"{from.Name}: {text}";
-        var others = agents.Values.Where(a => a.Id != from.Id).ToList();
+        var targets = ResolveTargets(from, to, out var label, out var error);
+        if (targets == null) return error!;
 
-        List<BotAgent> targets;
+        string line = $"{from.Name}: {text}";
+        foreach (var t in targets)
+        {
+            t.Receive(line);
+            t.WakeUp = true;
+            t.LogEvent("message " + line);
+        }
+        from.LogEvent($"told {label}: {text}");
+        Echo(from, label, text);
+        return targets.Count == 1 ? "ok" : $"ok (sent to {targets.Count})";
+    }
+
+    /// <summary>A bot under full AI control commands other AI crew. Their orders are binding but do not override players.</summary>
+    public string OrderCrew(BotAgent from, string to, string order)
+    {
+        if (!from.AiControl) return "error: order_crew is only available under full AI control; use message_crew to ask";
+        if (!from.TryConsumeMessageQuota(clock(), Settings.Global.MaxMessagesPerMinute))
+            return $"error: you already sent {Settings.Global.MaxMessagesPerMinute} messages this minute; let them work";
+        var targets = ResolveTargets(from, to, out var label, out var error);
+        if (targets == null) return error!;
+
+        foreach (var t in targets)
+        {
+            t.ReceivePlayerOrder($"Order from {from.Name} (in command: full AI control given by {from.ControlBy ?? "a player"}): {order}", authority: false);
+            t.LogEvent($"order from {from.Name}: {order}");
+        }
+        from.LogEvent($"ordered {label}: {order}");
+        Echo(from, label, order);
+        nextTick = double.NegativeInfinity;
+        return targets.Count == 1 ? "ok" : $"ok (ordered {targets.Count})";
+    }
+
+    /// <summary>Players hear what bots tell each other (on the radio or nearby, like say).</summary>
+    void Echo(BotAgent from, string label, string text)
+    {
+        if (!Settings.Global.ShowBotMessagesInChat) return;
+        game.Speak(from.Id, Tools.Clip($"[→ {label}] {text}", MaxChatEcho));
+    }
+
+    List<BotAgent>? ResolveTargets(BotAgent from, string to, out string label, out string? error)
+    {
+        var others = agents.Values.Where(a => a.Id != from.Id).ToList();
+        error = null;
+        label = to;
         if (string.Equals(to, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(to, "everyone", StringComparison.OrdinalIgnoreCase))
         {
-            targets = others;
-            if (targets.Count == 0) return "error: there are no other AI crew members";
-        }
-        else
-        {
-            var exact = others.FirstOrDefault(a => a.Name.Equals(to, StringComparison.OrdinalIgnoreCase));
-            var byJob = others.Where(a => a.Job.Equals(to, StringComparison.OrdinalIgnoreCase)).ToList();
-            var partial = others.Where(a => a.Name.Contains(to, StringComparison.OrdinalIgnoreCase)).ToList();
-            targets = exact != null ? new() { exact }
-                    : byJob.Count > 0 ? byJob
-                    : partial.Count == 1 ? partial
-                    : new();
-            if (targets.Count == 0)
-                return partial.Count > 1
-                    ? $"error: '{to}' is ambiguous ({string.Join(", ", partial.Select(p => p.Name))}); use the full name"
-                    : $"error: no AI crew member named '{to}' (human players do not read private messages; use say)";
+            label = "all";
+            if (others.Count > 0) return others;
+            error = "error: there are no other AI crew members";
+            return null;
         }
 
-        foreach (var t in targets) { t.Receive(line); t.WakeUp = true; }
-        return targets.Count == 1 ? "ok" : $"ok (sent to {targets.Count})";
+        var exact = others.FirstOrDefault(a => a.Name.Equals(to, StringComparison.OrdinalIgnoreCase));
+        var byJob = others.Where(a => a.Job.Equals(to, StringComparison.OrdinalIgnoreCase)).ToList();
+        var partial = others.Where(a => a.Name.Contains(to, StringComparison.OrdinalIgnoreCase)).ToList();
+        var targets = exact != null ? new List<BotAgent> { exact }
+                    : byJob.Count > 0 ? byJob
+                    : partial.Count == 1 ? partial
+                    : new List<BotAgent>();
+        if (targets.Count == 0)
+        {
+            error = partial.Count > 1
+                ? $"error: '{to}' is ambiguous ({string.Join(", ", partial.Select(p => p.Name))}); use the full name"
+                : $"error: no AI crew member named '{to}' (human players do not read private messages; use say)";
+            return null;
+        }
+        if (targets.Count == 1) label = targets[0].Name;
+        return targets;
+    }
+
+    // ---------------------------------------------------------------- long-term memory
+
+    MemoryView? MemoryFor(BotAgent agent, Observation obs)
+    {
+        var m = Settings.Memory;
+        var bot = memory.Bot(agent.Name);
+        var playersAboard = obs.Crew.Where(c => c.IsPlayer).Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var prefs = memory.Read(d => d.Players
+            .Where(kv => playersAboard.Contains(kv.Key))
+            .SelectMany(kv => kv.Value.Select(p => $"{kv.Key}: {p}"))
+            .Take(12).ToList());
+        var crewNames = obs.Crew.Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var view = new MemoryView
+        {
+            Facts = bot?.Facts.Count > 0 ? bot.Facts.ToList() : null,
+            PastRounds = bot?.Journal.Count > 0 ? bot.Journal.Skip(Math.Max(0, bot.Journal.Count - Math.Max(0, m.JournalInPrompt))).ToList() : null,
+            // people aboard first, then the rest
+            Relationships = bot?.Relationships.Count > 0
+                ? bot.Relationships.OrderByDescending(kv => crewNames.Contains(kv.Key)).Take(10)
+                    .Select(kv => $"{kv.Key}: {kv.Value.Feeling}" + (kv.Value.Note.Length > 0 ? " - " + kv.Value.Note : "")).ToList()
+                : null,
+            PlayerPreferences = prefs.Count > 0 ? prefs : null,
+        };
+        if (view.PastRounds?.Count == 0) view.PastRounds = null;
+        return view.IsEmpty ? null : view;
+    }
+
+    public string Remember(BotAgent agent, string note, bool longTerm)
+    {
+        agent.AddNote(note, Settings.Global.MaxNotes);
+        if (!longTerm) return "ok";
+        if (!MemoryOn) return "ok (long-term memory is disabled, kept for this round)";
+        memory.AddFact(agent.Name, agent.Job, note, Settings.Memory.MaxFacts);
+        return "ok, kept for future rounds";
+    }
+
+    public string Forget(BotAgent agent, string text)
+    {
+        if (!MemoryOn) return "error: long-term memory is disabled";
+        int n = memory.ForgetFact(agent.Name, text);
+        return n == 0 ? $"error: no long-term fact contains '{text}'" : $"ok, forgot {n}";
+    }
+
+    public string NoteRelationship(BotAgent agent, string person, string feeling, string note)
+    {
+        if (!MemoryOn) return "error: long-term memory is disabled";
+        if (person.Equals(agent.Name, StringComparison.OrdinalIgnoreCase)) return "error: that is you";
+        memory.SetRelationship(agent.Name, agent.Job, person.Trim(), feeling, note, Settings.Memory.MaxRelationships);
+        agent.LogEvent($"feel {feeling} about {person}: {note}");
+        return "ok";
+    }
+
+    public string NotePreference(BotAgent agent, string player, string preference)
+    {
+        if (!MemoryOn) return "error: long-term memory is disabled";
+        memory.AddPreference(player.Trim(), preference, Settings.Memory.MaxPreferencesPerPlayer);
+        return "ok, the whole AI crew will know";
+    }
+
+    /// <summary>
+    /// Round over (game thread, before <see cref="Reset"/>): every bot writes a short summary of the round into its
+    /// journal. One LLM call per bot when there is capacity, otherwise a plain summary from the round log.
+    /// </summary>
+    public void EndRound()
+    {
+        if (!MemoryOn) return;
+        var m = Settings.Memory;
+        foreach (var agent in agents.Values.ToList())
+        {
+            var log = agent.RoundLog();
+            var notes = agent.Notes();
+            if (log.Count == 0 && notes.Count == 0)
+            {
+                memory.AddJournal(agent.Name, agent.Job, "", m.MaxJournal, countRound: true);
+                continue;
+            }
+            string fallback = PlainSummary(log);
+            string provider = string.IsNullOrEmpty(m.SummaryProvider) ? Settings.ProviderFor(agent.Job) : m.SummaryProvider;
+            if (!m.RoundSummary)
+            {
+                memory.AddJournal(agent.Name, agent.Job, fallback, m.MaxJournal, countRound: true);
+                continue;
+            }
+            var user = "Events of the round:\n- " + string.Join("\n- ", log) +
+                       (notes.Count > 0 ? "\nYour notes:\n- " + string.Join("\n- ", notes) : "");
+            var system = $"You are {agent.Name}, {agent.Job} on a submarine in Barotrauma. The round just ended. " +
+                         $"Write ONE or two sentences (max {MemoryStore.MaxJournalLength} characters) for your long-term memory: what happened, " +
+                         "who did what, what you learned. First person, past tense, in the language the crew speaks. Plain text only, no tool calls.";
+            string name = agent.Name, job = agent.Job;
+            int max = m.MaxJournal;
+            Track(Task.Run(async () =>
+            {
+                string entry = fallback;
+                try
+                {
+                    // Slots may be busy (local models often allow one request at a time): wait for one, but not forever.
+                    LlmRouter.Reservation? reservation = null;
+                    var deadline = DateTime.UtcNow.AddSeconds(SummaryWaitSeconds);
+                    while (!router.TryReserve(provider, out reservation, out _))
+                    {
+                        if (DateTime.UtcNow >= deadline) throw new TimeoutException("no free LLM slot");
+                        await Task.Delay(500, cts.Token).ConfigureAwait(false);
+                    }
+                    var r = await router.CompleteAsync(reservation!, system, new[] { new LlmTurn("user", user) }, Array.Empty<ToolSpec>(), cts.Token).ConfigureAwait(false);
+                    var text = r.Status == RouteStatus.Ok ? JsonUtil.OneLine(r.Response?.Text ?? "").Trim().Trim('"') : "";
+                    if (text.Length >= 10) entry = text;
+                    else Log.Warn($"[{name}] round summary failed ({r.Status}): {r.Detail}; using the plain one");
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception e) { Log.Warn($"[{name}] round summary failed: {e.Message}; using the plain one"); }
+                memory.AddJournal(name, job, entry, max, countRound: true);
+                memory.Flush();
+                Log.Info($"[{name}] journal: {entry}");
+            }));
+        }
+        memory.Flush();
+    }
+
+    static string PlainSummary(List<string> log)
+    {
+        if (log.Count == 0) return "";
+        // orders and finished tasks say the most about a round
+        var important = log.Where(l => l.StartsWith("order") || l.StartsWith("task") || l.Contains("full control")).ToList();
+        var pick = (important.Count > 0 ? important : log).TakeLast(4);
+        return "Last round: " + string.Join("; ", pick);
     }
 
     public void Dispose()

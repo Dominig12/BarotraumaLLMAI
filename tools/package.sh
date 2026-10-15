@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/dist/LlmAgents"
 rm -rf "$OUT"; mkdir -p "$OUT"
-cp "$ROOT"/Content/* "$OUT"/
+cp -r "$ROOT"/Content/. "$OUT"/
 for P in Windows Linux OSX; do
   dotnet build "$ROOT/src/LlmAgents.Server/LlmAgents.Server.csproj" -c Release -p:GamePlatform=$P -v q -nologo
   mkdir -p "$OUT/bin/Server/$P"

@@ -165,7 +165,7 @@ public class ProviderHealthAndModesTests
         Assert.Equal("json_object", body["response_format"]!["type"]!.GetValue<string>());
         var system = body["messages"]![0]!["content"]!.GetValue<string>();
         Assert.StartsWith("SYS", system);
-        Assert.Contains("- operate(role: string one of reactor|navigation|weapons|pumps, option: string (optional))", system);
+        Assert.Contains("- operate(role: string one of reactor|navigation|weapons|pumps, option: string (optional), priority: integer (optional))", system);
         Assert.Contains("{\"calls\": [", system);
 
         var anth = AnthropicProvider.BuildBody(cfg, req);

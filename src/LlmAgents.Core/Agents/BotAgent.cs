@@ -6,6 +6,9 @@ using LlmAgents.Llm;
 
 namespace LlmAgents.Agents;
 
+/// <summary>An order waiting for the bot's next decision.</summary>
+public sealed record PendingOrder(string Text, bool Authority);
+
 /// <summary>State of one LLM-driven bot: memory, inbox, history, scheduling flags.</summary>
 public sealed class BotAgent
 {
@@ -24,6 +27,10 @@ public sealed class BotAgent
     volatile bool retrySoon;
     public bool RetrySoon { get => retrySoon; set => retrySoon = value; }
 
+    /// <summary>A player handed this bot full AI control (mod order in the command menu).</summary>
+    public bool AiControl { get; set; }
+    public string? ControlBy { get; set; }
+
     readonly Queue<double> sentMessages = new();
 
     /// <summary>Sliding one-minute window of private messages sent by this bot (anti ping-pong).</summary>
@@ -41,11 +48,27 @@ public sealed class BotAgent
     readonly List<LlmTurn> history = new();
     readonly List<string> results = new();
     readonly ConcurrentQueue<string> inbox = new();
-    readonly ConcurrentQueue<string> playerOrders = new();
+    readonly ConcurrentQueue<PendingOrder> playerOrders = new();
 
     public const int MaxNoteLength = 200;
     public const int MaxResults = 6;
     public const int MaxInbox = 10;
+    public const int MaxRoundLog = 40;
+
+    readonly List<string> roundLog = new();
+
+    /// <summary>Notable events of this round (orders, task results, messages), for the end-of-round summary.</summary>
+    public void LogEvent(string line)
+    {
+        lock (sync)
+        {
+            roundLog.Add(Tools.Clip(line, 200));
+            // keep the start of the round and the latest events
+            if (roundLog.Count > MaxRoundLog) roundLog.RemoveAt(MaxRoundLog / 4);
+        }
+    }
+
+    public List<string> RoundLog() { lock (sync) return roundLog.ToList(); }
 
     public BotAgent(BotHandle h)
     {
@@ -76,18 +99,22 @@ public sealed class BotAgent
     /// <summary>A chat order from a human player that was routed to this bot. Processed before anything else.</summary>
     public bool HasPlayerOrder => !playerOrders.IsEmpty;
 
-    public void ReceivePlayerOrder(string order)
+    /// <param name="authority">true = from a human player (may replace orders players gave through the command menu);
+    /// false = from an AI crew member in command (binding, but player orders still come first).</param>
+    public void ReceivePlayerOrder(string order, bool authority = true)
     {
-        playerOrders.Enqueue(order);
+        playerOrders.Enqueue(new PendingOrder(order, authority));
         while (playerOrders.Count > MaxInbox && playerOrders.TryDequeue(out _)) { }
     }
 
-    public List<string> DrainPlayerOrders()
+    public List<PendingOrder> DrainOrders()
     {
-        var list = new List<string>();
+        var list = new List<PendingOrder>();
         while (playerOrders.TryDequeue(out var m)) list.Add(m);
         return list;
     }
+
+    public List<string> DrainPlayerOrders() => DrainOrders().Select(o => o.Text).ToList();
 
     public List<string> DrainInbox()
     {
@@ -116,14 +143,14 @@ public sealed class BotAgent
     }
 
     /// <summary>Puts back what was taken for a request that never reached a model.</summary>
-    public void Restore(IEnumerable<string> inboxMessages, IEnumerable<string> actionResults, IEnumerable<string>? orders = null)
+    public void Restore(IEnumerable<string> inboxMessages, IEnumerable<string> actionResults, IEnumerable<PendingOrder>? orders = null)
     {
         var pendingInbox = DrainInbox();
         foreach (var m in inboxMessages) inbox.Enqueue(m);
         foreach (var m in pendingInbox) inbox.Enqueue(m);
         if (orders != null)
         {
-            var pendingOrders = DrainPlayerOrders();
+            var pendingOrders = DrainOrders();
             foreach (var m in orders) playerOrders.Enqueue(m);
             foreach (var m in pendingOrders) playerOrders.Enqueue(m);
         }

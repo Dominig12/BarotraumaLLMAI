@@ -6,6 +6,7 @@ using Barotrauma.LuaCs;
 using Barotrauma.LuaCs.Events;
 using LlmAgents.Agents;
 using LlmAgents.Llm;
+using LlmAgents.Memory;
 
 namespace LlmAgents;
 
@@ -23,9 +24,11 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
 
     AgentManager? manager;
     GameAdapter? adapter;
+    MemoryStore? memory;
     object? chatListener; // ChatListener; typed as object so Plugin itself never depends on the internal interface
     IEventService? chatService;
     string? modDir;
+    string? memoryDir;
 
     public void PreInitPatching() { }
 
@@ -64,6 +67,15 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         catch (Exception e)
         {
             Log.Error("diving gear lock disabled, could not patch the game: " + e.Message);
+        }
+
+        try
+        {
+            ControlOrder.Patch();
+        }
+        catch (Exception e)
+        {
+            Log.Error("'Full AI control' order disabled, could not patch the game: " + e.Message);
         }
 
         try
@@ -118,7 +130,18 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         manager?.Dispose();
         adapter?.Reset();
         adapter = new GameAdapter(settings);
-        manager = new AgentManager(settings, adapter, new LlmRouter(settings));
+        ControlOrder.Handler = adapter.OnControlOrder;
+
+        // Long-term memory: one JSON file per campaign save in <mod>/memory (or memory.folder).
+        string memDir = Path.IsPathRooted(settings.Memory.Folder) ? settings.Memory.Folder : Path.Combine(modDir!, settings.Memory.Folder);
+        if (memory == null || memoryDir != memDir)
+        {
+            memory?.Flush();
+            memory = new MemoryStore(memDir);
+            memoryDir = memDir;
+        }
+        manager = new AgentManager(settings, adapter, new LlmRouter(settings), memory: memory);
+        manager.BeginRound(MemoryScope());
         Log.Warn($"loaded from {cfgPath}. Providers: {string.Join(", ", settings.Providers.Select(p => $"{p.Name} ({p.Type}, {p.Model})"))}; " +
                  $"default '{settings.DefaultProvider}', fallback '{settings.FallbackProvider}'. Enabled: {settings.Enabled}");
     }
@@ -136,11 +159,13 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         {
             Log.Error("reload failed, keeping previous settings: " + e.Message);
             manager?.Reset();
+            manager?.BeginRound(MemoryScope());
         }
     }
 
     public void OnRoundEnd()
     {
+        try { manager?.EndRound(); } catch (Exception e) { Log.Error("round summary failed: " + e.Message); }
         adapter?.Reset();
         manager?.Reset();
     }
@@ -171,10 +196,28 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         }
         catch { /* shutting down */ }
         try { GearLock.Unpatch(); } catch { /* shutting down */ }
+        try { ControlOrder.Unpatch(); ControlOrder.Handler = null; } catch { /* shutting down */ }
+        try { memory?.Flush(); } catch { /* shutting down */ }
         manager?.Dispose();
         manager = null;
         adapter = null;
         Log.Sink = null;
+    }
+
+    /// <summary>One memory per campaign save; everything outside campaigns shares "default".</summary>
+    static string MemoryScope()
+    {
+        try
+        {
+            var session = GameMain.GameSession;
+            if (session?.Campaign != null)
+            {
+                var save = session.DataPath.SavePath;
+                if (!string.IsNullOrEmpty(save)) return "campaign_" + Path.GetFileNameWithoutExtension(save);
+            }
+        }
+        catch (Exception e) { Log.Warn("could not determine the campaign for memory: " + e.Message); }
+        return "default";
     }
 
     string FindModDir()

@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using Xunit;
 
@@ -82,5 +83,19 @@ public class SettingsTests
         Assert.Throws<InvalidDataException>(() => Fixtures.Settings(", \"speechChannel\": \"telepathy\""));
         Assert.Throws<InvalidDataException>(() => Fixtures.Settings(extraRoot: "\"chat\": { \"provider\": \"zzz\" },"));
         Assert.Equal("local", Fixtures.Settings(", \"speechChannel\": \"LOCAL\"").Global.SpeechChannel);
+    }
+
+    [Fact]
+    public void MemoryAndAutonomySettings()
+    {
+        var s = Fixtures.Settings();
+        Assert.True(s.Memory.Enabled);
+        Assert.Equal("memory", s.Memory.Folder);
+        Assert.Equal("always", s.Bots.Autonomy);
+        Assert.True(s.Global.ShowBotMessagesInChat);
+        Assert.Throws<InvalidDataException>(() => Fixtures.Settings(extraRoot: "\"memory\": { \"summaryProvider\": \"zzz\" },"));
+        var custom = ModSettings.Parse(Fixtures.Config().Replace("\"allowedTools\": []", "\"allowedTools\": [], \"autonomy\": \"ORDER\""));
+        Assert.Equal("order", custom.Bots.Autonomy);
+        Assert.Throws<InvalidDataException>(() => ModSettings.Parse(Fixtures.Config().Replace("\"allowedTools\": []", "\"allowedTools\": [], \"autonomy\": \"sometimes\"")));
     }
 }

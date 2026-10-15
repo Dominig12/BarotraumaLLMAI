@@ -16,6 +16,7 @@ public sealed class ModSettings
     public List<ProviderConfig> Providers { get; set; } = new();
     public BotSettings Bots { get; set; } = new();
     public ChatSettings Chat { get; set; } = new();
+    public MemorySettings Memory { get; set; } = new();
 
     static readonly JsonSerializerOptions Json = new()
     {
@@ -51,6 +52,10 @@ public sealed class ModSettings
         Global ??= new GlobalSettings();
         Bots ??= new BotSettings();
         Chat ??= new ChatSettings();
+        Memory ??= new MemorySettings();
+        Memory.Folder ??= "memory";
+        Memory.SummaryProvider ??= "";
+        Bots.Autonomy = (Bots.Autonomy ?? "always").Trim().ToLowerInvariant();
         Chat.Prefix ??= "";
         Chat.Provider ??= "";
         Global.SpeechChannel = (Global.SpeechChannel ?? "auto").Trim().ToLowerInvariant();
@@ -92,6 +97,10 @@ public sealed class ModSettings
                 throw new InvalidDataException($"bots.providerByJob['{kv.Key}'] = '{kv.Value}' not found in providers");
         if (!string.IsNullOrEmpty(Chat.Provider) && !names.Contains(Chat.Provider))
             throw new InvalidDataException($"chat.provider '{Chat.Provider}' not found in providers");
+        if (!string.IsNullOrEmpty(Memory.SummaryProvider) && !names.Contains(Memory.SummaryProvider))
+            throw new InvalidDataException($"memory.summaryProvider '{Memory.SummaryProvider}' not found in providers");
+        if (Bots.Autonomy is not ("always" or "order"))
+            throw new InvalidDataException("bots.autonomy must be 'always' or 'order'");
         if (Global.SpeechChannel is not ("auto" or "radio" or "local"))
             throw new InvalidDataException("global.speechChannel must be 'auto', 'radio' or 'local'");
         if (Global.TickSeconds <= 0) throw new InvalidDataException("global.tickSeconds must be > 0");
@@ -128,6 +137,8 @@ public sealed class GlobalSettings
     public bool LogRawReplies { get; set; } = true;
     /// <summary>Broadcast LLM-issued orders to clients as order chat messages, so the crew UI shows them.</summary>
     public bool SyncOrdersToClients { get; set; } = true;
+    /// <summary>Private bot-to-bot messages (message_crew, order_crew) are also spoken in the game chat, so players hear them.</summary>
+    public bool ShowBotMessagesInChat { get; set; } = true;
     /// <summary>
     /// Where bots speak: "auto" = radio if the bot wears a working headset, otherwise out loud (like vanilla bots);
     /// "radio" = same as auto (radio is always preferred); "local" = always out loud, nearby only.
@@ -204,4 +215,30 @@ public sealed class BotSettings
     public List<string> DisabledJobs { get; set; } = new();
     /// <summary>Empty = all tools.</summary>
     public List<string> AllowedTools { get; set; } = new();
+    /// <summary>
+    /// "always": every AI bot thinks on its own all the time (orders from players come first).
+    /// "order": bots only react to chat orders and messages; full autonomy only for bots given the
+    /// "Full AI control" order from the command menu. Everything else is the vanilla AI.
+    /// </summary>
+    public string Autonomy { get; set; } = "always";
+    /// <summary>Decision interval for bots under full AI control (they plan more often).</summary>
+    public double ControlDecisionIntervalSeconds { get; set; } = 6;
+}
+
+/// <summary>Long-term memory kept on disk between rounds (per campaign save).</summary>
+public sealed class MemorySettings
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>Folder for the memory files, relative to the mod folder or absolute.</summary>
+    public string Folder { get; set; } = "memory";
+    public int MaxFacts { get; set; } = 12;
+    public int MaxJournal { get; set; } = 10;
+    /// <summary>How many of the latest round summaries are shown to the bot.</summary>
+    public int JournalInPrompt { get; set; } = 3;
+    public int MaxRelationships { get; set; } = 15;
+    public int MaxPreferencesPerPlayer { get; set; } = 6;
+    /// <summary>At the end of a round every bot writes a short summary of it into its journal (one LLM call per bot).</summary>
+    public bool RoundSummary { get; set; } = true;
+    /// <summary>Provider for round summaries. Empty = the bot's own provider.</summary>
+    public string SummaryProvider { get; set; } = "";
 }

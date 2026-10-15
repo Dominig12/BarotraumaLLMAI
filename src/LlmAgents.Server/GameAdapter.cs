@@ -30,6 +30,8 @@ public sealed class GameAdapter : IGameApi
     readonly Dictionary<ushort, HashSet<string>> ownOrders = new();   // signatures of orders this mod issued, per bot
     readonly Dictionary<ushort, bool> authority = new();
     readonly List<GameReport> reports = new();
+    readonly HashSet<ushort> controlled = new();                      // bots under full AI control
+    readonly List<ControlEvent> controlEvents = new();
     double nextTaskTick, nextDangerCheck;
 
     public GameAdapter(ModSettings settings) { this.settings = settings; }
@@ -53,7 +55,41 @@ public sealed class GameAdapter : IGameApi
 
     public void BeginCommand(int botId, bool playerAuthority) => authority[(ushort)botId] = playerAuthority;
 
-    bool HasAuthority(Character c) => authority.TryGetValue(c.ID, out var a) && a;
+    /// <summary>The current decision may override orders players gave through the command menu.</summary>
+    bool HasAuthority(Character c) => controlled.Contains(c.ID) || (authority.TryGetValue(c.ID, out var a) && a);
+
+    /// <summary>Only a human player's chat order may take a locked diving suit off (not full AI control: the lock is a safety net).</summary>
+    bool PlayerSaidSo(Character c) => authority.TryGetValue(c.ID, out var a) && a;
+
+    // ------------------------------------------------------------ full AI control
+
+    public void SetAiControl(int botId, bool on)
+    {
+        if (on) controlled.Add((ushort)botId); else controlled.Remove((ushort)botId);
+    }
+
+    public IReadOnlyList<ControlEvent> DrainControlEvents()
+    {
+        if (controlEvents.Count == 0) return Array.Empty<ControlEvent>();
+        var r = controlEvents.ToList();
+        controlEvents.Clear();
+        return r;
+    }
+
+    /// <summary>Called from the Harmony patch when a player gives (or dismisses) the "Full AI control" order.</summary>
+    internal void OnControlOrder(Character bot, Character? giver, ControlOrder.Kind kind)
+    {
+        if (!IsControllableBot(bot))
+        {
+            if (kind == ControlOrder.Kind.Toggle) Log.Info($"AI control order for {bot.Name} ignored: not an AI crew member");
+            return;
+        }
+        bool on = controlled.Contains(bot.ID);
+        bool grant = kind == ControlOrder.Kind.Toggle && !on;
+        if (!grant && !on) return; // nothing to take back
+        if (grant) controlled.Add(bot.ID); else controlled.Remove(bot.ID);
+        controlEvents.Add(new ControlEvent(bot.ID, grant, giver?.Name ?? "a player"));
+    }
 
     // ----------------------------------------------------------- observation
 
@@ -193,7 +229,7 @@ public sealed class GameAdapter : IGameApi
         if (orders == null || orders.Count == 0) return "none";
         return string.Join(", ", orders.Where(o => o != null).Select(o =>
         {
-            var s = o.Option.IsEmpty ? o.Identifier.Value : $"{o.Identifier.Value}:{o.Option.Value}";
+            var s = (o.Option.IsEmpty ? o.Identifier.Value : $"{o.Identifier.Value}:{o.Option.Value}") + $" [p{o.ManualPriority}]";
             if (IsPlayerOrder(c, o)) s += $" (from player {o.OrderGiver.Name})";
             return s;
         }));
@@ -220,7 +256,7 @@ public sealed class GameAdapter : IGameApi
 
     // --------------------------------------------------------------- orders
 
-    public string GoToRoom(int botId, string roomId)
+    public string GoToRoom(int botId, string roomId, int priority = Tools.TopPriority)
     {
         if (Find(botId) is not { } c) return "error: character gone";
         var hull = ResolveRoom(roomId);
@@ -229,10 +265,10 @@ public sealed class GameAdapter : IGameApi
 
         // "wait" with a position target = go there and stay (same as a player's "wait here" order on the map).
         var order = new Order(prefab, Identifier.Empty, new OrderTarget(hull.WorldPosition, hull), orderGiver: c);
-        return Issue(c, order, $"ok, heading to {RoomId(hull)}");
+        return Issue(c, order, $"ok, heading to {RoomId(hull)}", priority);
     }
 
-    public string Follow(int botId, string targetName)
+    public string Follow(int botId, string targetName, int priority = Tools.TopPriority)
     {
         if (Find(botId) is not { } c) return "error: character gone";
         var target = FindCrew(targetName, c, includeSelf: false);
@@ -241,10 +277,10 @@ public sealed class GameAdapter : IGameApi
 
         // The vanilla follow objective follows the *order giver*.
         var order = new Order(prefab, targetEntity: null, targetItem: null, orderGiver: target);
-        return Issue(c, order, $"ok, following {target.Name}");
+        return Issue(c, order, $"ok, following {target.Name}", priority);
     }
 
-    public string SimpleOrder(int botId, string orderKey)
+    public string SimpleOrder(int botId, string orderKey, int priority = Tools.TopPriority)
     {
         if (Find(botId) is not { } c) return "error: character gone";
         if (!Tools.SimpleOrders.TryGetValue(orderKey, out var id)) return $"error: unsupported order '{orderKey}'";
@@ -253,10 +289,10 @@ public sealed class GameAdapter : IGameApi
         Order order = id == "wait"
             ? new Order(prefab, Identifier.Empty, new OrderTarget(c.WorldPosition, c.CurrentHull), orderGiver: c)
             : new Order(prefab, targetEntity: null, targetItem: null, orderGiver: c);
-        return Issue(c, order, "ok");
+        return Issue(c, order, "ok", priority);
     }
 
-    public string Operate(int botId, string role, string? option)
+    public string Operate(int botId, string role, string? option, int priority = Tools.TopPriority)
     {
         if (Find(botId) is not { } c) return "error: character gone";
 
@@ -298,7 +334,7 @@ public sealed class GameAdapter : IGameApi
             if (item == null) return $"error: no {role} station on this submarine";
             order = new Order(prefab, opt, item, prefab.GetTargetItemComponent(item), orderGiver: c);
         }
-        var r = Issue(c, order, $"ok, operating {role}{(opt.IsEmpty ? "" : " (" + opt.Value + ")")}");
+        var r = Issue(c, order, $"ok, operating {role}{(opt.IsEmpty ? "" : " (" + opt.Value + ")")}", priority);
         if (role == "reactor" && r.StartsWith("ok") && c.GetSkillLevel("electrical".ToIdentifier()) < 30)
             r += ". Note: with low electrical skill you will not refuel it; use refuel_reactor for that";
         return r;
@@ -359,7 +395,7 @@ public sealed class GameAdapter : IGameApi
         return c.CurrentOrders?.Where(o => o != null && IsPlayerOrder(c, o)).ToList() ?? new List<Order>();
     }
 
-    /// <summary>Error text if the bot must not override a player's order right now, else null.</summary>
+    /// <summary>Error text if the bot must not start something that would push a player's order aside, else null.</summary>
     string? PlayerOrderBlock(Character c, Order? replacement)
     {
         if (HasAuthority(c)) return null;
@@ -370,20 +406,112 @@ public sealed class GameAdapter : IGameApi
         return $"error: you are carrying out '{p0.Identifier}' ordered by player {p0.OrderGiver.Name}; keep doing it unless a player tells you otherwise";
     }
 
-    string Issue(Character c, Order order, string okText)
+    static string Name(Order o) => o.Option.IsEmpty ? o.Identifier.Value : $"{o.Identifier.Value}:{o.Option.Value}";
+
+    /// <summary>
+    /// Gives the bot an order at a priority (1..3). Vanilla semantics: the bot's orders at that priority or lower move
+    /// one step down, at most 3 orders. Without authority the bot's own orders always stay below the players' orders,
+    /// and nothing that would cancel a player's order (same order type, another movement order) is allowed.
+    /// </summary>
+    string Issue(Character c, Order order, string okText, int priority)
     {
-        if (PlayerOrderBlock(c, order) is { } blocked) return blocked;
+        priority = Math.Clamp(priority, 1, CharacterInfo.HighestManualOrderPriority);
+        string note = "";
+        if (!HasAuthority(c))
+        {
+            var player = PlayerOrders(c);
+            if (player.Any(p => Same(p, order))) return "ok (already doing that, ordered by a player)";
+            if (player.Count > 0)
+            {
+                var clash = player.FirstOrDefault(p => p.Identifier == order.Identifier)
+                    ?? (order.Category == OrderCategory.Movement && order.AutoDismiss ? player.FirstOrDefault(p => p.Category == OrderCategory.Movement) : null);
+                if (clash != null)
+                    return $"error: that would cancel '{Name(clash)}' ordered by player {clash.OrderGiver.Name}; keep doing it unless a player tells you otherwise";
+                int below = player.Min(p => p.ManualPriority) - 1;
+                if (below < 1)
+                    return $"error: your order slots are taken by orders from players ({string.Join(", ", player.Select(Name))}); keep doing them unless a player tells you otherwise";
+                if (priority > below)
+                {
+                    priority = below;
+                    note = $" (priority lowered to {priority}: orders from players come first)";
+                }
+            }
+            if (OperatedByOrderOfPlayer(c, order) is { } other)
+                return $"error: {other.Name} was ordered by a player to operate that; pick another task or ask them";
+        }
+
         var current = c.CurrentOrders?.Where(o => o != null).ToList() ?? new List<Order>();
-        if (current.Any(o => Same(o, order)) && !tasks.ContainsKey(c.ID)) return "ok (already doing that)";
+        var existing = current.FirstOrDefault(o => Same(o, order));
+        if (existing != null && !tasks.ContainsKey(c.ID))
+        {
+            if (existing.ManualPriority == priority) return "ok (already doing that)";
+            return SetOrder(c, existing.WithManualPriority(priority), isNewOrder: false)
+                ? $"ok, {Name(existing)} is now priority {priority}{note}"
+                : "error: could not change the priority";
+        }
 
         CancelTask(c, quiet: true);
-        // One LLM order at a time: drop the bot's previous own orders instead of stacking them.
-        foreach (var old in current.Where(o => IsOwn(c, o) && !Same(o, order))) DropOrder(c, old);
-
-        if (!SetOrder(c, order.WithManualPriority(CharacterInfo.HighestManualOrderPriority))) return "error: could not issue order";
+        if (!SetOrder(c, order.WithManualPriority(priority))) return "error: could not issue order";
         if (!ownOrders.TryGetValue(c.ID, out var set)) ownOrders[c.ID] = set = new HashSet<string>();
         set.Add(Signature(order));
-        return okText;
+        return okText + (priority < CharacterInfo.HighestManualOrderPriority ? $" [p{priority}]" : "") + note;
+    }
+
+    /// <summary>Operating a station another bot was told to operate by a player would dismiss that bot's order (vanilla autodismiss).</summary>
+    Character? OperatedByOrderOfPlayer(Character c, Order order)
+    {
+        if (order.Category != OrderCategory.Operate || order.TargetEntity == null || !order.AutoDismiss) return null;
+        foreach (var other in Character.CharacterList)
+        {
+            if (other == c || other.IsDead || other.TeamID != c.TeamID || !other.IsBot) continue;
+            if (other.CurrentOrders?.Any(o => o != null && o.Identifier == order.Identifier && o.TargetEntity == order.TargetEntity && IsPlayerOrder(other, o)) == true)
+                return other;
+        }
+        return null;
+    }
+
+    public string SetOrderPriority(int botId, string query, int priority)
+    {
+        if (Find(botId) is not { } c) return "error: character gone";
+        PruneOwn(c);
+        var orders = c.CurrentOrders?.Where(o => o != null && !o.IsDismissal).ToList() ?? new List<Order>();
+        if (orders.Count == 0) return "error: you have no orders";
+
+        var q = query.Trim().ToLowerInvariant();
+        q = q.Split(' ', '[', '(')[0];
+        string? opt = null;
+        int sep = q.IndexOfAny(new[] { ':', '.' });
+        if (sep > 0) { opt = q.Substring(sep + 1); q = q.Substring(0, sep); }
+        var id = Tools.OrderAliases.TryGetValue(q, out var alias) ? alias : q;
+        var match = orders.FirstOrDefault(o => o.Identifier == id && (opt == null || o.Option == opt))
+                 ?? orders.FirstOrDefault(o => o.Identifier == id);
+        if (match == null)
+            return $"error: no current order '{query}'; your orders: {string.Join(", ", orders.Select(o => $"{Name(o)} [p{o.ManualPriority}]"))}";
+
+        bool fromPlayer = IsPlayerOrder(c, match);
+        if (fromPlayer && !HasAuthority(c))
+            return $"error: '{Name(match)}' was ordered by player {match.OrderGiver.Name}; only a player can change it";
+
+        if (priority <= 0)
+        {
+            DropOrder(c, match);
+            return $"ok, dropped {Name(match)}";
+        }
+        priority = Math.Clamp(priority, 1, CharacterInfo.HighestManualOrderPriority);
+        string note = "";
+        if (!HasAuthority(c))
+        {
+            var player = orders.Where(o => o != match && IsPlayerOrder(c, o)).ToList();
+            if (player.Count > 0 && priority >= player.Min(p => p.ManualPriority))
+            {
+                priority = Math.Max(1, player.Min(p => p.ManualPriority) - 1);
+                note = " (orders from players stay on top)";
+            }
+        }
+        if (match.ManualPriority == priority) return $"ok ({Name(match)} already has priority {priority}){note}";
+        return SetOrder(c, match.WithManualPriority(priority), isNewOrder: false)
+            ? $"ok, {Name(match)} is now priority {priority}{note}"
+            : "error: could not change the priority";
     }
 
     void DropOrder(Character c, Order o)
@@ -397,13 +525,13 @@ public sealed class GameAdapter : IGameApi
     }
 
     /// <summary>Applies an order the way the server handles one from the command UI (SetOrder + broadcast).</summary>
-    bool SetOrder(Character c, Order order)
+    bool SetOrder(Character c, Order order, bool isNewOrder = true)
     {
         try
         {
-            c.SetOrder(order, isNewOrder: true, speak: false, force: true);
+            c.SetOrder(order, isNewOrder: isNewOrder, speak: false, force: true);
             if (settings.Global.SyncOrdersToClients && GameMain.Server != null)
-                GameMain.Server.SendOrderChatMessage(new OrderChatMessage(order, c, c));
+                GameMain.Server.SendOrderChatMessage(new OrderChatMessage(order, c, c, isNewOrder));
             return true;
         }
         catch (Exception e)
@@ -441,6 +569,8 @@ public sealed class GameAdapter : IGameApi
         tasks.Clear();
         ownOrders.Clear();
         authority.Clear();
+        controlled.Clear();       // restored from long-term memory when the agents are created again
+        controlEvents.Clear();
         reports.Clear();
     }
 
@@ -459,9 +589,10 @@ public sealed class GameAdapter : IGameApi
         if (!quiet) reports.Add(new GameReport(c.ID, $"task '{t.Name}' cancelled"));
     }
 
-    string StartTask(Character c, BotTask task)
+    /// <param name="evenOverPlayerOrders">Short self-care tasks (putting on gear) are fine while carrying out a player's order.</param>
+    string StartTask(Character c, BotTask task, bool evenOverPlayerOrders = false)
     {
-        if (PlayerOrderBlock(c, null) is { } blocked) return blocked;
+        if (!evenOverPlayerOrders && PlayerOrderBlock(c, null) is { } blocked) return blocked;
         CancelTask(c, quiet: true);
         tasks[c.ID] = task;
         return $"ok, started: {task.Name} (result will be reported)";
@@ -479,7 +610,7 @@ public sealed class GameAdapter : IGameApi
         var item = ItemQueries.Find(c, query).FirstOrDefault();
         if (item == null) return $"error: no '{query}' available; try inspect(kind='items', query='{query}')";
         if (c.HasEquippedItem(item)) return $"ok ({item.Name} is already equipped)";
-        return StartTask(c, new EquipTask(c, ai, item));
+        return StartTask(c, new EquipTask(c, ai, item), evenOverPlayerOrders: true);
     }
 
     public string RefuelReactor(int botId)
@@ -543,7 +674,7 @@ public sealed class GameAdapter : IGameApi
         var item = FindCarried(c, query);
         if (item == null) return $"error: you don't carry '{query}'";
         if (!c.HasEquippedItem(item)) return $"ok ({item.Name} is not equipped)";
-        if (item.HasTag(Tags.HeavyDivingGear) && GearLock.IsLocked(c) && !HasAuthority(c))
+        if (item.HasTag(Tags.HeavyDivingGear) && GearLock.IsLocked(c) && !PlayerSaidSo(c))
             return "error: your diving gear is locked (danger or keep_gear); turn keep_gear off first if it is really safe";
         if (c.Inventory.TryPutItem(item, c, new List<InvSlotType> { InvSlotType.Any })) return $"ok, {item.Name} put away";
         return $"error: no free inventory slot for {item.Name}; drop or store something first";
@@ -554,7 +685,7 @@ public sealed class GameAdapter : IGameApi
         if (Find(botId) is not { } c) return "error: character gone";
         var item = FindCarried(c, query);
         if (item == null) return $"error: you don't carry '{query}'";
-        if (item.HasTag(Tags.HeavyDivingGear) && c.HasEquippedItem(item) && GearLock.IsLocked(c) && !HasAuthority(c))
+        if (item.HasTag(Tags.HeavyDivingGear) && c.HasEquippedItem(item) && GearLock.IsLocked(c) && !PlayerSaidSo(c))
             return "error: your diving gear is locked (danger or keep_gear)";
         item.Drop(c);
         return $"ok, dropped {item.Name}";
@@ -565,7 +696,7 @@ public sealed class GameAdapter : IGameApi
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
         var item = FindCarried(c, query) ?? ItemQueries.Find(c, query).FirstOrDefault();
         if (item == null) return $"error: no '{query}' available";
-        if (item.HasTag(Tags.HeavyDivingGear) && c.HasEquippedItem(item) && GearLock.IsLocked(c) && !HasAuthority(c))
+        if (item.HasTag(Tags.HeavyDivingGear) && c.HasEquippedItem(item) && GearLock.IsLocked(c) && !PlayerSaidSo(c))
             return "error: your diving gear is locked (danger or keep_gear)";
 
         // a crew member?

@@ -57,11 +57,13 @@ public sealed class FakeGame : IGameApi
         return result;
     }
 
-    public string GoToRoom(int botId, string roomId) =>
-        Observations[botId].Rooms.Any(r => r.Id == roomId) ? Act(botId, $"goto {roomId}") : $"error: unknown room '{roomId}'";
-    public string Follow(int botId, string targetName) => Act(botId, $"follow {targetName}");
-    public string SimpleOrder(int botId, string orderKey) => Act(botId, orderKey);
-    public string Operate(int botId, string role, string? option) => Act(botId, $"operate {role} {option}".TrimEnd());
+    static string P(int priority) => priority == Tools.TopPriority ? "" : $" p{priority}";
+    public string GoToRoom(int botId, string roomId, int priority = Tools.TopPriority) =>
+        Observations[botId].Rooms.Any(r => r.Id == roomId) ? Act(botId, $"goto {roomId}{P(priority)}") : $"error: unknown room '{roomId}'";
+    public string Follow(int botId, string targetName, int priority = Tools.TopPriority) => Act(botId, $"follow {targetName}{P(priority)}");
+    public string SimpleOrder(int botId, string orderKey, int priority = Tools.TopPriority) => Act(botId, orderKey + P(priority));
+    public string Operate(int botId, string role, string? option, int priority = Tools.TopPriority) => Act(botId, $"operate {role} {option}".TrimEnd() + P(priority));
+    public string SetOrderPriority(int botId, string order, int priority) => Act(botId, $"priority {order} {priority}");
     public string Dismiss(int botId) => Act(botId, "dismiss");
     public void Speak(int botId, string text) => Act(botId, $"say {text}");
 
@@ -78,6 +80,15 @@ public sealed class FakeGame : IGameApi
     public string MoveItem(int botId, string item, string to) => Act(botId, $"move {item} -> {to}", "ok, started");
     public string KeepGear(int botId, bool on) => Act(botId, $"keepgear {on}");
     public string Inspect(int botId, string kind, string query) => $"{kind} {query}: " + new string('x', 2000);
+    public readonly Dictionary<int, bool> Control = new();
+    public readonly List<ControlEvent> PendingControl = new();
+    public void SetAiControl(int botId, bool on) => Control[botId] = on;
+    public IReadOnlyList<ControlEvent> DrainControlEvents()
+    {
+        var r = PendingControl.ToList();
+        PendingControl.Clear();
+        return r;
+    }
     public IReadOnlyList<GameReport> DrainReports()
     {
         var r = PendingReports.ToList();

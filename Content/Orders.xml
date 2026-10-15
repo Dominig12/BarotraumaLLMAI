@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  "Full AI control": hands a bot over to its LLM agent completely (LlmAgents mod).
+  Give it from the command menu (Movement category) or from the bot's entry in the crew list.
+  Giving it again, or dismissing all of the bot's orders, takes control back.
+  The server-side plugin intercepts this order; the vanilla AI never sees it.
+-->
+<Orders>
+  <Order identifier="llmcontrol" category="Movement" color="64,200,255,255" autodismiss="false" mustmanuallyassign="true">
+    <Sprite texture="%ModDir%/Images/llmcontrol.png" sourcerect="0,0,128,128" origin="0.5,0.5" />
+  </Order>
+</Orders>

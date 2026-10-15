@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<infotexts language="Russian" nowhitespace="false" translatedname="Русский">
+  <OrderName.llmcontrol>Полный контроль ИИ</OrderName.llmcontrol>
+  <OrderNameContextual.llmcontrol>Передать полный контроль ИИ</OrderNameContextual.llmcontrol>
+  <OrderDialog.llmcontrol>[name], командуй сам. Действуй по обстановке.</OrderDialog.llmcontrol>
+  <OrderDialogSelf.llmcontrol>Беру всё на себя.</OrderDialogSelf.llmcontrol>
+</infotexts>

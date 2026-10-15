@@ -8,7 +8,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $out = Join-Path $root "dist\LlmAgents"
 if (Test-Path $out) { Remove-Item -Recurse -Force $out }
 New-Item -ItemType Directory -Force $out | Out-Null
-Copy-Item (Join-Path $root "Content\*") $out
+Copy-Item -Recurse (Join-Path $root "Content\*") $out
 foreach ($p in "Windows", "Linux", "OSX") {
     dotnet build (Join-Path $root "src\LlmAgents.Server\LlmAgents.Server.csproj") -c Release "-p:GamePlatform=$p" -v q -nologo
     if ($LASTEXITCODE -ne 0) { throw "build failed for $p" }
