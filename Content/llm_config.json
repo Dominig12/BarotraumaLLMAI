@@ -1,0 +1,66 @@
+{
+  "enabled": true,
+  "defaultProvider": "local",
+  "fallbackProvider": "local",
+  "global": {
+    "maxConcurrentRequests": 3,
+    "requestsPerMinute": 60,
+    "dailyRequestBudget": 3000,
+    "tickSeconds": 0.5,
+    "decisionIntervalSeconds": 10,
+    "minSecondsBetweenCallsPerBot": 4,
+    "urgencyCheckSeconds": 1.5,
+    "retrySeconds": 1,
+    "maxActionsPerDecision": 3,
+    "maxMessagesPerMinute": 3,
+    "historyTurns": 6,
+    "maxNotes": 5,
+    "syncOrdersToClients": true,
+    "logFile": "llm_agents.log",
+    "logPrompts": true
+  },
+  "providers": [
+    {
+      "name": "local",
+      "type": "openai",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "apiKey": "",
+      "apiKeyEnv": "",
+      "model": "qwen2.5:14b-instruct",
+      "timeoutSeconds": 40,
+      "maxConcurrent": 1,
+      "requestsPerMinute": 30,
+      "tokensPerMinute": 0,
+      "maxOutputTokens": 300,
+      "temperature": 0.6,
+      "dailyRequestBudget": 0
+    },
+    {
+      "name": "cloud",
+      "type": "anthropic",
+      "baseUrl": "https://api.anthropic.com",
+      "apiKey": "",
+      "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "model": "claude-haiku-5-5",
+      "timeoutSeconds": 30,
+      "maxConcurrent": 2,
+      "requestsPerMinute": 40,
+      "tokensPerMinute": 60000,
+      "maxOutputTokens": 300,
+      "temperature": 0.6,
+      "dailyRequestBudget": 0
+    }
+  ],
+  "bots": {
+    "providerByJob": {
+      "captain": "cloud",
+      "medicaldoctor": "local"
+    },
+    "disabledJobs": [],
+    "allowedTools": [],
+    "extraPromptByJob": {
+      "captain": "You are the captain: keep the big picture, coordinate the crew with message_crew, and keep the sub on course.",
+      "medicaldoctor": "You are the medic: your first priority is keeping the crew alive (rescue_injured)."
+    }
+  }
+}

@@ -1,1 +1,152 @@
-# BarotraumaLLMAI
+# BarotraumaLLMAI: LLM-агенты для ботов Barotrauma
+
+Серверный C#-мод для [LuaCsForBarotrauma](https://github.com/evilfactory/LuaCsForBarotrauma). Каждый бот экипажа работает как отдельный агент:
+
+- раз в несколько секунд, а при опасности раньше, получает JSON-наблюдение о себе и подлодке;
+- через tool calling просит LLM выбрать действие;
+- выполняет его **штатными приказами игры**, а ходьбу, сварку, лечение и бой делает ванильный ИИ.
+
+Боты могут переписываться друг с другом (`message_crew`), вести заметки (`remember`) и говорить в игровой чат (`say`).
+
+Поддерживаются локальные и облачные модели: любой OpenAI-совместимый API (Ollama, LM Studio, vLLM, OpenAI, OpenRouter...) и Anthropic. Подключения и лимиты настраиваются в `llm_config.json`.
+
+> **Статус:** код собирается против reference-DLL текущей LuaCs (`luacsforbarotrauma_refs.zip`, latest), логика покрыта тестами (75 шт.) и прогнана в симуляторе с мок-LLM. **В самой игре ещё не запускался.** Вызовы игры (`src/LlmAgents.Server/GameAdapter.cs`) сверены с исходниками LuaCs/Barotrauma, но поведение нужно проверить на живом сервере.
+
+## Как это устроено
+
+```
+игровой поток (IEventUpdate)                     пул потоков
+───────────────────────────                      ───────────
+AgentManager.Update() каждые tickSeconds
+ ├─ выполняет готовые команды ◄─────────────────────────────┐
+ ├─ GameAdapter.Observe(bot) → Observation (JSON)           │
+ └─ пора решать / срочно? → LlmRouter.TryReserve(слот) ───► провайдер LLM ─► tool calls
+                              (лимиты, без ожидания)        │  ошибка → fallback-провайдер
+```
+
+- **Игра не блокируется.** HTTP идёт в фоне, ответ превращается в команды, которые выполняются на игровом потоке.
+- **Приказы как у игрока.** `Character.SetOrder` плюс `OrderChatMessage` клиентам, ровно так сервер обрабатывает приказ из командного меню. Поэтому приказы видны в интерфейсе экипажа.
+- **Фолбэк на ваниль.** Если провайдер недоступен, исчерпан лимит или пришёл мусор, бот ведёт себя как обычно. Инструмент `return_to_default` снимает приказы.
+- **Лимиты.** Глобально и на каждого провайдера: параллельные запросы, запросы/мин, токены/мин, суточный бюджет. Слот резервируется синхронно. Если мест нет, бот не теряет ход и входящие сообщения, а пробует снова через `retrySeconds`.
+- **Агентность.** У каждого бота своя история (`historyTurns`), заметки, входящие сообщения, провайдер и доп. промпт по профессии. Сообщение будит адресата раньше срока. Число сообщений ограничено (`maxMessagesPerMinute`), чтобы боты не перекидывались «Принял!» бесконечно.
+- **Модели без tool calling.** Если локальная модель пишет вызов JSON-текстом, он всё равно распознаётся.
+
+### Инструменты агента
+
+| Инструмент | Что делает в игре |
+|---|---|
+| `go_to_room(room)` | приказ `wait` с позицией в отсеке: дойти и стоять |
+| `follow(target)` | приказ `follow` за членом экипажа |
+| `fix_leaks`, `repair_systems`, `extinguish_fires`, `fight_intruders`, `rescue_injured`, `clean_up`, `wait` | соответствующие ванильные приказы |
+| `operate(role, option?)` | `reactor` (`powerup`/`shutdown`), `navigation`, `weapons`, `pumps` (`pumpout`/`pumpin`) |
+| `return_to_default` | `dismissed`: снять приказы, вернуть ванильный ИИ |
+| `say(text)` | реплика в игровой чат |
+| `message_crew(to, text)` | личное сообщение другому боту или всем (`all`) |
+| `remember(note)` | заметка в память бота |
+
+Список можно сузить через `bots.allowedTools`.
+
+## Структура
+
+```
+Content/                     пакет мода: filelist.xml, ModConfig.xml, llm_config.json
+src/LlmAgents.Core/          логика без зависимостей от игры: провайдеры, лимиты, агенты, инструменты
+src/LlmAgents.Server/        плагин LuaCs (Plugin.cs) + GameAdapter.cs, единственное место с типами игры
+tests/LlmAgents.Tests/       xUnit-тесты Core
+tools/LlmAgents.Sim/         симулятор подлодки: настоящий агентный код без игры
+tools/mock_llm_server.py     мок OpenAI-совместимого сервера
+tools/get-refs.*             скачать reference-DLL игры в Refs/
+tools/package.*              собрать мод под Windows/Linux/OSX в dist/LlmAgents (и выложить в LocalMods)
+```
+
+`LlmAgents.Server` компилирует исходники Core в себя, поэтому мод поставляется одной DLL.
+
+## Сборка
+
+Нужен .NET 8 SDK.
+
+```powershell
+.\tools\get-refs.ps1                       # один раз: reference-DLL в Refs\ (Linux/macOS: tools/get-refs.sh)
+dotnet test tests\LlmAgents.Tests          # тесты
+.\tools\package.ps1                        # мод → dist\LlmAgents
+.\tools\package.ps1 -LocalMods "C:\Program Files (x86)\Steam\steamapps\common\Barotrauma\LocalMods"
+```
+
+При повторной выкладке `llm_config.json`, который уже лежит в `LocalMods`, не затирается.
+
+Reference-DLL должны соответствовать версии LuaCs на сервере. Если LuaCs обновится и что-то сломается, перекачайте refs и пересоберите.
+
+## Установка и запуск
+
+1. Установите LuaCsForBarotrauma и включите C# (LuaCs Settings → Enable CSharp, или `EnableCsScripting="true"` в `LuaCsConfig.xml`). На выделенном сервере LuaCs ставится вручную (server patch).
+2. Положите `dist/LlmAgents` в `LocalMods` хоста или сервера и включите мод.
+3. Мод **серверный**: решения ботов принимает сервер, клиентам он не нужен. Проверьте на практике, не предложит ли LuaCs клиентам включить C# при подключении.
+4. Настройте `llm_config.json` в папке мода. Он перечитывается в начале каждого раунда.
+5. Лог всех запросов и ответов пишется в `llm_agents.log` в папке мода. В консоль сервера попадают только предупреждения и ошибки.
+
+## Настройка `llm_config.json`
+
+```jsonc
+{
+  "enabled": true,
+  "defaultProvider": "local",        // провайдер по умолчанию
+  "fallbackProvider": "local",       // куда идти, если основной упал или занят
+  "global": {
+    "maxConcurrentRequests": 3,      // одновременно на весь сервер
+    "requestsPerMinute": 60,
+    "dailyRequestBudget": 3000,      // 0 = без лимита (сутки UTC)
+    "decisionIntervalSeconds": 10,   // плановое решение бота
+    "minSecondsBetweenCallsPerBot": 4,   // даже при тревоге не чаще
+    "urgencyCheckSeconds": 1.5,      // как часто проверять тревогу между решениями
+    "retrySeconds": 1,               // повтор, если не было свободного слота
+    "maxActionsPerDecision": 3,
+    "maxMessagesPerMinute": 3,       // сообщений message_crew на бота
+    "historyTurns": 6, "maxNotes": 5,
+    "syncOrdersToClients": true,     // показывать приказы ботов в интерфейсе экипажа
+    "logFile": "llm_agents.log", "logPrompts": true
+  },
+  "providers": [
+    { "name": "local", "type": "openai", "baseUrl": "http://127.0.0.1:11434/v1", "model": "qwen2.5:14b-instruct",
+      "timeoutSeconds": 40, "maxConcurrent": 1, "requestsPerMinute": 30 },
+    { "name": "cloud", "type": "anthropic", "baseUrl": "https://api.anthropic.com", "apiKeyEnv": "ANTHROPIC_API_KEY",
+      "model": "claude-haiku-5-5", "maxConcurrent": 2, "requestsPerMinute": 40, "tokensPerMinute": 60000 }
+    // у провайдера также: apiKey, dailyRequestBudget, maxOutputTokens, temperature, extraHeaders
+  ],
+  "bots": {
+    "providerByJob": { "captain": "cloud" },             // идентификаторы профессий игры
+    "extraPromptByJob": { "captain": "You are the captain..." },
+    "disabledJobs": [],                                  // эти боты остаются на ванильном ИИ
+    "allowedTools": []                                   // пусто = все инструменты
+  }
+}
+```
+
+- OpenAI, OpenRouter и т.п.: `"type": "openai"` и их `baseUrl` (например, `https://api.openai.com/v1`).
+- LM Studio: `http://127.0.0.1:1234/v1`.
+- Ключи лучше задавать через `apiKeyEnv` (переменную окружения сервера), а не в файле.
+
+## Проверка без игры
+
+```bash
+python3 tools/mock_llm_server.py                         # мок на :11434 (или запустите Ollama)
+dotnet run --project tools/LlmAgents.Sim -- --seconds 60 --speed 3
+dotnet run --project tools/LlmAgents.Sim -- --provider cloud   # тот же сценарий на облачной модели
+```
+
+Симулятор гоняет четырёх ботов по сценарию: пробоина, пожар, краулер на борту. Он печатает решения, реплики и итог. Сценарий удобен для подбора промптов, модели и лимитов.
+
+## Что проверить в игре первым делом
+
+- Плагин загрузился: в консоли сервера есть `[LlmAgents] loaded from ...`.
+- Боты получают приказы, иконки приказов видны клиентам, `say` появляется в чате.
+- `go_to_room` (приказ `wait` с позицией), `follow` (цель берётся из `orderGiver`), `operate reactor` и `pumps`.
+- Нет ли `MethodAccessException`: доступ к internal-членам игры идёт через `IgnoresAccessChecksTo` (`src/LlmAgents.Server/AccessChecks.cs`).
+- Нагрузка: `Observe()` проходит по отсекам, пробоинам и персонажам не чаще раза в `urgencyCheckSeconds` на бота.
+
+## Куда развивать
+
+1. Ответы игрокам: хук `IEventChatMessage`, боты читают чат и берут приказы от людей.
+2. Событийные триггеры (урон, смерть, пробоина) вместо опроса.
+3. Расширить наблюдение: питание, кислородные генераторы, миссия, предметы рядом.
+4. Свои `AIObjective` для того, чего нет в ванильных приказах.
+5. Общая «доска» экипажа (кто чем занят).

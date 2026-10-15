@@ -1,0 +1,79 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Server-side LuaCs plugin. Produces a single LlmAgents.dll that contains the Core sources plus the game adapter.
+
+    Build:   dotnet build src/LlmAgents.Server -c Release                   (platform = current OS)
+             dotnet build src/LlmAgents.Server -c Release -p:GamePlatform=Linux
+    Deploy:  add -p:ModDeployDir="C:\...\Barotrauma\LocalMods\LlmAgents\"    (or use tools/package.ps1)
+  -->
+  <PropertyGroup>
+    <AssemblyName>LlmAgents</AssemblyName>
+    <RootNamespace>LlmAgents</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- The publicized refs expose internal game types as public; these warnings are expected noise. -->
+    <NoWarn>$(NoWarn);CS0436;CS1701;CS1702;CS8600;CS8601;CS8602;CS8603;CS8604;CS8618;CS8625</NoWarn>
+    <RefsDir>$(MSBuildThisFileDirectory)..\..\Refs\</RefsDir>
+    <ContentDir>$(MSBuildThisFileDirectory)..\..\Content\</ContentDir>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(GamePlatform)' == ''">
+    <GamePlatform Condition="$([MSBuild]::IsOSPlatform('Windows'))">Windows</GamePlatform>
+    <GamePlatform Condition="$([MSBuild]::IsOSPlatform('Linux'))">Linux</GamePlatform>
+    <GamePlatform Condition="$([MSBuild]::IsOSPlatform('OSX'))">OSX</GamePlatform>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DefineConstants>$(DefineConstants);SERVER</DefineConstants>
+    <DefineConstants Condition="'$(GamePlatform)' == 'Windows'">$(DefineConstants);WINDOWS</DefineConstants>
+    <DefineConstants Condition="'$(GamePlatform)' == 'Linux'">$(DefineConstants);LINUX</DefineConstants>
+    <DefineConstants Condition="'$(GamePlatform)' == 'OSX'">$(DefineConstants);OSX</DefineConstants>
+    <OutputPath>bin\$(Configuration)\$(GamePlatform)\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <!-- Core sources are compiled into this assembly, so the mod ships as one DLL. -->
+  <ItemGroup>
+    <Compile Include="..\LlmAgents.Core\**\*.cs" Exclude="..\LlmAgents.Core\obj\**;..\LlmAgents.Core\bin\**" LinkBase="Core" />
+  </ItemGroup>
+
+  <!-- Game references: compile-time only, never copied to output. -->
+  <ItemDefinitionGroup>
+    <Reference><Private>false</Private></Reference>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <Reference Include="DedicatedServer"><HintPath>$(RefsDir)$(GamePlatform)\DedicatedServer.dll</HintPath></Reference>
+    <Reference Include="BarotraumaCore"><HintPath>$(RefsDir)$(GamePlatform)\BarotraumaCore.dll</HintPath></Reference>
+    <Reference Include="MonoGame.Framework.$(GamePlatform).NetStandard"><HintPath>$(RefsDir)MonoGame.Framework.$(GamePlatform).NetStandard.dll</HintPath></Reference>
+    <Reference Include="Farseer.NetStandard"><HintPath>$(RefsDir)Farseer.NetStandard.dll</HintPath></Reference>
+    <Reference Include="Lidgren.NetStandard"><HintPath>$(RefsDir)Lidgren.NetStandard.dll</HintPath></Reference>
+    <Reference Include="XNATypes"><HintPath>$(RefsDir)XNATypes.dll</HintPath></Reference>
+    <Reference Include="MoonSharp.Interpreter"><HintPath>$(RefsDir)MoonSharp.Interpreter.dll</HintPath></Reference>
+    <Reference Include="0Harmony"><HintPath>$(RefsDir)0Harmony.dll</HintPath></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Types used in LuaCs service interfaces; the game ships them, so compile against them only. -->
+    <PackageReference Include="FluentResults" Version="3.16.0" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="LightInject" Version="6.6.4" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="OneOf" Version="3.0.271" ExcludeAssets="runtime" PrivateAssets="all" />
+  </ItemGroup>
+
+  <Target Name="CheckRefs" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(RefsDir)$(GamePlatform)\DedicatedServer.dll')"
+           Text="Game reference DLLs not found in $(RefsDir). Run tools/get-refs.ps1 (Windows) or tools/get-refs.sh first." />
+  </Target>
+
+  <!-- Optional: copy the finished mod package into a LocalMods folder. -->
+  <Target Name="DeployMod" AfterTargets="Build" Condition="'$(ModDeployDir)' != ''">
+    <ItemGroup>
+      <ModContent Include="$(ContentDir)**\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ModContent)" DestinationFolder="$(ModDeployDir)%(RecursiveDir)" SkipUnchangedFiles="true"
+          Condition="!Exists('$(ModDeployDir)%(RecursiveDir)%(Filename)%(Extension)') Or '%(Filename)%(Extension)' != 'llm_config.json'" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFiles="$(ModDeployDir)bin\Server\$(GamePlatform)\$(TargetName).dll" />
+    <Message Importance="high" Text="LlmAgents deployed to $(ModDeployDir)" />
+  </Target>
+</Project>

@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Game-independent logic: LLM providers, limits, agents, tools. No Barotrauma references, fully unit-testable.
+       The server mod compiles these same sources into its own single DLL (see LlmAgents.Server.csproj). -->
+  <PropertyGroup>
+    <RootNamespace>LlmAgents</RootNamespace>
+    <AssemblyName>LlmAgents.Core</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="LlmAgents.Tests" />
+  </ItemGroup>
+</Project>

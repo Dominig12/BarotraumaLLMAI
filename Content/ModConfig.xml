@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModConfig>
+    <!-- Server-only plugin: bot AI is decided by the server in multiplayer (and by the local host in singleplayer-hosted games). -->
+    <Assembly File="%ModDir%/bin/Server/Windows/LlmAgents.dll" Target="Server" Platform="Windows" IsFileRequired="false" />
+    <Assembly File="%ModDir%/bin/Server/Linux/LlmAgents.dll" Target="Server" Platform="Linux" IsFileRequired="false" />
+    <Assembly File="%ModDir%/bin/Server/OSX/LlmAgents.dll" Target="Server" Platform="OSX" IsFileRequired="false" />
+</ModConfig>

@@ -1,0 +1,13 @@
+bin/
+obj/
+artifacts/
+*.user
+.vs/
+.idea/
+TestResults/
+# Publicized game reference DLLs: download with tools/get-refs.ps1 (or tools/get-refs.sh), do not commit.
+Refs/*
+!Refs/README.md
+# Build output of the mod package
+dist/
+*.log

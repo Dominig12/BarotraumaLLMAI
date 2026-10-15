@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Server-side mod. Requires LuaCsForBarotrauma with C# enabled. Clients do not need it. -->
+<contentpackage name="LlmAgents" modversion="0.1.0" corepackage="false" />

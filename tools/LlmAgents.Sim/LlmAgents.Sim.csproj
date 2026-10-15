@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Offline simulator: runs the real agent code against a fake submarine, so prompts, tools,
+       providers and limits can be tried with a real LLM without starting Barotrauma.
+       Usage: see README (dotnet run with the config path and the number of seconds). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>LlmAgents.Sim</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LlmAgents.Core\LlmAgents.Core.csproj" />
+  </ItemGroup>
+</Project>
