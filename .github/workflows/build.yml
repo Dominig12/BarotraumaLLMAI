@@ -1,25 +1,29 @@
 name: build
 
+# Builds and tests the game-independent part (LlmAgents.Core, tests, simulator).
+# The server plugin itself needs the publicized game DLLs in Refs/, which are not in the repo,
+# so it is built locally (tools/package.ps1). If Refs/ is ever present in CI, it is built too.
+
 on:
   push:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
-      - name: Download game reference DLLs
-        run: tools/get-refs.sh
-      - name: Test
+      - name: Test core
         run: dotnet test tests/LlmAgents.Tests -c Release
-      - name: Package mod
-        run: tools/package.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: LlmAgents
-          path: dist/LlmAgents
+      - name: Build simulator
+        run: dotnet build tools/LlmAgents.Sim -c Release
+      - name: Build server plugin (only if Refs are available)
+        if: hashFiles('Refs/Linux/DedicatedServer.dll') != ''
+        run: dotnet build src/LlmAgents.Server -c Release -p:GamePlatform=Linux
