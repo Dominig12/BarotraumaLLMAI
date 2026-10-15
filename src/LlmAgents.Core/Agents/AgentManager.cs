@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using LlmAgents.Llm;
 using LlmAgents.Memory;
+using LlmAgents.Personas;
 
 namespace LlmAgents.Agents;
 
@@ -24,9 +25,10 @@ public sealed record AgentCommand(int BotId, ToolCall Call, bool PlayerAuthority
 /// </summary>
 public sealed class AgentManager : IDisposable
 {
-    public ModSettings Settings { get; }
+    public ModSettings Settings { get; private set; }
     readonly IGameApi game;
-    readonly LlmRouter router;
+    LlmRouter router;
+    readonly PersonaStore personas;
     readonly Func<double> clock;
     readonly MemoryStore memory;
     readonly Dictionary<int, BotAgent> agents = new();
@@ -50,9 +52,11 @@ public sealed class AgentManager : IDisposable
 
     sealed record Candidate(BotAgent Agent, Observation Obs, Tier Tier, bool Due);
 
-    public AgentManager(ModSettings settings, IGameApi game, LlmRouter router, Func<double>? clock = null, MemoryStore? memory = null)
+    public AgentManager(ModSettings settings, IGameApi game, LlmRouter router, Func<double>? clock = null, MemoryStore? memory = null,
+        PersonaStore? personas = null)
     {
         Settings = settings;
+        this.personas = personas ?? new PersonaStore(null);
         this.memory = memory ?? new MemoryStore(null);
         this.game = game;
         this.router = router;
@@ -68,6 +72,31 @@ public sealed class AgentManager : IDisposable
     public BotAgent? GetAgent(int id) => agents.TryGetValue(id, out var a) ? a : null;
     public int PendingChatCount => pendingChats.Count;
     public MemoryStore Memory => memory;
+    public PersonaStore Personas => personas;
+
+    /// <summary>
+    /// Applies changed settings right away (in-game settings window, !llm set). Agents keep their state. A new router is
+    /// passed only when providers or limits changed; requests already running finish on the old one.
+    /// </summary>
+    public void ApplySettings(ModSettings settings, LlmRouter? newRouter)
+    {
+        Settings = settings;
+        if (newRouter != null)
+        {
+            var old = router;
+            router = newRouter;
+            // give in-flight requests time to finish before their HTTP clients go away
+            Task.Delay(TimeSpan.FromSeconds(180)).ContinueWith(_ => { try { old.Dispose(); } catch { } }, TaskScheduler.Default);
+        }
+        nextTick = double.NegativeInfinity;
+    }
+
+    /// <summary>Provider for this bot: its persona's provider if set and known, else by job, else the default.</summary>
+    public string ProviderFor(BotAgent agent)
+    {
+        var p = personas.ProviderFor(agent.Name);
+        return p != null && Settings.Providers.Any(x => x.Name.Equals(p, StringComparison.OrdinalIgnoreCase)) ? p : Settings.ProviderFor(agent.Job);
+    }
     bool MemoryOn => Settings.Memory.Enabled;
 
     /// <summary>Selects the long-term memory for this round (one scope per campaign save). Call at round start.</summary>
@@ -127,7 +156,7 @@ public sealed class AgentManager : IDisposable
             {
                 agent = new BotAgent(h);
                 agents[h.Id] = agent;
-                Log.Info($"agent created: {h.Name} ({h.Job}) -> provider '{Settings.ProviderFor(h.Job)}'");
+                Log.Info($"agent created: {h.Name} ({h.Job}) -> provider '{ProviderFor(agent)}'" + (personas.PromptFor(h.Name) != null ? " (persona)" : ""));
                 // full AI control given in an earlier round stays until a player takes it back
                 if (MemoryOn && memory.Bot(h.Name) is { AiControl: true } m)
                 {
@@ -141,6 +170,7 @@ public sealed class AgentManager : IDisposable
             {
                 agent.Name = h.Name;
                 agent.Job = h.Job;
+                agent.Trait = h.Trait;
             }
         }
         foreach (var id in agents.Keys.Where(k => !seen.Contains(k)).ToList())
@@ -222,7 +252,7 @@ public sealed class AgentManager : IDisposable
         foreach (var c in candidates.OrderBy(c => c.Tier).ThenBy(c => c.Agent.LastRequestAt).ThenBy(c => c.Agent.Id))
         {
             var g = Settings.Global;
-            if (!router.TryReserve(Settings.ProviderFor(c.Agent.Job), out var reservation, out _))
+            if (!router.TryReserve(ProviderFor(c.Agent), out var reservation, out _))
             {
                 // Every slot is busy or a budget is spent: keep the turn (and the inbox), look again shortly.
                 c.Agent.NextUrgencyCheckAt = now + g.RetrySeconds;
@@ -300,7 +330,8 @@ public sealed class AgentManager : IDisposable
 
         string obsJson = obs.ToJson();
         Settings.Bots.ExtraPromptByJob.TryGetValue(agent.Job, out var extra);
-        string system = Prompts.System(agent, g.MaxActionsPerDecision, extra, agent.AiControl, MemoryOn);
+        string system = Prompts.System(agent, g.MaxActionsPerDecision, extra, agent.AiControl, MemoryOn,
+            persona: PersonaPrompt(agent), language: Settings.Bots.SpeechLanguage);
         var history = agent.HistorySnapshot();
         var takenInbox = obs.Inbox;
         var takenResults = obs.LastActionResults;
@@ -505,7 +536,15 @@ public sealed class AgentManager : IDisposable
         if (!from.TryConsumeMessageQuota(clock(), Settings.Global.MaxMessagesPerMinute))
             return $"error: you already sent {Settings.Global.MaxMessagesPerMinute} messages this minute; act instead of talking";
         var targets = ResolveTargets(from, to, out var label, out var error);
-        if (targets == null) return error!;
+        if (targets == null)
+        {
+            // A human player can't read the AI inbox: say it to them out loud / on the radio instead.
+            var player = FindPlayer(from, to);
+            if (player == null) return error!;
+            game.Speak(from.Id, Tools.Clip($"{player}, {text}", MaxChatEcho));
+            from.LogEvent($"told {player}: {text}");
+            return $"ok (said to player {player} over the radio; to talk to players you can also use say)";
+        }
 
         string line = $"{from.Name}: {text}";
         foreach (var t in targets)
@@ -546,6 +585,18 @@ public sealed class AgentManager : IDisposable
         game.Speak(from.Id, Tools.Clip($"[→ {label}] {text}", MaxChatEcho));
     }
 
+    /// <summary>A human player aboard whose name matches (exact, part, or transliterated), or null.</summary>
+    string? FindPlayer(BotAgent from, string to)
+    {
+        List<string> players;
+        try { players = game.Observe(from.Id).Crew.Where(c => c.IsPlayer).Select(c => c.Name).ToList(); }
+        catch { return null; }
+        var t = to.Trim();
+        return players.FirstOrDefault(p => p.Equals(t, StringComparison.OrdinalIgnoreCase))
+            ?? players.FirstOrDefault(p => p.Contains(t, StringComparison.OrdinalIgnoreCase) || t.Contains(p, StringComparison.OrdinalIgnoreCase))
+            ?? players.FirstOrDefault(p => Translit.ToLatin(p).Equals(Translit.ToLatin(t), StringComparison.OrdinalIgnoreCase));
+    }
+
     List<BotAgent>? ResolveTargets(BotAgent from, string to, out string label, out string? error)
     {
         var others = agents.Values.Where(a => a.Id != from.Id).ToList();
@@ -575,6 +626,16 @@ public sealed class AgentManager : IDisposable
         }
         if (targets.Count == 1) label = targets[0].Name;
         return targets;
+    }
+
+    /// <summary>The character's persona; without one, the game's own personality trait (if enabled).</summary>
+    string? PersonaPrompt(BotAgent agent)
+    {
+        var p = personas.PromptFor(agent.Name);
+        if (p != null) return p;
+        if (Settings.Bots.UseGamePersonality && !string.IsNullOrWhiteSpace(agent.Trait))
+            return $"Your personality trait: {agent.Trait}. Let it colour how you talk and react.";
+        return null;
     }
 
     // ---------------------------------------------------------------- long-term memory
@@ -654,7 +715,7 @@ public sealed class AgentManager : IDisposable
                 continue;
             }
             string fallback = PlainSummary(log);
-            string provider = string.IsNullOrEmpty(m.SummaryProvider) ? Settings.ProviderFor(agent.Job) : m.SummaryProvider;
+            string provider = string.IsNullOrEmpty(m.SummaryProvider) ? ProviderFor(agent) : m.SummaryProvider;
             if (!m.RoundSummary)
             {
                 memory.AddJournal(agent.Name, agent.Job, fallback, m.MaxJournal, countRound: true);

@@ -25,7 +25,8 @@ public sealed class GameAdapter : IGameApi
     const float ThreatRadiusMeters = 25f;
     const double TaskTickSeconds = 0.25;
 
-    readonly ModSettings settings;
+    /// <summary>Replaced when settings are changed in game.</summary>
+    public ModSettings Settings { get; set; }
     readonly Dictionary<ushort, BotTask> tasks = new();
     readonly Dictionary<ushort, HashSet<string>> ownOrders = new();   // signatures of orders this mod issued, per bot
     readonly Dictionary<ushort, bool> authority = new();
@@ -34,18 +35,32 @@ public sealed class GameAdapter : IGameApi
     readonly List<ControlEvent> controlEvents = new();
     double nextTaskTick, nextDangerCheck;
 
-    public GameAdapter(ModSettings settings) { this.settings = settings; }
+    public GameAdapter(ModSettings settings) { Settings = settings; }
 
     // ------------------------------------------------------------------ bots
 
     public IReadOnlyList<BotHandle> GetBots() =>
         Character.CharacterList
             .Where(IsControllableBot)
-            .Select(c => new BotHandle(c.ID, c.Name, JobOf(c)))
+            .Select(c => new BotHandle(c.ID, c.Name, JobOf(c), TraitOf(c)))
             .ToList();
 
     static bool IsControllableBot(Character c) =>
         !c.IsDead && !c.Removed && c.IsBot && c.IsOnPlayerTeam && c.Info != null;
+
+    /// <summary>The game's own personality trait (localized name), if the character has one.</summary>
+    internal static string? TraitOf(Character c)
+    {
+        try
+        {
+            var t = c.Info?.PersonalityTrait;
+            var name = t?.DisplayName.Value;
+            return string.IsNullOrWhiteSpace(name) ? null : name;
+        }
+        catch { return null; }
+    }
+
+    public bool IsControlled(Character c) => controlled.Contains(c.ID);
 
     static string JobOf(Character c) => c.JobIdentifier.IsEmpty ? "none" : c.JobIdentifier.Value;
 
@@ -360,7 +375,7 @@ public sealed class GameAdapter : IGameApi
     {
         if (Find(botId) is not { } c) return;
         // null = let the game decide, exactly like vanilla bots: radio if the bot wears a working headset, else out loud.
-        ChatMessageType? type = settings.Global.SpeechChannel == "local" ? ChatMessageType.Default : null;
+        ChatMessageType? type = Settings.Global.SpeechChannel == "local" ? ChatMessageType.Default : null;
         c.Speak(text, type);
     }
 
@@ -530,7 +545,7 @@ public sealed class GameAdapter : IGameApi
         try
         {
             c.SetOrder(order, isNewOrder: isNewOrder, speak: false, force: true);
-            if (settings.Global.SyncOrdersToClients && GameMain.Server != null)
+            if (Settings.Global.SyncOrdersToClients && GameMain.Server != null)
                 GameMain.Server.SendOrderChatMessage(new OrderChatMessage(order, c, c, isNewOrder));
             return true;
         }
@@ -549,7 +564,7 @@ public sealed class GameAdapter : IGameApi
         if (Timing.TotalTime >= nextDangerCheck)
         {
             nextDangerCheck = Timing.TotalTime + 1.0;
-            try { GearLock.UpdateDanger(settings); } catch (Exception e) { Log.Warn("danger check failed: " + e.Message); }
+            try { GearLock.UpdateDanger(Settings); } catch (Exception e) { Log.Warn("danger check failed: " + e.Message); }
         }
         if (tasks.Count == 0 || Timing.TotalTime < nextTaskTick) return;
         nextTaskTick = Timing.TotalTime + TaskTickSeconds;
@@ -619,9 +634,16 @@ public sealed class GameAdapter : IGameApi
         var reactor = FindReactor(c);
         var container = reactor?.Item.GetComponent<ItemContainer>();
         if (reactor == null || container == null) return "error: no reactor on this submarine";
-        if (SpareFuelRods(c, container).Count == 0)
+        var spare = SpareFuelRods(c, container).OrderByDescending(i => i.ConditionPercentage).FirstOrDefault();
+        if (spare == null)
             return "error: no spare fuel rods aboard; craft one (craft item='fuel rod', check inspect recipe first) or find some";
-        return StartTask(c, new RefuelReactorTask(c, ai, reactor, container));
+        float fuel = FuelInReactor(container);
+        if (fuel >= 60 && !HasAuthority(c))
+            return $"error: the reactor still has {fuel:0}% fuel; refuel when it drops below about 20% (a player can order it earlier)";
+        var inside = container.Inventory.AllItems.Where(i => i.HasTag(Tags.ReactorFuel)).ToList();
+        if (inside.Count > 0 && container.Inventory.IsFull() && inside.All(i => i.ConditionPercentage >= spare.ConditionPercentage))
+            return $"error: the reactor is full and every rod in it is fuller than the best spare one ({spare.ConditionPercentage:0}%)";
+        return StartTask(c, new RefuelReactorTask(c, ai, reactor, container, spare));
     }
 
     public string Craft(int botId, string query, int amount)
@@ -741,6 +763,17 @@ public sealed class GameAdapter : IGameApi
         {
             case "patient":
             {
+                var q = query.Trim().ToLowerInvariant();
+                if (q is "" or "all" or "everyone" or "crew" or "all crew" or "injured" or "все" or "экипаж")
+                {
+                    var hurt = Character.CharacterList
+                        .Where(x => !x.IsDead && !x.Removed && x.IsHuman && x.TeamID == c.TeamID && ItemQueries.TreatableAfflictions(x).Any())
+                        .OrderBy(HealthPercent).Take(6)
+                        .Select(x => $"{x.Name} ({HealthPercent(x)}%, {(x.CurrentHull != null ? RoomId(x.CurrentHull) : "outside")}): {ItemQueries.DescribeInjuries(x, 3)}")
+                        .ToList();
+                    return hurt.Count == 0 ? "nobody in the crew needs treatment"
+                        : "hurt: " + string.Join("; ", hurt) + ". Ask inspect(kind='patient', query=<name>) for suitable medicine.";
+                }
                 var patient = FindCrew(query, c, includeSelf: true);
                 return patient == null ? $"error: no crew member '{query}'" : ItemQueries.DescribePatient(c, patient);
             }
@@ -823,7 +856,7 @@ public sealed class GameAdapter : IGameApi
 
         if (speaker == null || speaker.IsDead || speaker.Removed)
         {
-            if (!settings.Chat.AllowSpectators) return null;
+            if (!Settings.Chat.AllowSpectators) return null;
             return new ChatCommand(sender.Name, null, text, bots.Select(b => (int)b.ID).ToList(), ViaRadio: true);
         }
 

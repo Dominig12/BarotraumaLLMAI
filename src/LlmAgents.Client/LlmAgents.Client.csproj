@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Client-side LuaCs plugin: the in-game settings window. Optional: only whoever configures the mod (usually the
+    host) needs it, and it only runs where LuaCs with C# is installed. Everything else is server-side.
+
+    Build:   dotnet build src/LlmAgents.Client -c Release -p:GamePlatform=Windows
+  -->
+  <PropertyGroup>
+    <AssemblyName>LlmAgentsClient</AssemblyName>
+    <RootNamespace>LlmAgents.Client</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS0436;CS1701;CS1702;CS8600;CS8601;CS8602;CS8603;CS8604;CS8618;CS8625</NoWarn>
+    <RefsDir>$(MSBuildThisFileDirectory)..\..\Refs\</RefsDir>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(GamePlatform)' == ''">
+    <GamePlatform Condition="$([MSBuild]::IsOSPlatform('Windows'))">Windows</GamePlatform>
+    <GamePlatform Condition="$([MSBuild]::IsOSPlatform('Linux'))">Linux</GamePlatform>
+    <GamePlatform Condition="$([MSBuild]::IsOSPlatform('OSX'))">OSX</GamePlatform>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DefineConstants>$(DefineConstants);CLIENT</DefineConstants>
+    <OutputPath>bin\$(Configuration)\$(GamePlatform)\</OutputPath>
+    <MonoGamePlatform>$(GamePlatform)</MonoGamePlatform>
+    <MonoGamePlatform Condition="'$(GamePlatform)' == 'OSX'">MacOS</MonoGamePlatform>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <!-- Only the message types are shared with the server; the rest of Core is not needed on the client. -->
+  <ItemGroup>
+    <Compile Include="..\LlmAgents.Core\Settings\SettingsProtocol.cs" Link="Core\SettingsProtocol.cs" />
+  </ItemGroup>
+
+  <ItemDefinitionGroup>
+    <Reference><Private>false</Private></Reference>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <Reference Include="Barotrauma"><HintPath>$(RefsDir)$(GamePlatform)\Barotrauma.dll</HintPath></Reference>
+    <Reference Include="BarotraumaCore"><HintPath>$(RefsDir)$(GamePlatform)\BarotraumaCore.dll</HintPath></Reference>
+    <Reference Include="MonoGame.Framework.$(MonoGamePlatform).NetStandard"><HintPath>$(RefsDir)MonoGame.Framework.$(MonoGamePlatform).NetStandard.dll</HintPath></Reference>
+    <Reference Include="Farseer.NetStandard"><HintPath>$(RefsDir)Farseer.NetStandard.dll</HintPath></Reference>
+    <Reference Include="Lidgren.NetStandard"><HintPath>$(RefsDir)Lidgren.NetStandard.dll</HintPath></Reference>
+    <Reference Include="XNATypes"><HintPath>$(RefsDir)XNATypes.dll</HintPath></Reference>
+    <Reference Include="MoonSharp.Interpreter"><HintPath>$(RefsDir)MoonSharp.Interpreter.dll</HintPath></Reference>
+    <Reference Include="0Harmony"><HintPath>$(RefsDir)0Harmony.dll</HintPath></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FluentResults" Version="3.16.0" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="LightInject" Version="6.6.4" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="OneOf" Version="3.0.271" ExcludeAssets="runtime" PrivateAssets="all" />
+  </ItemGroup>
+
+  <Target Name="CheckRefs" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(RefsDir)$(GamePlatform)\Barotrauma.dll')"
+           Text="Game reference DLLs not found in $(RefsDir). Run tools/get-refs.ps1 (Windows) or tools/get-refs.sh first." />
+  </Target>
+</Project>

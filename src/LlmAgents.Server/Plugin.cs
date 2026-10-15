@@ -7,6 +7,8 @@ using Barotrauma.LuaCs.Events;
 using LlmAgents.Agents;
 using LlmAgents.Llm;
 using LlmAgents.Memory;
+using LlmAgents.Personas;
+using LlmAgents.SettingsUi;
 
 namespace LlmAgents;
 
@@ -17,6 +19,7 @@ namespace LlmAgents;
 public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, IEventRoundEnded
 {
     public const string ConfigFileName = "llm_config.json";
+    public const string PersonasFileName = "personas.json";
 
     public ILoggerService LoggerService { get; set; } = null!;
     public IEventService EventService { get; set; } = null!;
@@ -25,6 +28,9 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     AgentManager? manager;
     GameAdapter? adapter;
     MemoryStore? memory;
+    PersonaStore? personas;
+    SettingsService? settingsService;
+    SettingsBridge? settingsBridge;
     object? chatListener; // ChatListener; typed as object so Plugin itself never depends on the internal interface
     IEventService? chatService;
     string? modDir;
@@ -78,6 +84,9 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
             Log.Error("'Full AI control' order disabled, could not patch the game: " + e.Message);
         }
 
+        settingsBridge = new SettingsBridge(() => settingsService);
+        TryRegisterSettingsWindow();
+
         try
         {
             SubscribeChat();
@@ -109,6 +118,14 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         chatListener = null;
     }
 
+    /// <summary>"!llm ..." settings commands. True = handled (hide the message).</summary>
+    internal bool OnChatCommand(Barotrauma.Networking.Client sender, string text)
+    {
+        if (sender == null || !SettingsService.IsCommand(text)) return false;
+        settingsBridge ??= new SettingsBridge(() => settingsService);
+        return settingsBridge.TryHandleChat(sender, text);
+    }
+
     internal void OnPlayerChat(string text, Barotrauma.Networking.Client sender, Barotrauma.Networking.ChatMessageType type)
     {
         if (manager == null || adapter == null || sender == null) return;
@@ -122,7 +139,10 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     void Start()
     {
         string cfgPath = Path.Combine(modDir!, ConfigFileName);
-        var settings = ModSettings.LoadFile(cfgPath);
+        if (!File.Exists(cfgPath)) throw new FileNotFoundException("LLM agents config not found", cfgPath);
+        var editor = ConfigEditor.Load(cfgPath);
+        var settings = editor.Settings;
+        personas = new PersonaStore(Path.Combine(modDir!, PersonasFileName));
         Log.FilePath = Path.IsPathRooted(settings.Global.LogFile)
             ? settings.Global.LogFile
             : Path.Combine(modDir!, settings.Global.LogFile);
@@ -140,10 +160,22 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
             memory = new MemoryStore(memDir);
             memoryDir = memDir;
         }
-        manager = new AgentManager(settings, adapter, new LlmRouter(settings), memory: memory);
+        manager = new AgentManager(settings, adapter, new LlmRouter(settings), memory: memory, personas: personas);
         manager.BeginRound(MemoryScope());
+        settingsService = new SettingsService(editor, personas, ApplySettings, () => SettingsBridge.GameInfo(adapter));
         Log.Warn($"loaded from {cfgPath}. Providers: {string.Join(", ", settings.Providers.Select(p => $"{p.Name} ({p.Type}, {p.Model})"))}; " +
                  $"default '{settings.DefaultProvider}', fallback '{settings.FallbackProvider}'. Enabled: {settings.Enabled}");
+    }
+
+    /// <summary>Settings changed in game: apply them right away; agents keep their state.</summary>
+    void ApplySettings(ModSettings s, bool providersChanged)
+    {
+        if (modDir != null)
+            Log.FilePath = string.IsNullOrEmpty(s.Global.LogFile) ? null
+                : Path.IsPathRooted(s.Global.LogFile) ? s.Global.LogFile : Path.Combine(modDir, s.Global.LogFile);
+        if (adapter != null) adapter.Settings = s;
+        manager?.ApplySettings(s, providersChanged ? new LlmRouter(s) : null);
+        Log.Info($"settings applied{(providersChanged ? " (providers and limits reloaded)" : "")}");
     }
 
     /// <summary>Re-reads llm_config.json at the start of every round, so settings can be tweaked without restarting.</summary>
@@ -170,8 +202,27 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         manager?.Reset();
     }
 
+    bool settingsWindowRegistered, settingsWindowFailed;
+
+    /// <summary>The network message can only be registered once the server is up; retried from OnUpdate until then.</summary>
+    void TryRegisterSettingsWindow()
+    {
+        if (settingsWindowRegistered || settingsWindowFailed || settingsBridge == null || GameMain.Server == null) return;
+        try
+        {
+            settingsBridge.Register();
+            settingsWindowRegistered = true;
+        }
+        catch (Exception e)
+        {
+            settingsWindowFailed = true;
+            Log.Error("in-game settings window disabled (the !llm chat commands still work): " + e.Message);
+        }
+    }
+
     public void OnUpdate(double fixedDeltaTime)
     {
+        TryRegisterSettingsWindow();
         if (manager == null) return;
         if (GameMain.GameSession?.IsRunning != true) return;
         try

@@ -15,6 +15,8 @@ public sealed class BotAgent
     public int Id { get; }
     public string Name { get; set; }
     public string Job { get; set; }
+    /// <summary>The game's personality trait (used when no persona is set).</summary>
+    public string? Trait { get; set; }
 
     // Scheduling. Touched from the game thread; Pending is also cleared by the worker task.
     volatile bool pending;
@@ -75,6 +77,7 @@ public sealed class BotAgent
         Id = h.Id;
         Name = h.Name;
         Job = h.Job;
+        Trait = h.Trait;
     }
 
     public void AddNote(string note, int max)

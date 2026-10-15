@@ -16,12 +16,14 @@ internal sealed class ChatListener : IEventChatMessage
     {
         try
         {
+            // "!llm ..." settings commands: answered privately and not shown to others
+            if ((type is ChatMessageType.Default or ChatMessageType.Radio) && plugin.OnChatCommand(sender, messageText)) return true;
             plugin.OnPlayerChat(messageText, sender, type);
         }
         catch (Exception e)
         {
             Log.Error("chat handling failed: " + e.Message);
         }
-        return null; // never block or alter the message
+        return null; // ordinary messages are never blocked or altered
     }
 }

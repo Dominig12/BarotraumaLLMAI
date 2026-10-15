@@ -2,7 +2,8 @@ using System.Collections.Generic;
 
 namespace LlmAgents.Agents;
 
-public sealed record BotHandle(int Id, string Name, string Job);
+/// <param name="Trait">The game's own personality trait of the character (e.g. "Hothead"), if any.</param>
+public sealed record BotHandle(int Id, string Name, string Job, string? Trait = null);
 
 /// <summary>A message from the game about one bot, e.g. a multi-step task that finished or failed.</summary>
 public sealed record GameReport(int BotId, string Text);

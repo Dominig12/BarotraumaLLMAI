@@ -131,38 +131,54 @@ internal sealed class RefuelReactorTask : BotTask
 {
     readonly Reactor reactor;
     readonly ItemContainer container;
-    readonly float fuelBefore;
+    readonly Item rod;
     public override string Name => "refuel reactor";
 
-    public RefuelReactorTask(Character bot, HumanAIController ai, Reactor reactor, ItemContainer container) : base(bot, ai)
+    /// <param name="rod">The spare rod to load (the adapter picks the fullest one).</param>
+    public RefuelReactorTask(Character bot, HumanAIController ai, Reactor reactor, ItemContainer container, Item rod) : base(bot, ai)
     {
         this.reactor = reactor;
         this.container = container;
-        fuelBefore = GameAdapter.FuelInReactor(container);
+        this.rod = rod;
     }
 
     protected override string? Update()
     {
-        if (!HasObjective)
+        if (rod.Removed) return "failed: the fuel rod is gone";
+        if (rod.ParentInventory == container.Inventory) return Loaded();
+
+        // 1. fetch that exact rod (the vanilla "contain item" objective would count rods already in the reactor
+        //    as done, even spent ones, and report success without loading anything)
+        if (rod.GetRootInventoryOwner() != Bot)
         {
-            var contain = new AIObjectiveContainItem(Bot, ImmutableHashSet.Create(Tags.ReactorFuel), container, Ai.ObjectiveManager)
-            {
-                ItemCount = 1,
-                RemoveEmpty = true,
-                Equip = true,
-                ConditionLevel = 1,
-            };
-            Run(contain, "bringing a fuel rod to the reactor");
+            if (!HasObjective) Run(new AIObjectiveGetItem(Bot, rod, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false }, $"getting a fuel rod ({rod.ConditionPercentage:0}%)");
+            else if (ObjectiveFailed) return "failed: could not get the fuel rod (unreachable?)";
+            else if (ObjectiveDone) ClearObjective();
             return null;
         }
-        var fuelNow = GameAdapter.FuelInReactor(container);
-        if (ObjectiveDone || fuelNow > fuelBefore + 1)
+
+        // 2. load it; if all slots are taken, the most spent rod comes out
+        if (!HasObjective)
         {
-            var hint = reactor.FissionRate < 1 ? " The reactor is not running: operate it (role=reactor, option=powerup) or ask an engineer." : "";
-            return $"ok: fuel rod loaded, reactor fuel {fuelNow:0}%.{hint}";
+            float cond = rod.ConditionPercentage;
+            Run(new AIObjectiveContainItem(Bot, rod, container, Ai.ObjectiveManager)
+            {
+                RemoveEmpty = true,
+                RemoveExistingWhenNecessary = true,
+                RemoveExistingPredicate = i => i.HasTag(Tags.ReactorFuel) && i.ConditionPercentage < cond,
+                RemoveMax = 1,
+            }, "loading the fuel rod into the reactor");
+            return null;
         }
-        if (ObjectiveFailed) return "failed: could not load a fuel rod (none reachable?)";
+        if (ObjectiveFailed) return "failed: could not load the fuel rod (reactor full of fuller rods, or unreachable)";
+        if (ObjectiveDone) return rod.ParentInventory == container.Inventory ? Loaded() : "failed: the fuel rod did not go in";
         return null;
+    }
+
+    string Loaded()
+    {
+        var hint = reactor.FissionRate < 1 ? " The reactor is not running: operate it (role=reactor, option=powerup) or ask an engineer." : "";
+        return $"ok: fuel rod ({rod.ConditionPercentage:0}%) loaded, reactor fuel now {GameAdapter.FuelInReactor(container):0}%.{hint}";
     }
 }
 
@@ -396,9 +412,19 @@ internal sealed class MoveItemTask : BotTask
     {
         if (item.Removed) return $"failed: {item.Name} is gone";
 
+        if (container != null && item.ParentInventory == container.Inventory) return $"ok: {item.Name} is in {destination}";
+
+        // pick it up first (the "contain item" objective gives up on items the bot cannot reach from where it stands)
+        if (item.GetRootInventoryOwner() != Bot)
+        {
+            if (!HasObjective) Run(new AIObjectiveGetItem(Bot, item, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false }, $"getting {item.Name}");
+            else if (ObjectiveFailed) return $"failed: could not get {item.Name}";
+            else if (ObjectiveDone) ClearObjective();
+            return null;
+        }
+
         if (container != null)
         {
-            if (item.ParentInventory == container.Inventory) return $"ok: {item.Name} is in {destination}";
             if (!HasObjective)
             {
                 Run(new AIObjectiveContainItem(Bot, item, container, Ai.ObjectiveManager) { RemoveEmpty = false }, $"carrying {item.Name} to {destination}");
@@ -406,15 +432,6 @@ internal sealed class MoveItemTask : BotTask
             }
             if (ObjectiveFailed) return $"failed: could not put {item.Name} into {destination} (full or unreachable?)";
             if (ObjectiveDone) return item.ParentInventory == container.Inventory ? $"ok: {item.Name} is in {destination}" : $"failed: {item.Name} did not fit into {destination}";
-            return null;
-        }
-
-        // pick it up first
-        if (item.GetRootInventoryOwner() != Bot)
-        {
-            if (!HasObjective) Run(new AIObjectiveGetItem(Bot, item, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false }, $"getting {item.Name}");
-            else if (ObjectiveFailed) return $"failed: could not get {item.Name}";
-            else if (ObjectiveDone) ClearObjective();
             return null;
         }
 

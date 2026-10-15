@@ -68,6 +68,8 @@
     "disabledJobs": [],
     "allowedTools": [],
     "autonomy": "always",
+    "speechLanguage": "",
+    "useGamePersonality": true,
     "controlDecisionIntervalSeconds": 6,
     "extraPromptByJob": {
       "captain": "You are the captain: keep the big picture, coordinate the crew with message_crew, and keep the sub on course.",

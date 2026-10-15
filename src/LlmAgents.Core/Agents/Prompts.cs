@@ -2,7 +2,8 @@ namespace LlmAgents.Agents;
 
 public static class Prompts
 {
-    public static string System(BotAgent agent, int maxActions, string? extra = null, bool aiControl = false, bool memory = true)
+    public static string System(BotAgent agent, int maxActions, string? extra = null, bool aiControl = false, bool memory = true,
+        string? persona = null, string? language = null)
     {
         var s = $@"You are {agent.Name}, a crew member ({agent.Job}) aboard a submarine in the game Barotrauma.
 You control your own character through tools. You are one of several autonomous crew members; the others may be human players or other AI agents.
@@ -48,6 +49,14 @@ Rules:
         s = s.Replace("{MEMORY}", memory ? MemoryRules : "");
         if (aiControl) s += "\n\n" + ControlRules;
         if (!string.IsNullOrWhiteSpace(extra)) s += "\n\n" + extra;
+        if (!string.IsNullOrWhiteSpace(persona))
+            s += "\n\nYOUR CHARACTER (personality and behaviour model chosen by the players; play it consistently):\n" + persona.Trim() +
+                 "\nLet it shape how you talk, what you notice and which of the sensible options you choose. Unless this character text " +
+                 "explicitly says otherwise, you still carry out orders from players and keep yourself and the sub alive.";
+        s += !string.IsNullOrWhiteSpace(language)
+            ? $"\n\nSpeak {language.Trim()} in say, message_crew and order_crew."
+            : "\n\nIn say, message_crew and order_crew speak the language the human players use (their orders in 'playerOrders'); " +
+              "until you have seen one, use the language of the room names.";
         return s;
     }
 

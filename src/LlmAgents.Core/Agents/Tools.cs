@@ -90,7 +90,7 @@ public static class Tools
         new("return_to_default", "Drop your orders and let your normal instincts take over. Use when nothing special is needed.", NoArgs()),
         new("say", "Say something out loud in the game chat (players see it). Keep it short and in character.",
             Schema(("text", "string", $"What to say (max {MaxSayLength} chars)", null, true))),
-        new("message_crew", "Message to other AI crew members, for coordination. It lands in their inbox; human players also hear it on the radio, so keep it short and in character.",
+        new("message_crew", "Message to other AI crew members, for coordination. It lands in their inbox; human players also hear it on the radio, so keep it short and in character. Addressed to a human player, it is simply said to them over the radio (same as say).",
             Schema(("to", "string", "Crew member name, a job (all AI crew with that job, e.g. 'mechanic'), or 'all'", null, true), ("text", "string", "Message", null, true))),
         new("remember", "Save a short note to your memory. Normal notes last this round; long_term notes are kept across rounds (shown in 'memory.facts').",
             Schema(("note", "string", "One short sentence", null, true),
@@ -132,7 +132,7 @@ public static class Tools
             Schema(("on", "boolean", "true = keep it on, false = normal behaviour", null, true))),
         new("inspect", "Look something up; the answer appears in lastActionResults next turn. kind: patient (injuries and suitable medicine for a crew member), items (where items are and how many), recipe (what an item needs at the fabricator and whether it is available).",
             Schema(("kind", "string", "What to look up", InspectKinds.ToArray(), true),
-                   ("query", "string", "Crew member name (patient) or item name (items, recipe)", null, true))),
+                   ("query", "string", "Crew member name (patient; empty or 'all' = everyone who is hurt) or item name (items, recipe)", null, false))),
     };
 
     public static IReadOnlyList<ToolSpec> Filtered(ICollection<string> allowed) => For(allowed, aiControl: true);
@@ -171,7 +171,7 @@ public static class Tools
         {
             if (node is JsonValue v)
             {
-                if (v.TryGetValue<string>(out var s)) return s.Trim();
+                if (v.TryGetValue<string>(out var s)) return Unquote(s.Trim());
                 return v.ToJsonString().Trim('"').Trim();
             }
             return node.ToJsonString();
@@ -291,8 +291,8 @@ public static class Tools
                     var kind = Str(a, "kind")?.ToLowerInvariant();
                     var query = Str(a, "query");
                     if (kind == null || !InspectKinds.Contains(kind)) return $"error: kind must be one of {string.Join(", ", InspectKinds)}";
-                    if (string.IsNullOrEmpty(query)) return "error: missing 'query'";
-                    return Clip(game.Inspect(agent.Id, kind, query!), MaxInspectLength);
+                    if (string.IsNullOrEmpty(query) && kind != "patient") return "error: missing 'query' (what to look up)";
+                    return Clip(game.Inspect(agent.Id, kind, query ?? ""), MaxInspectLength);
                 }
                 default:
                     return $"error: unknown tool '{call.Name}'";
@@ -303,6 +303,10 @@ public static class Tools
             return "error: " + e.Message;
         }
     }
+
+    /// <summary>Small models sometimes wrap values in extra quotes: "'recipe'" -> "recipe".</summary>
+    static string Unquote(string s) =>
+        s.Length >= 2 && ((s[0] == '\'' && s[^1] == '\'') || (s[0] == '"' && s[^1] == '"')) ? s.Substring(1, s.Length - 2).Trim() : s;
 
     public static string Clip(string s, int max) => s.Length <= max ? s : s.Substring(0, max);
 

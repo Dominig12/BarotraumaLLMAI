@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ModConfig>
-    <!-- Server-only plugin: bot AI is decided by the server in multiplayer (and by the local host in singleplayer-hosted games). -->
+    <!-- Server plugin: bot AI is decided by the server in multiplayer (and by the local host in singleplayer-hosted games). -->
     <Assembly File="%ModDir%/bin/Server/Windows/LlmAgents.dll" Target="Server" Platform="Windows" IsFileRequired="false" />
     <Assembly File="%ModDir%/bin/Server/Linux/LlmAgents.dll" Target="Server" Platform="Linux" IsFileRequired="false" />
     <Assembly File="%ModDir%/bin/Server/OSX/LlmAgents.dll" Target="Server" Platform="OSX" IsFileRequired="false" />
+    <!-- Optional client plugin: the in-game settings window ("!llm" in chat or Ctrl+Shift+L). Only loads where LuaCs with C# is installed. -->
+    <Assembly File="%ModDir%/bin/Client/Windows/LlmAgentsClient.dll" Target="Client" Platform="Windows" IsFileRequired="false" />
+    <Assembly File="%ModDir%/bin/Client/Linux/LlmAgentsClient.dll" Target="Client" Platform="Linux" IsFileRequired="false" />
+    <Assembly File="%ModDir%/bin/Client/OSX/LlmAgentsClient.dll" Target="Client" Platform="OSX" IsFileRequired="false" />
 </ModConfig>

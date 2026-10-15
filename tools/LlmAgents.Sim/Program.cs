@@ -19,6 +19,8 @@ using LlmAgents.Llm;
 // t=33s ("Всем надеть водолазные костюмы, идёт бой"), t=40s ("Анна, вылечи Макса, только бинтами"), t=44s ("Ольга, перезаряди реактор"),
 // t=47s ("Механики, приоритет: сначала тушить пожар, потом течи") and at t=50s the player gives Ivan the "Full AI control" order.
 // At the end every bot writes a round summary into its long-term memory (sim_memory/sim.json by default).
+// Characters come from sim_memory/personas.json (created with a few examples). Console lines starting with "!llm"
+// are settings commands, exactly like in the game chat (e.g. "!llm persona Max preset grumpy", "!llm set maxNotes 3").
 // While it runs you can also type your own chat orders into the console (as the player "Daniil").
 // Bots react via their LLM. Actions change the fake world (fix_leaks seals the breach, etc.).
 // ---------------------------------------------------------------------------------------------
@@ -46,7 +48,8 @@ for (int i = 0; i < args.Length; i++)
     }
 }
 
-var settings = ModSettings.LoadFile(configPath);
+var editor = LlmAgents.SettingsUi.ConfigEditor.Load(configPath);
+var settings = editor.Settings;
 if (forceProvider != null)
 {
     settings.DefaultProvider = forceProvider;
@@ -62,16 +65,38 @@ Log.Sink = (level, msg) =>
 
 var world = new SimWorld();
 var memory = new LlmAgents.Memory.MemoryStore(memoryDir);
-using var mgr = new AgentManager(settings, world, new LlmRouter(settings), () => SimClock.Now, memory);
+var personasPath = Path.Combine(memoryDir, "personas.json");
+bool newPersonas = !File.Exists(personasPath);
+var personas = new LlmAgents.Personas.PersonaStore(personasPath);
+if (newPersonas)
+{
+    personas.SetCharacter("Ivan Petrov", preset: "veteran");
+    personas.SetCharacter("Max Volkov", preset: "joker", prompt: "Зовёт всех по прозвищам.");
+    personas.SetCharacter("Oleg Sidorov", preset: "coward");
+    personas.Save();
+}
+using var mgr = new AgentManager(settings, world, new LlmRouter(settings), () => SimClock.Now, memory, personas);
 mgr.BeginRound("sim");
+// in the sim the settings file is never written: commands change a copy in memory
+var simEditor = new LlmAgents.SettingsUi.ConfigEditor(editor.ToJson());
+var settingsService = new LlmAgents.SettingsUi.SettingsService(simEditor, personas,
+    (s, providersChanged) => mgr.ApplySettings(ApplySimOverrides(s), providersChanged ? new LlmRouter(s) : null),
+    () => new LlmAgents.SettingsUi.GameInfo(
+        world.GetBots().Select(b => new LlmAgents.SettingsUi.CrewEntry(b.Name, b.Job, b.Trait, false)).ToList(),
+        new[] { "captain", "engineer", "mechanic", "medicaldoctor", "assistant", "securityofficer" }));
+
+ModSettings ApplySimOverrides(ModSettings s)
+{
+    if (forceProvider != null) { s.DefaultProvider = forceProvider; s.Bots.ProviderByJob.Clear(); }
+    s.Global.LogFile = "";
+    return s;
+}
 
 Console.WriteLine($"Simulating {seconds}s at x{speed} with providers: {string.Join(", ", settings.Providers.Select(p => $"{p.Name}={p.BaseUrl} ({p.Model})"))}");
 var typed = new System.Collections.Concurrent.ConcurrentQueue<string>();
-if (!Console.IsInputRedirected)
-{
-    Console.WriteLine("Type a chat order and press Enter to send it to the crew.");
-    new Thread(() => { string? line; while ((line = Console.ReadLine()) != null) typed.Enqueue(line); }) { IsBackground = true }.Start();
-}
+if (!Console.IsInputRedirected) Console.WriteLine("Type a chat order (or an !llm command) and press Enter.");
+// piped input works too: echo "!llm persona Max preset grumpy" | dotnet run --project tools/LlmAgents.Sim
+new Thread(() => { string? line; while ((line = Console.ReadLine()) != null) typed.Enqueue(line); }) { IsBackground = true }.Start();
 var script = new List<(double At, string Text)>();
 if (scriptedChat)
 {
@@ -99,7 +124,17 @@ while (SimClock.Now < seconds)
     while (script.Count > 0 && script[0].At <= SimClock.Now) { SendChat(script[0].Text); script.RemoveAt(0); }
     if (scriptedChat && SimClock.Now >= 50 && world.GiveControlOnce(1, "Daniil"))
         lock (Console.Out) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"[{SimClock.Now,6:0.0}s] Daniil gives Ivan Petrov the order: Full AI control"); Console.ResetColor(); }
-    while (typed.TryDequeue(out var line)) if (!string.IsNullOrWhiteSpace(line)) SendChat(line.Trim());
+    while (typed.TryDequeue(out var line))
+    {
+        if (string.IsNullOrWhiteSpace(line)) continue;
+        if (LlmAgents.SettingsUi.SettingsService.IsCommand(line))
+        {
+            var reply = settingsService.HandleCommand(line.Trim(), canEdit: true);
+            lock (Console.Out) { Console.ForegroundColor = ConsoleColor.Magenta; Console.WriteLine(reply); Console.ResetColor(); }
+            continue;
+        }
+        SendChat(line.Trim());
+    }
     mgr.Update();
     Thread.Sleep(20);
 }
@@ -185,7 +220,8 @@ sealed class SimWorld : IGameApi
 
     Bot B(int id) => bots.First(b => b.Id == id);
 
-    public IReadOnlyList<BotHandle> GetBots() => bots.Select(b => new BotHandle(b.Id, b.Name, b.Job)).ToList();
+    static readonly Dictionary<string, string> Traits = new() { ["Olga Smirnova"] = "Вспыльчивая", ["Anna Kuznetsova"] = "Добродушная" };
+    public IReadOnlyList<BotHandle> GetBots() => bots.Select(b => new BotHandle(b.Id, b.Name, b.Job, Traits.GetValueOrDefault(b.Name))).ToList();
     public bool IsAlive(int botId) => bots.Any(b => b.Id == botId);
 
     public Observation Observe(int botId)

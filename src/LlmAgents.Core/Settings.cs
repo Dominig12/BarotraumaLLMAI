@@ -56,6 +56,7 @@ public sealed class ModSettings
         Memory.Folder ??= "memory";
         Memory.SummaryProvider ??= "";
         Bots.Autonomy = (Bots.Autonomy ?? "always").Trim().ToLowerInvariant();
+        Bots.SpeechLanguage = (Bots.SpeechLanguage ?? "").Trim();
         Chat.Prefix ??= "";
         Chat.Provider ??= "";
         Global.SpeechChannel = (Global.SpeechChannel ?? "auto").Trim().ToLowerInvariant();
@@ -221,6 +222,10 @@ public sealed class BotSettings
     /// "Full AI control" order from the command menu. Everything else is the vanilla AI.
     /// </summary>
     public string Autonomy { get; set; } = "always";
+    /// <summary>Language bots speak in (say, message_crew), e.g. "Russian". Empty = the language the players use.</summary>
+    public string SpeechLanguage { get; set; } = "";
+    /// <summary>Without a persona, the game's own personality trait of the character (Hothead, Lazy...) shapes the bot.</summary>
+    public bool UseGamePersonality { get; set; } = true;
     /// <summary>Decision interval for bots under full AI control (they plan more often).</summary>
     public double ControlDecisionIntervalSeconds { get; set; } = 6;
 }

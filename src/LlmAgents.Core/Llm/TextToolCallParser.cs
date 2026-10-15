@@ -50,15 +50,25 @@ public static class TextToolCallParser
 
     // ------------------------------------------------------------------ JSON
 
+    /// <summary>
+    /// Every valid JSON block that holds tool calls. When a block is broken (small models often add or drop a
+    /// brace: {"calls": [{"name": "a", "arguments": {..}}}, {"name": "b"..}]}), the calls inside it are still
+    /// recovered one by one instead of losing all but the last.
+    /// </summary>
     static List<ToolCall> ParseJson(string text, Dictionary<string, ToolSpec> tools)
     {
         var result = new List<ToolCall>();
-        foreach (var candidate in JsonCandidates(text))
+        for (int start = 0; start < text.Length; start++)
         {
+            char open = text[start];
+            if (open != '{' && open != '[') continue;
+            int end = MatchBracket(text, start);
+            if (end < 0) continue;
             JsonNode? node;
-            try { node = JsonNode.Parse(candidate); }
-            catch (JsonException) { continue; }
+            try { node = JsonNode.Parse(text.Substring(start, end - start + 1)); }
+            catch (JsonException) { continue; } // broken: look inside it
 
+            int before = result.Count;
             if (node is JsonArray arr)
             {
                 foreach (var item in arr) TryAddJson(item as JsonObject, tools, result);
@@ -69,7 +79,7 @@ public static class TextToolCallParser
                 if (list != null) foreach (var item in list) TryAddJson(item as JsonObject, tools, result);
                 else TryAddJson(obj, tools, result);
             }
-            if (result.Count > 0) break;
+            if (result.Count > before) start = end; // its insides are done
         }
         return result;
     }
@@ -144,10 +154,11 @@ public static class TextToolCallParser
 
     static List<ToolCall> ParseLoose(string text, Dictionary<string, ToolSpec> tools)
     {
-        var names = tools.Keys.Concat(Aliases.Keys).OrderByDescending(n => n.Length).Select(Regex.Escape);
-        // a tool name that starts a line (after bullets / comment marks / "call:") or follows a quote
+        var names = string.Join("|", tools.Keys.Concat(Aliases.Keys).OrderByDescending(n => n.Length).Select(Regex.Escape));
+        // a tool name that starts a line (after bullets / comment marks / "call:"), follows a quote,
+        // or follows another call on the same line: say("a") wait()
         var rx = new Regex(
-            @"(?:(?<=^[ \t>*\-/#]*(?:call:)?)|(?<=[""\u0001]))(?<name>" + string.Join("|", names) + @")(?![A-Za-z0-9_])",
+            @"(?:(?<=^[ \t>*\-/#]*(?:call:)?)|(?<=[""\u0001])|(?<=\)[ \t;,]*)(?=(?:" + names + @")\())(?<name>" + names + @")(?![A-Za-z0-9_])",
             RegexOptions.Multiline);
 
         var matches = rx.Matches(text).Cast<Match>().ToList();
@@ -167,9 +178,9 @@ public static class TextToolCallParser
     }
 
     static readonly Regex KeyValue = new(
-        @"[""']?(?<key>[A-Za-z_][A-Za-z0-9_]*)[""']?\s*[:=]\s*(?:""(?<v>(?:[^""\\]|\\.)*)""|\u0001(?<v>[^\u0001]*)\u0001|(?<v>[^,}\)\]\n""\u0001]+))");
+        @"[""']?(?<key>[A-Za-z_][A-Za-z0-9_]*)[""']?\s*[:=]\s*(?:""(?<v>(?:[^""\\]|\\.)*)""|\u0001(?<v>[^\u0001]*)\u0001|'(?<v>(?:[^'\\]|\\.)*)'(?=\s*[,})\]\n]|\s*$)|(?<v>[^,}\)\]\n""\u0001]+))");
 
-    static readonly Regex Quoted = new(@"""(?<v>(?:[^""\\]|\\.)*)""|\u0001(?<v>[^\u0001]*)\u0001");
+    static readonly Regex Quoted = new(@"""(?<v>(?:[^""\\]|\\.)*)""|\u0001(?<v>[^\u0001]*)\u0001|(?<=[(,\s])'(?<v>(?:[^'\\]|\\.)*)'(?=\s*[,)])");
 
     static JsonObject ParseArgs(string segment, ToolSpec tool, out bool plausible)
     {
@@ -190,18 +201,22 @@ public static class TextToolCallParser
             body = end > brace ? segment.Substring(brace + 1, end - brace - 1) : segment.Substring(brace + 1);
         }
 
+        var used = new List<(int Start, int End)>();
         foreach (Match kv in KeyValue.Matches(body))
         {
             var key = kv.Groups["key"].Value;
             if (!props.Any(p => p.Name == key) || args.ContainsKey(key)) continue;
             args[key] = Unescape(kv.Groups["v"].Value.Trim());
+            used.Add((kv.Index, kv.Index + kv.Length));
         }
 
-        if (args.Count == 0)
-        {
-            var values = Quoted.Matches(body).Select(q => Unescape(q.Groups["v"].Value)).Where(v => v.Length > 0).ToList();
-            for (int i = 0; i < values.Count && i < props.Count; i++) args[props[i].Name] = values[i];
-        }
+        // Positional values; mixed with named ones only in call syntax: craft("medical kit", amount=1) -> item="medical kit".
+        bool callSyntax = trimmed.StartsWith("(");
+        var positional = (args.Count == 0 || callSyntax ? Quoted.Matches(body).Cast<Match>() : Enumerable.Empty<Match>())
+            .Where(q => !used.Any(u => q.Index >= u.Start && q.Index < u.End))
+            .Select(q => Unescape(q.Groups["v"].Value)).Where(v => v.Length > 0).ToList();
+        var free = props.Where(p => !args.ContainsKey(p.Name)).ToList();
+        for (int i = 0; i < positional.Count && i < free.Count; i++) args[free[i].Name] = positional[i];
 
         var required = props.Where(p => p.Required).ToList();
         if (args.Count == 0 && required.Count == 1)

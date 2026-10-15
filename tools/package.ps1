@@ -1,4 +1,4 @@
-# Builds the mod for every server platform and assembles a ready-to-copy package in dist\LlmAgents.
+# Builds the mod (server plugin + optional client settings window) for every platform and assembles a ready-to-copy package in dist\LlmAgents.
 #   .\tools\package.ps1
 #   .\tools\package.ps1 -LocalMods "C:\Program Files (x86)\Steam\steamapps\common\Barotrauma\LocalMods"
 #       also copies it to <LocalMods>\LlmAgents (an existing llm_config.json there is kept)
@@ -15,6 +15,12 @@ foreach ($p in "Windows", "Linux", "OSX") {
     $bin = Join-Path $out "bin\Server\$p"
     New-Item -ItemType Directory -Force $bin | Out-Null
     Copy-Item (Join-Path $root "src\LlmAgents.Server\bin\Release\$p\LlmAgents.dll") $bin
+    # optional client part: the in-game settings window
+    dotnet build (Join-Path $root "src\LlmAgents.Client\LlmAgents.Client.csproj") -c Release "-p:GamePlatform=$p" -v q -nologo
+    if ($LASTEXITCODE -ne 0) { throw "client build failed for $p" }
+    $cbin = Join-Path $out "bin\Client\$p"
+    New-Item -ItemType Directory -Force $cbin | Out-Null
+    Copy-Item (Join-Path $root "src\LlmAgents.Client\bin\Release\$p\LlmAgentsClient.dll") $cbin
 }
 Write-Host "Package: $out"
 if ($LocalMods) {
