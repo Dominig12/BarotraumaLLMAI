@@ -241,7 +241,39 @@ public sealed class GameAdapter : IGameApi
     public void Speak(int botId, string text)
     {
         if (Find(botId) is not { } c) return;
-        c.Speak(text, ChatMessageType.Default);
+        // null = let the game decide, exactly like vanilla bots: radio if the bot wears a working headset, else out loud.
+        ChatMessageType? type = settings.Global.SpeechChannel == "local" ? ChatMessageType.Default : null;
+        c.Speak(text, type);
+    }
+
+    // ------------------------------------------------------------- chat input
+
+    /// <summary>
+    /// Builds a <see cref="ChatCommand"/> for a message a player typed. Only bots that could hear it are listeners:
+    /// within speaking range, or both sides wearing working headsets. The LuaCs chat event does not say whether the
+    /// player used the radio channel, so a player with a headset is assumed to be on the radio.
+    /// </summary>
+    public ChatCommand? BuildChatCommand(Client sender, string text, ChatMessageType type)
+    {
+        if (type != ChatMessageType.Default && type != ChatMessageType.Radio) return null; // ignore orders, dead chat, private...
+        var speaker = sender.Character;
+        var bots = Character.CharacterList.Where(IsControllableBot).ToList();
+
+        if (speaker == null || speaker.IsDead || speaker.Removed)
+        {
+            if (!settings.Chat.AllowSpectators) return null;
+            return new ChatCommand(sender.Name, null, text, bots.Select(b => (int)b.ID).ToList(), ViaRadio: true);
+        }
+
+        bool radio = type == ChatMessageType.Radio || ChatMessage.CanUseRadio(speaker);
+        var listeners = bots
+            .Where(b => b != speaker && b.TeamID == speaker.TeamID)
+            .Where(b => !string.IsNullOrEmpty(ChatMessage.ApplyDistanceEffect(text, ChatMessageType.Default, speaker, b))
+                     || (radio && !string.IsNullOrEmpty(ChatMessage.ApplyDistanceEffect(text, ChatMessageType.Radio, speaker, b))))
+            .Select(b => (int)b.ID)
+            .ToList();
+        var job = speaker.Info?.Job?.Name?.Value;
+        return new ChatCommand(speaker.Name, string.IsNullOrEmpty(job) ? null : job, text, listeners, radio);
     }
 
     // --------------------------------------------------------------- helpers

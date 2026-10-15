@@ -17,7 +17,8 @@
     "maxNotes": 5,
     "syncOrdersToClients": true,
     "logFile": "llm_agents.log",
-    "logPrompts": true
+    "logPrompts": true,
+    "speechChannel": "auto"
   },
   "providers": [
     {
@@ -62,5 +63,14 @@
       "captain": "You are the captain: keep the big picture, coordinate the crew with message_crew, and keep the sub on course.",
       "medicaldoctor": "You are the medic: your first priority is keeping the crew alive (rescue_injured)."
     }
+  },
+  "chat": {
+    "enabled": true,
+    "provider": "",
+    "prefix": "",
+    "allowSpectators": true,
+    "directIfSingleListener": true,
+    "maxQueue": 10,
+    "maxAgeSeconds": 30
   }
 }

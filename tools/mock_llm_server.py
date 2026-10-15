@@ -14,9 +14,63 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
+JOBS = {
+    "mechanic": ["механик", "mechanic"],
+    "engineer": ["инженер", "engineer"],
+    "medicaldoctor": ["медик", "врач", "доктор", "medic", "doctor"],
+    "captain": ["капитан", "captain"],
+    "assistant": ["ассистент", "помощник", "assistant"],
+    "securityofficer": ["охран", "security"],
+}
+
+
+TR = dict(zip("абвгдеёзийклмнопрстуфхцыэ", "abvgdeeziiklmnoprstufhcye"))
+TR.update({"ж": "zh", "ч": "ch", "ш": "sh", "щ": "sh", "ю": "yu", "я": "ya", "ъ": "", "ь": ""})
+
+
+def latin(s: str) -> str:
+    return "".join(TR.get(c, c) for c in s.lower())
+
+
+def route(prompt: str) -> list[str]:
+    """Диспетчер чата: имена из ростера, упомянутые в сообщении; иначе по профессии; иначе все."""
+    message = prompt.split('"')[1].lower() if '"' in prompt else prompt.lower()
+    roster = []
+    for line in prompt.splitlines():
+        if line.startswith("- ") and "| job:" in line:
+            name = line[2:].split(" | ")[0]
+            job = line.split("| job: ")[1].split(" | ")[0]
+            roster.append((name, job))
+    msg_latin = latin(message)
+    named = [n for n, _ in roster if any(latin(part)[:3] in msg_latin for part in n.split() if len(part) >= 3)]
+    if named:
+        return named
+    for job, words in JOBS.items():
+        if any(w in message for w in words):
+            return [n for n, j in roster if j == job]
+    if any(w in message for w in ["все", "всем", "экипаж", "everyone", "all", "crew"]):
+        return [n for n, _ in roster]
+    return []
+
+
 def decide(obs: dict) -> list[dict]:
     """Возвращает список {name, arguments}."""
     calls = []
+    for order in obs.get("playerOrders", []):
+        text = order.lower()
+        calls.append({"name": "say", "arguments": {"text": "Есть, выполняю!"}})
+        if "насос" in text or "pump" in text:
+            calls.append({"name": "operate", "arguments": {"role": "pumps", "option": "pumpout"}})
+        elif "реактор" in text or "reactor" in text:
+            calls.append({"name": "operate", "arguments": {"role": "reactor"}})
+        elif "течь" in text or "пробоин" in text or "leak" in text:
+            calls.append({"name": "fix_leaks", "arguments": {}})
+        else:
+            rooms = [r["id"] for r in obs.get("rooms", [])]
+            target = next((r for r in rooms if r.split(" [")[0].lower()[:5] in text), None)
+            if target:
+                calls.append({"name": "go_to_room", "arguments": {"room": target}})
+        return calls[:3]
     if obs.get("inbox"):
         calls.append({"name": "say", "arguments": {"text": "Принял, " + obs["inbox"][0].split(":")[0] + "."}})
     if obs.get("threats"):
@@ -51,18 +105,22 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.endswith("/chat/completions"):
             return self._send(404, {"error": "not found"})
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        try:
-            last_user = next(m for m in reversed(body["messages"]) if m["role"] == "user")
-            obs = json.loads(last_user["content"])
-        except Exception:
-            obs = {}
+        last_user = next((m for m in reversed(body["messages"]) if m["role"] == "user"), {"content": ""})
+        tool_names = [t["function"]["name"] for t in body.get("tools", [])]
+        if "route_message" in tool_names:
+            calls = [{"name": "route_message", "arguments": {"recipients": route(last_user["content"]), "reason": "mock"}}]
+        else:
+            try:
+                calls = decide(json.loads(last_user["content"]))
+            except Exception:
+                calls = [{"name": "wait", "arguments": {}}]
         tool_calls = [
             {
                 "id": "call_" + uuid.uuid4().hex[:8],
                 "type": "function",
                 "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])},
             }
-            for c in decide(obs)
+            for c in calls
         ]
         self._send(200, {
             "id": "mock-" + uuid.uuid4().hex[:8],

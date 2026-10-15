@@ -12,16 +12,18 @@ using LlmAgents.Llm;
 // LlmAgents simulator: the real AgentManager + LLM providers + limits, driving a tiny fake sub.
 //
 //   dotnet run --project tools/LlmAgents.Sim -- [--config path] [--seconds 60] [--speed 1]
-//                                              [--provider name] [--quiet]
+//                                              [--provider name] [--quiet] [--no-chat]
 //
-// Scripted events: a hull breach at t=8s, a fire at t=20s, a crawler boarding at t=35s.
+// Scripted events: a hull breach at t=8s, a fire at t=20s, a crawler boarding at t=35s,
+// and player chat orders at t=14s ("Механики, откачайте воду насосами") and t=28s ("Анна, иди в медотсек").
+// While it runs you can also type your own chat orders into the console (as the player "Daniil").
 // Bots react via their LLM. Actions change the fake world (fix_leaks seals the breach, etc.).
 // ---------------------------------------------------------------------------------------------
 
 string configPath = Path.Combine("Content", "llm_config.json");
 double seconds = 60, speed = 1;
 string? forceProvider = null;
-bool quiet = false;
+bool quiet = false, scriptedChat = true;
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
@@ -31,6 +33,7 @@ for (int i = 0; i < args.Length; i++)
         case "--speed": speed = double.Parse(args[++i], System.Globalization.CultureInfo.InvariantCulture); break;
         case "--provider": forceProvider = args[++i]; break;
         case "--quiet": quiet = true; break;
+        case "--no-chat": scriptedChat = false; break;
         case "-h":
         case "--help":
             Console.WriteLine("usage: LlmAgents.Sim [--config path] [--seconds N] [--speed X] [--provider name] [--quiet]");
@@ -56,11 +59,33 @@ var world = new SimWorld();
 using var mgr = new AgentManager(settings, world, new LlmRouter(settings), () => SimClock.Now);
 
 Console.WriteLine($"Simulating {seconds}s at x{speed} with providers: {string.Join(", ", settings.Providers.Select(p => $"{p.Name}={p.BaseUrl} ({p.Model})"))}");
+var typed = new System.Collections.Concurrent.ConcurrentQueue<string>();
+if (!Console.IsInputRedirected)
+{
+    Console.WriteLine("Type a chat order and press Enter to send it to the crew.");
+    new Thread(() => { string? line; while ((line = Console.ReadLine()) != null) typed.Enqueue(line); }) { IsBackground = true }.Start();
+}
+var script = new List<(double At, string Text)>();
+if (scriptedChat)
+{
+    script.Add((14, "Механики, откачайте воду насосами"));
+    script.Add((28, "Анна, иди в медотсек"));
+}
+
+void SendChat(string text)
+{
+    lock (Console.Out) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"[{SimClock.Now,6:0.0}s] Daniil (radio): {text}"); Console.ResetColor(); }
+    world.ActionLog.Add($"[{SimClock.Now,6:0.0}s] PLAYER: {text}");
+    mgr.SubmitChat(new ChatCommand("Daniil", "Captain", text, world.GetBots().Select(b => b.Id).ToList(), ViaRadio: true));
+}
+
 var wall = Stopwatch.StartNew();
 while (SimClock.Now < seconds)
 {
     SimClock.Now = wall.Elapsed.TotalSeconds * speed;
     world.Tick(SimClock.Now);
+    while (script.Count > 0 && script[0].At <= SimClock.Now) { SendChat(script[0].Text); script.RemoveAt(0); }
+    while (typed.TryDequeue(out var line)) if (!string.IsNullOrWhiteSpace(line)) SendChat(line.Trim());
     mgr.Update();
     Thread.Sleep(20);
 }
@@ -71,6 +96,7 @@ Console.WriteLine();
 Console.WriteLine("=== Summary ===");
 Console.WriteLine($"Actions taken: {world.ActionLog.Count}");
 foreach (var a in world.ActionLog) Console.WriteLine("  " + a);
+Console.WriteLine("Decisions per bot: " + string.Join(", ", mgr.Agents.Select(a => $"{a.Name}={a.Notes().Count(n => n.StartsWith("Player order"))} orders")));
 Console.WriteLine($"Final state: breach={(world.Breach ? "OPEN" : "sealed")}, fire={(world.Fire ? "BURNING" : "out")}, intruder={(world.Intruder ? "ABOARD" : "gone")}");
 return 0;
 
@@ -89,9 +115,11 @@ sealed class SimWorld : IGameApi
         new() { Id = 1, Name = "Ivan Petrov", Job = "captain", Room = "Command Room [h1]" },
         new() { Id = 2, Name = "Olga Smirnova", Job = "engineer", Room = "Engine Room [h2]" },
         new() { Id = 3, Name = "Max Volkov", Job = "mechanic", Room = "Crew Quarters [h3]" },
+        new() { Id = 5, Name = "Oleg Sidorov", Job = "mechanic", Room = "Ballast [h5]" },
         new() { Id = 4, Name = "Anna Kuznetsova", Job = "medicaldoctor", Room = "Medbay [h4]" },
     };
     readonly string[] rooms = { "Command Room [h1]", "Engine Room [h2]", "Crew Quarters [h3]", "Medbay [h4]", "Ballast [h5]" };
+    public readonly Dictionary<string, int> Speech = new();
 
     public bool Breach, Fire, Intruder;
     int water, fixProgress, fireProgress, fightProgress;
@@ -169,6 +197,7 @@ sealed class SimWorld : IGameApi
 
     public void Speak(int botId, string text)
     {
+        Speech[B(botId).Name] = Speech.GetValueOrDefault(B(botId).Name) + 1;
         ActionLog.Add($"[{SimClock.Now,6:0.0}s] {B(botId).Name} says: \"{text}\"");
         lock (Console.Out) { Console.ForegroundColor = ConsoleColor.Cyan; Console.WriteLine($"[{SimClock.Now,6:0.0}s] {B(botId).Name}: {text}"); Console.ResetColor(); }
     }

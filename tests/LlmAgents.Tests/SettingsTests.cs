@@ -72,4 +72,15 @@ public class SettingsTests
         Assert.False(s.IsJobEnabled("assistant"));
         Assert.True(s.IsJobEnabled("mechanic"));
     }
+
+    [Fact]
+    public void ChatAndSpeechSettings()
+    {
+        var s = Fixtures.Settings();
+        Assert.True(s.Chat.Enabled);
+        Assert.Equal("auto", s.Global.SpeechChannel);
+        Assert.Throws<InvalidDataException>(() => Fixtures.Settings(", \"speechChannel\": \"telepathy\""));
+        Assert.Throws<InvalidDataException>(() => Fixtures.Settings(extraRoot: "\"chat\": { \"provider\": \"zzz\" },"));
+        Assert.Equal("local", Fixtures.Settings(", \"speechChannel\": \"LOCAL\"").Global.SpeechChannel);
+    }
 }

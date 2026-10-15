@@ -63,7 +63,7 @@ public static class Tools
         new("say", "Say something out loud in the game chat (players see it). Keep it short and in character.",
             Schema(("text", "string", $"What to say (max {MaxSayLength} chars)", null, true))),
         new("message_crew", "Private message to another AI crew member (not shown in chat). Use for coordination.",
-            Schema(("to", "string", "Crew member name, or 'all'", null, true), ("text", "string", "Message", null, true))),
+            Schema(("to", "string", "Crew member name, a job (all AI crew with that job, e.g. 'mechanic'), or 'all'", null, true), ("text", "string", "Message", null, true))),
         new("remember", "Save a short note to your own memory (shown to you in later turns).",
             Schema(("note", "string", "One short sentence", null, true))),
     };

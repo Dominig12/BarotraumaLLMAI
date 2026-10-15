@@ -22,6 +22,8 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     public IPluginManagementService PluginService { get; set; } = null!;
 
     AgentManager? manager;
+    GameAdapter? adapter;
+    object? chatListener; // ChatListener; typed as object so Plugin itself never depends on the internal interface
     string? modDir;
 
     public void PreInitPatching() { }
@@ -51,6 +53,42 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         EventService?.Subscribe<IEventUpdate>(this);
         EventService?.Subscribe<IEventRoundStarted>(this);
         EventService?.Subscribe<IEventRoundEnded>(this);
+
+        // Kept in its own class: the chat event interface is internal to LuaCs, so if it ever fails to bind,
+        // only chat orders are lost, not the whole mod.
+        try
+        {
+            SubscribeChat();
+        }
+        catch (Exception e)
+        {
+            chatListener = null;
+            Log.Error("chat orders disabled, could not subscribe to chat: " + e.Message);
+        }
+    }
+
+    // Separate, non-inlined methods: a type-load failure surfaces at the call site, where it is caught.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    void SubscribeChat()
+    {
+        var listener = new ChatListener(this);
+        EventService?.Subscribe<IEventChatMessage>(listener);
+        chatListener = listener;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    void UnsubscribeChat()
+    {
+        if (chatListener is ChatListener l) EventService?.Unsubscribe<IEventChatMessage>(l);
+        chatListener = null;
+    }
+
+    internal void OnPlayerChat(string text, Barotrauma.Networking.Client sender, Barotrauma.Networking.ChatMessageType type)
+    {
+        if (manager == null || adapter == null || sender == null) return;
+        if (GameMain.GameSession?.IsRunning != true) return;
+        var cmd = adapter.BuildChatCommand(sender, text, type);
+        if (cmd != null) manager.SubmitChat(cmd);
     }
 
     public void OnLoadCompleted() { }
@@ -64,7 +102,8 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
             : Path.Combine(modDir!, settings.Global.LogFile);
 
         manager?.Dispose();
-        manager = new AgentManager(settings, new GameAdapter(settings), new LlmRouter(settings));
+        adapter = new GameAdapter(settings);
+        manager = new AgentManager(settings, adapter, new LlmRouter(settings));
         Log.Warn($"loaded from {cfgPath}. Providers: {string.Join(", ", settings.Providers.Select(p => $"{p.Name} ({p.Type}, {p.Model})"))}; " +
                  $"default '{settings.DefaultProvider}', fallback '{settings.FallbackProvider}'. Enabled: {settings.Enabled}");
     }
@@ -107,10 +146,12 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
             EventService?.Unsubscribe<IEventUpdate>(this);
             EventService?.Unsubscribe<IEventRoundStarted>(this);
             EventService?.Unsubscribe<IEventRoundEnded>(this);
+            if (chatListener != null) UnsubscribeChat();
         }
         catch { /* shutting down */ }
         manager?.Dispose();
         manager = null;
+        adapter = null;
         Log.Sink = null;
     }
 

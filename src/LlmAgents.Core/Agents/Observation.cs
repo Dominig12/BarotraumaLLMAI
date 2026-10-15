@@ -25,6 +25,8 @@ public sealed class Observation
     public List<string> Leaks { get; set; } = new();
 
     // Filled in by the agent layer, not by the game adapter:
+    /// <summary>Orders from human players routed to this bot (highest priority).</summary>
+    public List<string> PlayerOrders { get; set; } = new();
     public List<string> Inbox { get; set; } = new();
     public List<string> Notes { get; set; } = new();
     public List<string> LastActionResults { get; set; } = new();

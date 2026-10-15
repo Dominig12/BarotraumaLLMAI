@@ -41,6 +41,7 @@ public sealed class BotAgent
     readonly List<LlmTurn> history = new();
     readonly List<string> results = new();
     readonly ConcurrentQueue<string> inbox = new();
+    readonly ConcurrentQueue<string> playerOrders = new();
 
     public const int MaxNoteLength = 200;
     public const int MaxResults = 6;
@@ -72,6 +73,22 @@ public sealed class BotAgent
         while (inbox.Count > MaxInbox && inbox.TryDequeue(out _)) { }
     }
 
+    /// <summary>A chat order from a human player that was routed to this bot. Processed before anything else.</summary>
+    public bool HasPlayerOrder => !playerOrders.IsEmpty;
+
+    public void ReceivePlayerOrder(string order)
+    {
+        playerOrders.Enqueue(order);
+        while (playerOrders.Count > MaxInbox && playerOrders.TryDequeue(out _)) { }
+    }
+
+    public List<string> DrainPlayerOrders()
+    {
+        var list = new List<string>();
+        while (playerOrders.TryDequeue(out var m)) list.Add(m);
+        return list;
+    }
+
     public List<string> DrainInbox()
     {
         var list = new List<string>();
@@ -99,11 +116,17 @@ public sealed class BotAgent
     }
 
     /// <summary>Puts back what was taken for a request that never reached a model.</summary>
-    public void Restore(IEnumerable<string> inboxMessages, IEnumerable<string> actionResults)
+    public void Restore(IEnumerable<string> inboxMessages, IEnumerable<string> actionResults, IEnumerable<string>? orders = null)
     {
         var pendingInbox = DrainInbox();
         foreach (var m in inboxMessages) inbox.Enqueue(m);
         foreach (var m in pendingInbox) inbox.Enqueue(m);
+        if (orders != null)
+        {
+            var pendingOrders = DrainPlayerOrders();
+            foreach (var m in orders) playerOrders.Enqueue(m);
+            foreach (var m in pendingOrders) playerOrders.Enqueue(m);
+        }
         lock (sync)
         {
             results.InsertRange(0, actionResults);

@@ -15,6 +15,7 @@ public sealed class ModSettings
     public GlobalSettings Global { get; set; } = new();
     public List<ProviderConfig> Providers { get; set; } = new();
     public BotSettings Bots { get; set; } = new();
+    public ChatSettings Chat { get; set; } = new();
 
     static readonly JsonSerializerOptions Json = new()
     {
@@ -49,6 +50,10 @@ public sealed class ModSettings
     {
         Global ??= new GlobalSettings();
         Bots ??= new BotSettings();
+        Chat ??= new ChatSettings();
+        Chat.Prefix ??= "";
+        Chat.Provider ??= "";
+        Global.SpeechChannel = (Global.SpeechChannel ?? "auto").Trim().ToLowerInvariant();
         Providers ??= new List<ProviderConfig>();
         foreach (var p in Providers)
         {
@@ -82,6 +87,10 @@ public sealed class ModSettings
         foreach (var kv in Bots.ProviderByJob)
             if (!names.Contains(kv.Value))
                 throw new InvalidDataException($"bots.providerByJob['{kv.Key}'] = '{kv.Value}' not found in providers");
+        if (!string.IsNullOrEmpty(Chat.Provider) && !names.Contains(Chat.Provider))
+            throw new InvalidDataException($"chat.provider '{Chat.Provider}' not found in providers");
+        if (Global.SpeechChannel is not ("auto" or "radio" or "local"))
+            throw new InvalidDataException("global.speechChannel must be 'auto', 'radio' or 'local'");
         if (Global.TickSeconds <= 0) throw new InvalidDataException("global.tickSeconds must be > 0");
         if (Global.MaxActionsPerDecision < 1) throw new InvalidDataException("global.maxActionsPerDecision must be >= 1");
     }
@@ -114,6 +123,28 @@ public sealed class GlobalSettings
     public bool LogPrompts { get; set; } = true;
     /// <summary>Broadcast LLM-issued orders to clients as order chat messages, so the crew UI shows them.</summary>
     public bool SyncOrdersToClients { get; set; } = true;
+    /// <summary>
+    /// Where bots speak: "auto" = radio if the bot wears a working headset, otherwise out loud (like vanilla bots);
+    /// "radio" = same as auto (radio is always preferred); "local" = always out loud, nearby only.
+    /// </summary>
+    public string SpeechChannel { get; set; } = "auto";
+}
+
+/// <summary>Orders typed by human players in the game chat.</summary>
+public sealed class ChatSettings
+{
+    public bool Enabled { get; set; } = true;
+    /// <summary>Provider for the dispatcher that decides who an order is for. Empty = defaultProvider.</summary>
+    public string Provider { get; set; } = "";
+    /// <summary>If set, only messages starting with this prefix are treated as orders (prefix is removed). Empty = every message.</summary>
+    public string Prefix { get; set; } = "";
+    /// <summary>Players without a character (spectators, a host watching) can command every bot.</summary>
+    public bool AllowSpectators { get; set; } = true;
+    /// <summary>If only one bot could hear the message, skip the dispatcher and give it to that bot.</summary>
+    public bool DirectIfSingleListener { get; set; } = true;
+    public int MaxQueue { get; set; } = 10;
+    /// <summary>Messages that could not be dispatched within this time (limits, outage) are dropped.</summary>
+    public double MaxAgeSeconds { get; set; } = 30;
 }
 
 public sealed class ProviderConfig

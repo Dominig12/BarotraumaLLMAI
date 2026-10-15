@@ -22,10 +22,19 @@ public class AgentManagerTests
         public readonly ConcurrentDictionary<string, Func<JsonObject, string>> ByBot = new();
         public readonly ConcurrentQueue<(string Bot, JsonObject Observation, JsonArray Messages)> Seen = new();
         public Func<JsonObject, string> Default = _ => Fixtures.OpenAiToolResponse(("wait", "{}"));
+        /// <summary>Answer for dispatcher (route_message) requests; gets the user prompt text.</summary>
+        public Func<string, string> Dispatcher = _ => Fixtures.OpenAiToolResponse((ChatDispatcher.ToolName, "{\"recipients\":[]}"));
+        public readonly ConcurrentQueue<string> DispatchPrompts = new();
 
         public FakeHandler Handler() => new(body =>
         {
             var msgs = body["messages"]!.AsArray();
+            if (body["tools"]!.AsArray().Any(t => t!["function"]!["name"]!.GetValue<string>() == ChatDispatcher.ToolName))
+            {
+                var prompt = msgs[^1]!["content"]!.GetValue<string>();
+                DispatchPrompts.Enqueue(prompt);
+                return (HttpStatusCode.OK, Dispatcher(prompt));
+            }
             var obs = (JsonObject)JsonNode.Parse(msgs[^1]!["content"]!.GetValue<string>())!;
             var bot = obs["name"]!.GetValue<string>();
             Seen.Enqueue((bot, obs, msgs));
