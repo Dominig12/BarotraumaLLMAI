@@ -9,7 +9,8 @@ using LlmAgents.Llm;
 
 namespace LlmAgents.Agents;
 
-public sealed record AgentCommand(int BotId, ToolCall Call);
+/// <param name="PlayerAuthority">The decision carried out a human player's chat order.</param>
+public sealed record AgentCommand(int BotId, ToolCall Call, bool PlayerAuthority = false);
 
 /// <summary>
 /// Owns all agents. <see cref="Update"/> must be called every frame on the game thread; it is cheap
@@ -85,6 +86,7 @@ public sealed class AgentManager : IDisposable
 
         DrainCommands();
         SyncAgents();
+        DrainReports();
         DeliverRoutedChats();
         DispatchChats(now);   // chat routing gets LLM slots before routine thinking
         ScheduleDecisions(now);
@@ -122,10 +124,23 @@ public sealed class AgentManager : IDisposable
         while (budget-- > 0 && commands.TryDequeue(out var cmd))
         {
             if (!agents.TryGetValue(cmd.BotId, out var agent) || !game.IsAlive(cmd.BotId)) continue;
+            game.BeginCommand(cmd.BotId, cmd.PlayerAuthority);
             var result = Tools.Execute(cmd.Call, agent, game, this);
             var line = $"{cmd.Call.Name}({Tools.ArgsToString(cmd.Call)}) -> {result}";
             agent.RecordResult(line);
             Log.Info($"[{agent.Name}] {line}");
+        }
+    }
+
+    /// <summary>Results of multi-step tasks (equip, craft, treat...) go back to the bot, which then thinks again.</summary>
+    void DrainReports()
+    {
+        foreach (var r in game.DrainReports())
+        {
+            if (!agents.TryGetValue(r.BotId, out var agent)) continue;
+            agent.RecordResult(r.Text);
+            agent.WakeUp = true;
+            Log.Info($"[{agent.Name}] {r.Text}");
         }
     }
 
@@ -262,7 +277,8 @@ public sealed class AgentManager : IDisposable
 
                 if (g.LogPrompts) Log.Info($"[{agent.Name}] <- {r.Provider}: {summary}" +
                     (g.LogRawReplies && !string.IsNullOrWhiteSpace(r.Response.Text) ? $"  [raw: {Tools.Clip(JsonUtil.OneLine(r.Response.Text), 500)}]" : ""));
-                foreach (var c in calls) commands.Enqueue(new AgentCommand(botId, c));
+                bool authority = takenOrders.Count > 0;
+                foreach (var c in calls) commands.Enqueue(new AgentCommand(botId, c, authority));
             }
             catch (OperationCanceledException) { }
             catch (Exception e) { Log.Error($"[{agent.Name}] decision failed: {e.Message}"); }

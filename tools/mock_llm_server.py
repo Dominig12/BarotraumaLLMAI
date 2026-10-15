@@ -59,7 +59,18 @@ def decide(obs: dict) -> list[dict]:
     for order in obs.get("playerOrders", []):
         text = order.lower()
         calls.append({"name": "say", "arguments": {"text": "Есть, выполняю!"}})
-        if "насос" in text or "pump" in text:
+        crew = [c["name"] for c in obs.get("crew", [])]
+        if any(w in text for w in ["леч", "heal", "treat", "перевяж"]):
+            target = next((n for n in crew if latin(n.split()[0])[:3] in latin(text)), obs.get("name"))
+            item = "bandage" if ("бинт" in text or "bandage" in text) else None
+            calls.append({"name": "treat", "arguments": {"target": target, **({"item": item} if item else {})}})
+        elif any(w in text for w in ["топлив", "заряд", "refuel", "fuel"]):
+            calls.append({"name": "refuel_reactor", "arguments": {}})
+        elif any(w in text for w in ["скрафт", "сделай", "изготов", "craft"]):
+            calls.append({"name": "craft", "arguments": {"item": "bandage", "amount": 2}})
+        elif any(w in text for w in ["надень", "экипир", "equip", "wear"]):
+            calls.append({"name": "equip", "arguments": {"item": "diving suit"}})
+        elif "насос" in text or "pump" in text:
             calls.append({"name": "operate", "arguments": {"role": "pumps", "option": "pumpout"}})
         elif "реактор" in text or "reactor" in text:
             calls.append({"name": "operate", "arguments": {"role": "reactor"}})

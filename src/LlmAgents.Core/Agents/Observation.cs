@@ -17,7 +17,13 @@ public sealed class Observation
     public int RoomWaterPercent { get; set; }
     public int RoomFires { get; set; }
     public string CurrentOrder { get; set; } = "none";
+    /// <summary>Multi-step task in progress (equip, refuel_reactor, craft, deconstruct, treat), if any.</summary>
+    public string? CurrentTask { get; set; }
+    /// <summary>Own injuries, e.g. "burn 30 (left arm), bleeding 12".</summary>
+    public string? Injuries { get; set; }
     public List<string> Inventory { get; set; } = new();
+    /// <summary>Medical items available on the sub (own inventory first), with counts. Only filled when someone is hurt or for medics.</summary>
+    public List<string>? MedicalSupplies { get; set; }
     public SubInfo? Submarine { get; set; }
     public List<RoomInfo> Rooms { get; set; } = new();
     public List<CrewInfo> Crew { get; set; } = new();
@@ -34,7 +40,8 @@ public sealed class Observation
     [JsonIgnore]
     public bool Urgent =>
         HealthPercent < 50 || OxygenPercent < 40 || RoomWaterPercent > 60 || RoomFires > 0 ||
-        Threats.Count > 0 || Leaks.Count > 0;
+        Threats.Count > 0 || Leaks.Count > 0 ||
+        (Submarine?.ReactorFuelPercent is int fuel && fuel < 10) || (Submarine?.OxygenPercent is int o2 && o2 < 50);
 
     static readonly JsonSerializerOptions Opts = new()
     {
@@ -48,8 +55,10 @@ public sealed class Observation
 
 public sealed record RoomInfo(string Id, int WaterPercent, int Fires);
 
-public sealed record CrewInfo(string Name, string Job, string? Room, int HealthPercent, bool IsPlayer, string Order);
+public sealed record CrewInfo(string Name, string Job, string? Room, int HealthPercent, bool IsPlayer, string Order, string? Injuries = null);
 
 public sealed record ThreatInfo(string Kind, int DistanceMeters, string? Room);
 
-public sealed record SubInfo(int? ReactorPercent, int? DepthMeters, int HullBreaches);
+public sealed record SubInfo(int? ReactorPercent, int? DepthMeters, int HullBreaches,
+    int? ReactorFuelPercent = null, int? ReactorTemperaturePercent = null, int? FuelRodsAboard = null,
+    int? OxygenPercent = null, string? Power = null);

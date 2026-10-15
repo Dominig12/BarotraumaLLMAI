@@ -64,6 +64,22 @@ public sealed class FakeGame : IGameApi
     public string Operate(int botId, string role, string? option) => Act(botId, $"operate {role} {option}".TrimEnd());
     public string Dismiss(int botId) => Act(botId, "dismiss");
     public void Speak(int botId, string text) => Act(botId, $"say {text}");
+
+    public readonly Dictionary<int, bool> Authority = new();
+    public readonly List<GameReport> PendingReports = new();
+    public void BeginCommand(int botId, bool playerAuthority) => Authority[botId] = playerAuthority;
+    public string Equip(int botId, string item) => Act(botId, $"equip {item}", "ok, started: equip " + item);
+    public string RefuelReactor(int botId) => Act(botId, "refuel", "ok, started: refuel reactor");
+    public string Craft(int botId, string item, int amount) => Act(botId, $"craft {item} x{amount}", "ok, started: craft " + item);
+    public string Deconstruct(int botId, string item) => Act(botId, $"deconstruct {item}", "ok, started");
+    public string Treat(int botId, string target, string? item) => Act(botId, $"treat {target}{(item != null ? " with " + item : "")}", "ok, started");
+    public string Inspect(int botId, string kind, string query) => $"{kind} {query}: " + new string('x', 2000);
+    public IReadOnlyList<GameReport> DrainReports()
+    {
+        var r = PendingReports.ToList();
+        PendingReports.Clear();
+        return r;
+    }
 }
 
 /// <summary>Fake HTTP endpoint: a function from request JSON to response (status, body).</summary>

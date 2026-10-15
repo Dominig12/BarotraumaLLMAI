@@ -24,8 +24,13 @@ public static class Tools
 
     public static readonly IReadOnlyList<string> OperateRoles = new[] { "reactor", "navigation", "weapons", "pumps" };
 
+    public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipe" };
+
+    public const int MaxCraftAmount = 10;
+
     public const int MaxSayLength = 160;
     public const int MaxMessageLength = 300;
+    public const int MaxInspectLength = 700;
 
     static JsonObject Schema(params (string Name, string Type, string Desc, string[]? Enum, bool Required)[] props)
     {
@@ -66,6 +71,23 @@ public static class Tools
             Schema(("to", "string", "Crew member name, a job (all AI crew with that job, e.g. 'mechanic'), or 'all'", null, true), ("text", "string", "Message", null, true))),
         new("remember", "Save a short note to your own memory (shown to you in later turns).",
             Schema(("note", "string", "One short sentence", null, true))),
+
+        // ---- items and machinery (multi-step tasks; the result is reported in lastActionResults when done)
+        new("equip", "Take an item from the sub (or your inventory) and equip / wear it, e.g. a diving suit, a weapon, a welding tool, a headset.",
+            Schema(("item", "string", "Item name or identifier, e.g. 'diving suit', 'harpoon gun', 'welding tool'", null, true))),
+        new("refuel_reactor", "Bring a fuel rod to the reactor and load it (replaces a spent rod). Use when reactor fuel is low or the reactor is at 0%.",
+            NoArgs()),
+        new("craft", "Gather the ingredients and make an item at a fabricator (medicine, ammo, tools...). Check what is possible with inspect(kind='recipe') first.",
+            Schema(("item", "string", "Item to make, name or identifier", null, true),
+                   ("amount", "integer", $"How many (1-{MaxCraftAmount}, default 1)", null, false))),
+        new("deconstruct", "Bring an item to the deconstructor and break it down into materials.",
+            Schema(("item", "string", "Item name or identifier (the nearest matching loose/stored item is used)", null, true))),
+        new("treat", "Treat a wounded crew member (or yourself) with medicine. Without 'item' the cheapest treatment that is good enough is chosen, so precious medicine is not wasted.",
+            Schema(("target", "string", "Crew member name, or 'me'", null, true),
+                   ("item", "string", "Optional: a specific medical item to use, e.g. 'bandage'", null, false))),
+        new("inspect", "Look something up; the answer appears in lastActionResults next turn. kind: patient (injuries and suitable medicine for a crew member), items (where items are and how many), recipe (what an item needs at the fabricator and whether it is available).",
+            Schema(("kind", "string", "What to look up", InspectKinds.ToArray(), true),
+                   ("query", "string", "Crew member name (patient) or item name (items, recipe)", null, true))),
     };
 
     public static IReadOnlyList<ToolSpec> Filtered(ICollection<string> allowed) =>
@@ -126,6 +148,33 @@ public static class Tools
                 }
                 case "remember":
                     return Need(Str(a, "note"), "note", v => { agent.AddNote(v, mgr.Settings.Global.MaxNotes); return "ok"; });
+                case "equip":
+                    return Need(Str(a, "item"), "item", v => game.Equip(agent.Id, v));
+                case "refuel_reactor":
+                    return game.RefuelReactor(agent.Id);
+                case "craft":
+                    return Need(Str(a, "item"), "item", v =>
+                    {
+                        int amount = int.TryParse(Str(a, "amount"), out var n) ? n : 1;
+                        return game.Craft(agent.Id, v, Math.Clamp(amount, 1, MaxCraftAmount));
+                    });
+                case "deconstruct":
+                    return Need(Str(a, "item"), "item", v => game.Deconstruct(agent.Id, v));
+                case "treat":
+                    return Need(Str(a, "target"), "target", v =>
+                    {
+                        var item = Str(a, "item");
+                        var target = v.Equals("me", StringComparison.OrdinalIgnoreCase) || v.Equals("self", StringComparison.OrdinalIgnoreCase) ? agent.Name : v;
+                        return game.Treat(agent.Id, target, string.IsNullOrEmpty(item) ? null : item);
+                    });
+                case "inspect":
+                {
+                    var kind = Str(a, "kind")?.ToLowerInvariant();
+                    var query = Str(a, "query");
+                    if (kind == null || !InspectKinds.Contains(kind)) return $"error: kind must be one of {string.Join(", ", InspectKinds)}";
+                    if (string.IsNullOrEmpty(query)) return "error: missing 'query'";
+                    return Clip(game.Inspect(agent.Id, kind, query!), MaxInspectLength);
+                }
                 default:
                     return $"error: unknown tool '{call.Name}'";
             }

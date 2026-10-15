@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using Barotrauma;
 using Barotrauma.Items.Components;
 using Barotrauma.Networking;
@@ -12,14 +13,24 @@ namespace LlmAgents;
 /// <summary>
 /// The only place that touches Barotrauma internals. Orders are issued the same way the server
 /// applies an order a player gives through the command UI (Character.SetOrder + OrderChatMessage),
-/// so the vanilla AIObjective machinery does the actual work.
+/// so the vanilla AIObjective machinery does the actual work. Multi-step actions (equip, craft,
+/// treat...) run as <see cref="BotTask"/>s built from vanilla objectives.
+///
+/// Orders from human players are protected: a bot's own LLM decisions never replace them, unless the
+/// decision was made to carry out a newer chat order from a player (see <see cref="BeginCommand"/>).
 /// </summary>
 public sealed class GameAdapter : IGameApi
 {
     const float UnitsPerMeter = 100f;
     const float ThreatRadiusMeters = 25f;
+    const double TaskTickSeconds = 0.25;
 
     readonly ModSettings settings;
+    readonly Dictionary<ushort, BotTask> tasks = new();
+    readonly Dictionary<ushort, HashSet<string>> ownOrders = new();   // signatures of orders this mod issued, per bot
+    readonly Dictionary<ushort, bool> authority = new();
+    readonly List<GameReport> reports = new();
+    double nextTaskTick;
 
     public GameAdapter(ModSettings settings) { this.settings = settings; }
 
@@ -40,6 +51,10 @@ public sealed class GameAdapter : IGameApi
 
     public bool IsAlive(int botId) => Find(botId) is { IsDead: false, Removed: false };
 
+    public void BeginCommand(int botId, bool playerAuthority) => authority[(ushort)botId] = playerAuthority;
+
+    bool HasAuthority(Character c) => authority.TryGetValue(c.ID, out var a) && a;
+
     // ----------------------------------------------------------- observation
 
     public Observation Observe(int botId)
@@ -51,6 +66,7 @@ public sealed class GameAdapter : IGameApi
         o.Name = c.Name;
         o.Job = JobOf(c);
         o.HealthPercent = HealthPercent(c);
+        o.Injuries = ItemQueries.DescribeInjuries(c);
         o.OxygenPercent = (int)Math.Round(Math.Clamp(c.OxygenAvailable, 0f, 100f));
 
         var hull = c.CurrentHull;
@@ -58,17 +74,18 @@ public sealed class GameAdapter : IGameApi
         o.RoomWaterPercent = hull != null ? (int)Math.Round(hull.WaterPercentage) : 0;
         o.RoomFires = hull?.FireSources?.Count ?? 0;
         o.CurrentOrder = DescribeOrders(c);
+        o.CurrentTask = tasks.TryGetValue(c.ID, out var task) ? task.Describe() : null;
 
         o.Inventory = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>())
-            .GroupBy(i => i.Name)
-            .Select(g => g.Count() > 1 ? $"{g.Key} x{g.Count()}" : g.Key)
+            .GroupBy(i => i.Prefab)
+            .Select(g => g.Count() > 1 ? $"{ItemQueries.Label(g.First())} x{g.Count()}" : ItemQueries.Label(g.First()))
             .Take(20).ToList();
 
         var sub = c.Submarine;
         if (sub != null)
         {
-            o.Rooms = Hull.HullList
-                .Where(h => h.Submarine == sub && !h.IsWetRoom)
+            var subHulls = Hull.HullList.Where(h => h.Submarine == sub && !h.IsWetRoom).ToList();
+            o.Rooms = subHulls
                 .Select(h => new RoomInfo(RoomId(h), (int)Math.Round(h.WaterPercentage), h.FireSources?.Count ?? 0))
                 .Take(40).ToList();
 
@@ -82,22 +99,33 @@ public sealed class GameAdapter : IGameApi
                 .Select(g => g.Count() > 1 ? $"{g.Key} ({g.Count()} breaches)" : g.Key)
                 .Take(10).ToList();
 
-            var reactor = Item.ItemList
-                .Where(i => i.Submarine == sub)
-                .Select(i => i.GetComponent<Reactor>())
-                .FirstOrDefault(r => r != null);
+            var reactor = FindReactor(c);
+            var container = reactor?.Item.GetComponent<ItemContainer>();
+            float volume = subHulls.Sum(h => h.Volume);
+            int? oxygen = volume > 0 ? (int)Math.Round(subHulls.Sum(h => h.OxygenPercentage * h.Volume) / volume) : null;
             o.Submarine = new SubInfo(
                 reactor != null ? (int)Math.Round(reactor.FissionRate) : null,
                 (int)Math.Round(sub.RealWorldDepth),
-                breaches.Count);
+                breaches.Count,
+                ReactorFuelPercent: container != null ? (int)Math.Round(Math.Min(100f, FuelInReactor(container))) : null,
+                ReactorTemperaturePercent: reactor != null ? (int)Math.Round(reactor.Temperature) : null,
+                FuelRodsAboard: reactor != null ? SpareFuelRods(c, container).Count : null,
+                OxygenPercent: oxygen);
         }
 
-        o.Crew = Character.CharacterList
+        var crew = Character.CharacterList
             .Where(x => x != c && !x.IsDead && !x.Removed && x.IsHuman && x.TeamID == c.TeamID)
+            .ToList();
+        o.Crew = crew
             .Select(x => new CrewInfo(
                 x.Name, JobOf(x), x.CurrentHull != null ? RoomId(x.CurrentHull) : null,
-                HealthPercent(x), x.IsPlayer, DescribeOrders(x)))
+                HealthPercent(x), x.IsPlayer, DescribeOrders(x),
+                HealthPercent(x) < 95 ? ItemQueries.DescribeInjuries(x, 3) : null))
             .Take(20).ToList();
+
+        bool someoneHurt = o.Injuries != null || o.Crew.Any(x => x.Injuries != null);
+        if (someoneHurt || o.Job == "medicaldoctor")
+            o.MedicalSupplies = ItemQueries.MedicalSupplies(c, o.Job == "medicaldoctor" ? 12 : 6);
 
         o.Threats = Character.CharacterList
             .Where(x => !x.IsDead && !x.Removed && x != c && IsHostileTo(x, c))
@@ -113,7 +141,7 @@ public sealed class GameAdapter : IGameApi
         return o;
     }
 
-    static int HealthPercent(Character c) =>
+    internal static int HealthPercent(Character c) =>
         (int)Math.Round(Math.Clamp(c.Vitality / Math.Max(1f, c.MaxVitality) * 100f, 0f, 100f));
 
     static bool IsHostileTo(Character other, Character self) =>
@@ -138,15 +166,39 @@ public sealed class GameAdapter : IGameApi
             ?? Hull.HullList.FirstOrDefault(h => string.Equals(h.RoomName, plain, StringComparison.OrdinalIgnoreCase));
     }
 
-    static string DescribeOrders(Character c)
+    string DescribeOrders(Character c)
     {
+        PruneOwn(c);
         var orders = c.CurrentOrders;
         if (orders == null || orders.Count == 0) return "none";
         return string.Join(", ", orders.Where(o => o != null).Select(o =>
-            o.Option.IsEmpty ? o.Identifier.Value : $"{o.Identifier.Value}:{o.Option.Value}"));
+        {
+            var s = o.Option.IsEmpty ? o.Identifier.Value : $"{o.Identifier.Value}:{o.Option.Value}";
+            if (IsPlayerOrder(c, o)) s += $" (from player {o.OrderGiver.Name})";
+            return s;
+        }));
     }
 
-    // --------------------------------------------------------------- actions
+    // ------------------------------------------------------------------ reactor helpers
+
+    static Reactor? FindReactor(Character c) =>
+        Item.ItemList
+            .Where(i => i.Submarine == c.Submarine && !i.Removed)
+            .Select(i => i.GetComponent<Reactor>())
+            .Where(r => r != null)
+            .OrderBy(r => Vector2.DistanceSquared(r!.Item.WorldPosition, c.WorldPosition))
+            .FirstOrDefault();
+
+    /// <summary>Sum of the condition of the fuel rods inside the reactor (100 = one full rod).</summary>
+    internal static float FuelInReactor(ItemContainer container) =>
+        container.Inventory.AllItems.Where(i => i.HasTag(Tags.ReactorFuel)).Sum(i => i.Condition);
+
+    static List<Item> SpareFuelRods(Character c, ItemContainer? reactorContainer) =>
+        ItemQueries.Available(c)
+            .Where(i => i.HasTag(Tags.ReactorFuel) && i.Condition > 1 && (reactorContainer == null || i.ParentInventory != reactorContainer.Inventory))
+            .ToList();
+
+    // --------------------------------------------------------------- orders
 
     public string GoToRoom(int botId, string roomId)
     {
@@ -157,19 +209,19 @@ public sealed class GameAdapter : IGameApi
 
         // "wait" with a position target = go there and stay (same as a player's "wait here" order on the map).
         var order = new Order(prefab, Identifier.Empty, new OrderTarget(hull.WorldPosition, hull), orderGiver: c);
-        return Issue(c, order) ? $"ok, heading to {RoomId(hull)}" : "error: could not issue order";
+        return Issue(c, order, $"ok, heading to {RoomId(hull)}");
     }
 
     public string Follow(int botId, string targetName)
     {
         if (Find(botId) is not { } c) return "error: character gone";
-        var target = FindCrew(targetName, c);
+        var target = FindCrew(targetName, c, includeSelf: false);
         if (target == null) return $"error: no crew member '{targetName}'";
         if (!TryPrefab("follow", out var prefab, out var err)) return err;
 
         // The vanilla follow objective follows the *order giver*.
         var order = new Order(prefab, targetEntity: null, targetItem: null, orderGiver: target);
-        return Issue(c, order) ? $"ok, following {target.Name}" : "error: could not issue order";
+        return Issue(c, order, $"ok, following {target.Name}");
     }
 
     public string SimpleOrder(int botId, string orderKey)
@@ -181,7 +233,7 @@ public sealed class GameAdapter : IGameApi
         Order order = id == "wait"
             ? new Order(prefab, Identifier.Empty, new OrderTarget(c.WorldPosition, c.CurrentHull), orderGiver: c)
             : new Order(prefab, targetEntity: null, targetItem: null, orderGiver: c);
-        return Issue(c, order) ? "ok" : $"error: could not issue '{id}'";
+        return Issue(c, order, "ok");
     }
 
     public string Operate(int botId, string role, string? option)
@@ -226,16 +278,26 @@ public sealed class GameAdapter : IGameApi
             if (item == null) return $"error: no {role} station on this submarine";
             order = new Order(prefab, opt, item, prefab.GetTargetItemComponent(item), orderGiver: c);
         }
-        return Issue(c, order) ? $"ok, operating {role}{(opt.IsEmpty ? "" : " (" + opt.Value + ")")}" : "error: could not issue order";
+        var r = Issue(c, order, $"ok, operating {role}{(opt.IsEmpty ? "" : " (" + opt.Value + ")")}");
+        if (role == "reactor" && r.StartsWith("ok") && c.GetSkillLevel("electrical".ToIdentifier()) < 30)
+            r += ". Note: with low electrical skill you will not refuel it; use refuel_reactor for that";
+        return r;
     }
 
     public string Dismiss(int botId)
     {
         if (Find(botId) is not { } c) return "error: character gone";
-        if (c.CurrentOrders == null || c.CurrentOrders.Count == 0) return "ok (no orders to drop)";
-        if (!TryPrefab("dismissed", out var prefab, out var err)) return err;
-        var order = new Order(prefab, targetEntity: null, targetItem: null, orderGiver: c);
-        return Issue(c, order) ? "ok, back to default behaviour" : "error: could not dismiss";
+        CancelTask(c, quiet: true);
+        var orders = c.CurrentOrders?.Where(o => o != null).ToList() ?? new List<Order>();
+        if (orders.Count == 0) return "ok (no orders to drop)";
+
+        bool all = HasAuthority(c);
+        var toDrop = orders.Where(o => all || !IsPlayerOrder(c, o)).ToList();
+        foreach (var o in toDrop) DropOrder(c, o);
+        var kept = orders.Except(toDrop).Where(o => IsPlayerOrder(c, o)).ToList();
+        return kept.Count == 0
+            ? "ok, back to default behaviour"
+            : $"ok, dropped your own orders; kept {string.Join(", ", kept.Select(o => $"{o.Identifier} from player {o.OrderGiver.Name}"))}";
     }
 
     public void Speak(int botId, string text)
@@ -244,6 +306,274 @@ public sealed class GameAdapter : IGameApi
         // null = let the game decide, exactly like vanilla bots: radio if the bot wears a working headset, else out loud.
         ChatMessageType? type = settings.Global.SpeechChannel == "local" ? ChatMessageType.Default : null;
         c.Speak(text, type);
+    }
+
+    // --------------------------------------------------------------- order bookkeeping
+
+    static string Signature(Order o)
+    {
+        var target = o.TargetEntity?.ID.ToString() ?? (o.TargetPosition?.Hull?.ID.ToString() ?? "-");
+        return $"{o.Identifier}|{o.Option}|{target}|{o.OrderGiver?.ID}";
+    }
+
+    static bool Same(Order a, Order b) => Signature(a) == Signature(b);
+
+    bool IsOwn(Character c, Order o) => ownOrders.TryGetValue(c.ID, out var set) && set.Contains(Signature(o));
+
+    /// <summary>Forget own orders the game no longer has (completed, or dismissed by a player), so a later identical
+    /// order from a player is not mistaken for one of ours.</summary>
+    void PruneOwn(Character c)
+    {
+        if (!ownOrders.TryGetValue(c.ID, out var set) || set.Count == 0) return;
+        var live = (c.CurrentOrders ?? new List<Order>()).Where(o => o != null).Select(Signature).ToHashSet();
+        set.RemoveWhere(sig => !live.Contains(sig));
+    }
+
+    /// <summary>An order a human player gave this bot (command menu), and not one this mod issued.</summary>
+    bool IsPlayerOrder(Character c, Order o) =>
+        o.OrderGiver is { IsPlayer: true } && !o.IsDismissal && !IsOwn(c, o);
+
+    List<Order> PlayerOrders(Character c)
+    {
+        PruneOwn(c);
+        return c.CurrentOrders?.Where(o => o != null && IsPlayerOrder(c, o)).ToList() ?? new List<Order>();
+    }
+
+    /// <summary>Error text if the bot must not override a player's order right now, else null.</summary>
+    string? PlayerOrderBlock(Character c, Order? replacement)
+    {
+        if (HasAuthority(c)) return null;
+        var player = PlayerOrders(c);
+        if (player.Count == 0) return null;
+        if (replacement != null && player.Any(p => Same(p, replacement))) return null;
+        var p0 = player[0];
+        return $"error: you are carrying out '{p0.Identifier}' ordered by player {p0.OrderGiver.Name}; keep doing it unless a player tells you otherwise";
+    }
+
+    string Issue(Character c, Order order, string okText)
+    {
+        if (PlayerOrderBlock(c, order) is { } blocked) return blocked;
+        var current = c.CurrentOrders?.Where(o => o != null).ToList() ?? new List<Order>();
+        if (current.Any(o => Same(o, order)) && !tasks.ContainsKey(c.ID)) return "ok (already doing that)";
+
+        CancelTask(c, quiet: true);
+        // One LLM order at a time: drop the bot's previous own orders instead of stacking them.
+        foreach (var old in current.Where(o => IsOwn(c, o) && !Same(o, order))) DropOrder(c, old);
+
+        if (!SetOrder(c, order.WithManualPriority(CharacterInfo.HighestManualOrderPriority))) return "error: could not issue order";
+        if (!ownOrders.TryGetValue(c.ID, out var set)) ownOrders[c.ID] = set = new HashSet<string>();
+        set.Add(Signature(order));
+        return okText;
+    }
+
+    void DropOrder(Character c, Order o)
+    {
+        try
+        {
+            SetOrder(c, o.GetDismissal());
+            if (ownOrders.TryGetValue(c.ID, out var set)) set.Remove(Signature(o));
+        }
+        catch (Exception e) { Log.Warn($"could not dismiss '{o.Identifier}' for {c.Name}: {e.Message}"); }
+    }
+
+    /// <summary>Applies an order the way the server handles one from the command UI (SetOrder + broadcast).</summary>
+    bool SetOrder(Character c, Order order)
+    {
+        try
+        {
+            c.SetOrder(order, isNewOrder: true, speak: false, force: true);
+            if (settings.Global.SyncOrdersToClients && GameMain.Server != null)
+                GameMain.Server.SendOrderChatMessage(new OrderChatMessage(order, c, c));
+            return true;
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"order '{order.Identifier}' for {c.Name} failed: {e.Message}");
+            return false;
+        }
+    }
+
+    // --------------------------------------------------------------- tasks
+
+    /// <summary>Called every frame from the plugin; ticks the running tasks a few times per second.</summary>
+    public void Tick()
+    {
+        if (tasks.Count == 0 || Timing.TotalTime < nextTaskTick) return;
+        nextTaskTick = Timing.TotalTime + TaskTickSeconds;
+        foreach (var (id, task) in tasks.ToList())
+        {
+            var result = task.Tick();
+            if (result == null) continue;
+            tasks.Remove(id);
+            reports.Add(new GameReport(id, $"task '{task.Name}' {result}"));
+        }
+    }
+
+    public void Reset()
+    {
+        foreach (var t in tasks.Values) t.Cancel();
+        tasks.Clear();
+        ownOrders.Clear();
+        authority.Clear();
+        reports.Clear();
+    }
+
+    public IReadOnlyList<GameReport> DrainReports()
+    {
+        if (reports.Count == 0) return Array.Empty<GameReport>();
+        var r = reports.ToList();
+        reports.Clear();
+        return r;
+    }
+
+    void CancelTask(Character c, bool quiet)
+    {
+        if (!tasks.Remove(c.ID, out var t)) return;
+        t.Cancel();
+        if (!quiet) reports.Add(new GameReport(c.ID, $"task '{t.Name}' cancelled"));
+    }
+
+    string StartTask(Character c, BotTask task)
+    {
+        if (PlayerOrderBlock(c, null) is { } blocked) return blocked;
+        CancelTask(c, quiet: true);
+        tasks[c.ID] = task;
+        return $"ok, started: {task.Name} (result will be reported)";
+    }
+
+    static bool Ai(Character c, out HumanAIController ai)
+    {
+        ai = (c.AIController as HumanAIController)!;
+        return ai != null;
+    }
+
+    public string Equip(int botId, string query)
+    {
+        if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
+        var item = ItemQueries.Find(c, query).FirstOrDefault();
+        if (item == null) return $"error: no '{query}' available; try inspect(kind='items', query='{query}')";
+        if (c.HasEquippedItem(item)) return $"ok ({item.Name} is already equipped)";
+        return StartTask(c, new EquipTask(c, ai, item));
+    }
+
+    public string RefuelReactor(int botId)
+    {
+        if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
+        var reactor = FindReactor(c);
+        var container = reactor?.Item.GetComponent<ItemContainer>();
+        if (reactor == null || container == null) return "error: no reactor on this submarine";
+        if (SpareFuelRods(c, container).Count == 0)
+            return "error: no spare fuel rods aboard; craft one (craft item='fuel rod', check inspect recipe first) or find some";
+        return StartTask(c, new RefuelReactorTask(c, ai, reactor, container));
+    }
+
+    public string Craft(int botId, string query, int amount)
+    {
+        if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
+        var (fabricator, recipe, error) = FindRecipe(c, query);
+        if (error != null) return error;
+        var missing = MissingIngredients(c, fabricator!, recipe!);
+        if (missing.Count > 0) return $"error: cannot make {recipe!.DisplayName.Value}: missing {string.Join(", ", missing)}";
+        return StartTask(c, new CraftTask(c, ai, fabricator!, recipe!, amount));
+    }
+
+    public string Deconstruct(int botId, string query)
+    {
+        if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
+        bool hasDeconstructor = Item.ItemList.Any(i => i.Submarine == c.Submarine && i.GetComponent<Deconstructor>() != null);
+        if (!hasDeconstructor) return "error: no deconstructor on this submarine";
+        var item = ItemQueries.Find(c, query, i => i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i)).FirstOrDefault();
+        if (item == null) return $"error: no '{query}' that can be deconstructed";
+        return StartTask(c, new DeconstructTask(c, ai, item));
+    }
+
+    public string Treat(int botId, string target, string? itemQuery)
+    {
+        if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
+        var patient = FindCrew(target, c, includeSelf: true);
+        if (patient == null) return $"error: no crew member '{target}'";
+        if (!ItemQueries.TreatableAfflictions(patient).Any()) return $"ok ({patient.Name} needs no treatment)";
+        if (itemQuery != null && !ItemQueries.Find(c, itemQuery, ItemQueries.IsMedical).Any())
+            return $"error: no '{itemQuery}' available; medical supplies: {string.Join(", ", ItemQueries.MedicalSupplies(c, 8))}";
+        if (itemQuery == null && ItemQueries.ChooseTreatment(c, patient) == null)
+            return $"error: no medicine on the sub helps with {ItemQueries.DescribeInjuries(patient)}; craft some (inspect recipe) or find it";
+        return StartTask(c, new TreatTask(c, ai, patient, itemQuery));
+    }
+
+    // --------------------------------------------------------------- inspect
+
+    public string Inspect(int botId, string kind, string query)
+    {
+        if (Find(botId) is not { } c) return "error: character gone";
+        switch (kind)
+        {
+            case "patient":
+            {
+                var patient = FindCrew(query, c, includeSelf: true);
+                return patient == null ? $"error: no crew member '{query}'" : ItemQueries.DescribePatient(c, patient);
+            }
+            case "items":
+            {
+                var found = ItemQueries.Find(c, query).Take(30).ToList();
+                if (found.Count == 0) return $"no '{query}' on the sub";
+                var groups = found.GroupBy(i => i.Prefab).Take(5).Select(g =>
+                    $"{ItemQueries.Label(g.Key)}: " + string.Join(", ", g.GroupBy(i => ItemQueries.Where(i, c)).Take(4).Select(w => $"{w.Count()} {w.Key}")));
+                return string.Join("; ", groups);
+            }
+            case "recipe":
+            {
+                var (fabricator, recipe, error) = FindRecipe(c, query);
+                if (error != null) return error;
+                var parts = recipe!.RequiredItems.Select(r =>
+                {
+                    int have = ItemQueries.Available(c).Count(r.MatchesItem);
+                    return $"{r.FirstMatchingPrefab?.Name.Value ?? "?"} x{r.Amount} (available {have})";
+                });
+                var missing = MissingIngredients(c, fabricator!, recipe);
+                var skills = recipe.RequiredSkills.Length > 0 ? "; skills: " + string.Join(", ", recipe.RequiredSkills.Select(s => $"{s.Identifier} {s.Level:0}")) : "";
+                return $"{ItemQueries.Label(recipe.TargetItem)} at {fabricator!.Item.Name}: needs {string.Join(", ", parts)}{skills}; time {recipe.RequiredTime:0}s. " +
+                       (missing.Count == 0 ? "All ingredients available." : "Missing: " + string.Join(", ", missing));
+            }
+            default:
+                return $"error: unknown kind '{kind}'";
+        }
+    }
+
+    static (Fabricator? Fabricator, FabricationRecipe? Recipe, string? Error) FindRecipe(Character c, string query)
+    {
+        var fabricators = Item.ItemList
+            .Where(i => i.Submarine == c.Submarine && !i.Removed)
+            .Select(i => i.GetComponent<Fabricator>())
+            .Where(f => f != null)
+            .OrderBy(f => Vector2.DistanceSquared(f!.Item.WorldPosition, c.WorldPosition))
+            .ToList();
+        if (fabricators.Count == 0) return (null, null, "error: no fabricator on this submarine");
+
+        var best = fabricators
+            .SelectMany(f => f!.fabricationRecipes.Values.Select(r => (f, r, score: ItemQueries.MatchScore(r.TargetItem, query))))
+            .Where(t => t.score > 0)
+            .OrderByDescending(t => t.score)
+            .FirstOrDefault();
+        if (best.r == null)
+        {
+            var similar = fabricators.SelectMany(f => f!.fabricationRecipes.Values)
+                .Where(r => r.TargetItem.Name.Value.Contains(query.Split(' ')[0], StringComparison.OrdinalIgnoreCase))
+                .Select(r => r.TargetItem.Name.Value).Distinct().Take(5).ToList();
+            return (null, null, $"error: no fabricator recipe for '{query}'" + (similar.Count > 0 ? $"; similar: {string.Join(", ", similar)}" : ""));
+        }
+        return (best.f, best.r, null);
+    }
+
+    static List<string> MissingIngredients(Character c, Fabricator fabricator, FabricationRecipe recipe)
+    {
+        var missing = new List<string>();
+        var available = ItemQueries.Available(c).Concat(fabricator.InputContainer.Inventory.AllItems).Distinct().ToList();
+        foreach (var r in recipe.RequiredItems)
+        {
+            int have = available.Count(r.MatchesItem);
+            if (have < r.Amount) missing.Add($"{r.FirstMatchingPrefab?.Name.Value ?? "?"} ({have}/{r.Amount})");
+        }
+        return missing;
     }
 
     // ------------------------------------------------------------- chat input
@@ -291,31 +621,12 @@ public sealed class GameAdapter : IGameApi
         return false;
     }
 
-    static Character? FindCrew(string name, Character self)
+    static Character? FindCrew(string name, Character self, bool includeSelf)
     {
-        var crew = Character.CharacterList.Where(x => x != self && !x.IsDead && !x.Removed && x.IsHuman && x.TeamID == self.TeamID).ToList();
+        var crew = Character.CharacterList
+            .Where(x => (includeSelf || x != self) && !x.IsDead && !x.Removed && x.IsHuman && x.TeamID == self.TeamID).ToList();
         return crew.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-            ?? crew.FirstOrDefault(x => x.Name.Contains(name, StringComparison.OrdinalIgnoreCase));
-    }
-
-    /// <summary>
-    /// Applies an order on the server and (optionally) broadcasts it, mirroring how the server handles
-    /// an order a player issues (see GameServer chat handling: SetOrder + SendOrderChatMessage).
-    /// </summary>
-    bool Issue(Character c, Order order)
-    {
-        try
-        {
-            order = order.WithManualPriority(CharacterInfo.HighestManualOrderPriority);
-            c.SetOrder(order, isNewOrder: true, speak: false, force: true);
-            if (settings.Global.SyncOrdersToClients && GameMain.Server != null)
-                GameMain.Server.SendOrderChatMessage(new OrderChatMessage(order, c, c));
-            return true;
-        }
-        catch (Exception e)
-        {
-            Log.Warn($"order '{order.Identifier}' for {c.Name} failed: {e.Message}");
-            return false;
-        }
+            ?? crew.FirstOrDefault(x => x.Name.Contains(name, StringComparison.OrdinalIgnoreCase))
+            ?? crew.FirstOrDefault(x => Translit.ToLatin(x.Name).Contains(Translit.ToLatin(name), StringComparison.OrdinalIgnoreCase));
     }
 }

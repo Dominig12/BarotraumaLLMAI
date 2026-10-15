@@ -15,7 +15,8 @@ using LlmAgents.Llm;
 //                                              [--provider name] [--quiet] [--no-chat]
 //
 // Scripted events: a hull breach at t=8s, a fire at t=20s, a crawler boarding at t=35s,
-// and player chat orders at t=14s ("Механики, откачайте воду насосами") and t=28s ("Анна, иди в медотсек").
+// and player chat orders at t=14s ("Механики, откачайте воду насосами"), t=28s ("Анна, иди в медотсек"),
+// t=40s ("Анна, вылечи Макса, только бинтами") and t=44s ("Ольга, перезаряди реактор").
 // While it runs you can also type your own chat orders into the console (as the player "Daniil").
 // Bots react via their LLM. Actions change the fake world (fix_leaks seals the breach, etc.).
 // ---------------------------------------------------------------------------------------------
@@ -70,6 +71,8 @@ if (scriptedChat)
 {
     script.Add((14, "Механики, откачайте воду насосами"));
     script.Add((28, "Анна, иди в медотсек"));
+    script.Add((40, "Анна, вылечи Макса, только бинтами"));
+    script.Add((44, "Ольга, перезаряди реактор"));
 }
 
 void SendChat(string text)
@@ -194,6 +197,29 @@ sealed class SimWorld : IGameApi
     public string SimpleOrder(int botId, string orderKey) => Do(botId, Tools.SimpleOrders[orderKey]);
     public string Operate(int botId, string role, string? option) => Do(botId, $"operate {role} {option}".Trim());
     public string Dismiss(int botId) => Do(botId, "none");
+
+    readonly List<GameReport> reports = new();
+    public void BeginCommand(int botId, bool playerAuthority) { }
+    public string Equip(int botId, string item) { Report(botId, $"task 'equip {item}' ok: equipped"); return Do(botId, $"equip {item}"); }
+    public string RefuelReactor(int botId) { Report(botId, "task 'refuel reactor' ok: fuel rod loaded"); return Do(botId, "refuel reactor"); }
+    public string Craft(int botId, string item, int amount) { Report(botId, $"task 'craft {item}' ok: made {amount}"); return Do(botId, $"craft {item} x{amount}"); }
+    public string Deconstruct(int botId, string item) { Report(botId, $"task 'deconstruct {item}' ok"); return Do(botId, $"deconstruct {item}"); }
+    public string Treat(int botId, string target, string? item)
+    {
+        var p = bots.FirstOrDefault(b => b.Name.Contains(target, StringComparison.OrdinalIgnoreCase));
+        if (p == null) return $"error: no crew member '{target}'";
+        p.Health = Math.Min(100, p.Health + 40);
+        Report(botId, $"task 'treat {p.Name}' ok: used {item ?? "Bandage"} x1, health {p.Health}%");
+        return Do(botId, $"treat {p.Name} with {item ?? "cheapest"}");
+    }
+    public string Inspect(int botId, string kind, string query) => kind switch
+    {
+        "patient" => $"{query}: injuries: bleeding 20 (torso); treatments: Bandage [antibleeding1] (suitability 40, price 10, available 6)",
+        "recipe" => $"{query}: needs Steel Bar x1 (available 4). All ingredients available.",
+        _ => $"{query}: 2 in Cabinet in Medbay [h4]",
+    };
+    void Report(int botId, string text) => reports.Add(new GameReport(botId, text));
+    public IReadOnlyList<GameReport> DrainReports() { var r = reports.ToList(); reports.Clear(); return r; }
 
     public void Speak(int botId, string text)
     {

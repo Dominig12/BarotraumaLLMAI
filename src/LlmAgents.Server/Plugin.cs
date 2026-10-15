@@ -24,6 +24,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     AgentManager? manager;
     GameAdapter? adapter;
     object? chatListener; // ChatListener; typed as object so Plugin itself never depends on the internal interface
+    IEventService? chatService;
     string? modDir;
 
     public void PreInitPatching() { }
@@ -71,15 +72,19 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     void SubscribeChat()
     {
+        // Subscribe on the *main* LuaCs event service: it only forwards an event to plugin event services when it
+        // has a subscriber of its own for that event type, which is not the case for chat messages.
         var listener = new ChatListener(this);
-        EventService?.Subscribe<IEventChatMessage>(listener);
+        var main = LuaCsSetup.Instance?.EventService ?? EventService;
+        main?.Subscribe<IEventChatMessage>(listener);
         chatListener = listener;
+        chatService = main;
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     void UnsubscribeChat()
     {
-        if (chatListener is ChatListener l) EventService?.Unsubscribe<IEventChatMessage>(l);
+        if (chatListener is ChatListener l) chatService?.Unsubscribe<IEventChatMessage>(l);
         chatListener = null;
     }
 
@@ -102,6 +107,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
             : Path.Combine(modDir!, settings.Global.LogFile);
 
         manager?.Dispose();
+        adapter?.Reset();
         adapter = new GameAdapter(settings);
         manager = new AgentManager(settings, adapter, new LlmRouter(settings));
         Log.Warn($"loaded from {cfgPath}. Providers: {string.Join(", ", settings.Providers.Select(p => $"{p.Name} ({p.Type}, {p.Model})"))}; " +
@@ -113,6 +119,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     {
         try
         {
+            adapter?.Reset();
             if (modDir != null) Start();
             manager?.Reset();
         }
@@ -123,7 +130,11 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         }
     }
 
-    public void OnRoundEnd() => manager?.Reset();
+    public void OnRoundEnd()
+    {
+        adapter?.Reset();
+        manager?.Reset();
+    }
 
     public void OnUpdate(double fixedDeltaTime)
     {
@@ -131,6 +142,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         if (GameMain.GameSession?.IsRunning != true) return;
         try
         {
+            adapter?.Tick();
             manager.Update();
         }
         catch (Exception e)
