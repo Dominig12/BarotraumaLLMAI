@@ -157,7 +157,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self):
-        if not self.path.endswith("/chat/completions"):
+        ollama = self.path.endswith("/api/chat")  # Ollama's native API (provider type "ollama")
+        if not (self.path.endswith("/chat/completions") or ollama):
             return self._send(404, {"error": "not found"})
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         last_user = next((m for m in reversed(body["messages"]) if m["role"] == "user"), {"content": ""})
@@ -167,6 +168,8 @@ class Handler(BaseHTTPRequestHandler):
         if "The round just ended" in system:
             events = [l[2:] for l in last_user["content"].splitlines() if l.startswith("- ")]
             text = "Раунд позади: " + "; ".join(events[-3:])[:250]
+            if ollama:
+                return self._send(200, {"message": {"role": "assistant", "content": text}, "prompt_eval_count": 100, "eval_count": 40})
             return self._send(200, {
                 "id": "mock-" + uuid.uuid4().hex[:8], "object": "chat.completion",
                 "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": text}}],
@@ -182,6 +185,14 @@ class Handler(BaseHTTPRequestHandler):
                 calls = decide(json.loads(content))
             except Exception:
                 calls = [{"name": "wait", "arguments": {}}]
+        if ollama:
+            msg = {"role": "assistant", "content": ""}
+            if prompt_mode:
+                msg["content"] = json.dumps({"calls": calls}, ensure_ascii=False)
+            else:
+                msg["tool_calls"] = [{"function": {"name": c["name"], "arguments": c["arguments"]}} for c in calls]
+            return self._send(200, {"model": body.get("model"), "message": msg, "done": True,
+                                    "prompt_eval_count": 100, "eval_count": 20})
         if prompt_mode:
             content = json.dumps({"calls": calls}, ensure_ascii=False)
             return self._send(200, {

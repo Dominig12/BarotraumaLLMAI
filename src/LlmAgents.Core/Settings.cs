@@ -66,6 +66,7 @@ public sealed class ModSettings
             p.Type = (p.Type ?? "").Trim().ToLowerInvariant();
             p.ExtraHeaders ??= new Dictionary<string, string>();
             p.ToolMode = (p.ToolMode ?? "native").Trim().ToLowerInvariant();
+            p.Thinking = (p.Thinking ?? "auto").Trim().ToLowerInvariant();
         }
         Bots.ProviderByJob = new Dictionary<string, string>(Bots.ProviderByJob ?? new(), StringComparer.OrdinalIgnoreCase);
         Bots.ExtraPromptByJob = new Dictionary<string, string>(Bots.ExtraPromptByJob ?? new(), StringComparer.OrdinalIgnoreCase);
@@ -82,8 +83,11 @@ public sealed class ModSettings
         {
             if (string.IsNullOrWhiteSpace(p.Name)) throw new InvalidDataException("Provider without a name");
             if (!names.Add(p.Name)) throw new InvalidDataException($"Duplicate provider '{p.Name}'");
-            if (p.Type != "openai" && p.Type != "anthropic")
-                throw new InvalidDataException($"Provider '{p.Name}': type must be 'openai' or 'anthropic'");
+            if (p.Type is not ("openai" or "anthropic" or "ollama"))
+                throw new InvalidDataException($"Provider '{p.Name}': type must be 'openai', 'ollama' or 'anthropic'");
+            if (p.Thinking is not ("auto" or "off" or "on"))
+                throw new InvalidDataException($"Provider '{p.Name}': thinking must be 'auto', 'off' or 'on'");
+            if (p.ContextLength < 0) throw new InvalidDataException($"Provider '{p.Name}': contextLength must be >= 0");
             if (!Uri.TryCreate(p.BaseUrl, UriKind.Absolute, out _))
                 throw new InvalidDataException($"Provider '{p.Name}': baseUrl is not a valid absolute URL");
             if (string.IsNullOrWhiteSpace(p.Model)) throw new InvalidDataException($"Provider '{p.Name}': model is required");
@@ -183,7 +187,10 @@ public sealed class ChatSettings
 public sealed class ProviderConfig
 {
     public string Name { get; set; } = "";
-    /// <summary>"openai" (OpenAI-compatible: OpenAI, Ollama, LM Studio, vLLM, OpenRouter...) or "anthropic".</summary>
+    /// <summary>
+    /// "openai" (OpenAI-compatible: OpenAI, LM Studio, vLLM, OpenRouter, Ollama's /v1...), "ollama" (Ollama's native
+    /// API: thinking switch and context length work) or "anthropic".
+    /// </summary>
     public string Type { get; set; } = "openai";
     public string BaseUrl { get; set; } = "";
     public string ApiKey { get; set; } = "";
@@ -209,6 +216,16 @@ public sealed class ProviderConfig
     public string ToolMode { get; set; } = "native";
     /// <summary>prompt mode, OpenAI-compatible servers: ask for response_format json_object.</summary>
     public bool JsonResponseFormat { get; set; } = true;
+    /// <summary>
+    /// Reasoning ("thinking") of models like Qwen3: "off" makes answers several times faster and is right for bots.
+    /// "auto" = the model's default. type "ollama": sent as think=false; type "openai": the /no_think switch
+    /// (Qwen3) is added to the prompt and any &lt;think&gt; text is ignored.
+    /// </summary>
+    public string Thinking { get; set; } = "auto";
+    /// <summary>type "ollama": context window in tokens (num_ctx). 0 = the server's default, which is often too small.</summary>
+    public int ContextLength { get; set; } = 0;
+    /// <summary>type "ollama": keep the model loaded this many minutes between requests (0 = server default, 5 min).</summary>
+    public int KeepAliveMinutes { get; set; } = 0;
 
     [JsonIgnore]
     public string ResolvedKey =>

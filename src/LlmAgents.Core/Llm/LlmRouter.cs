@@ -93,9 +93,12 @@ public sealed class LlmRouter : IDisposable
 
         foreach (var p in settings.Providers)
         {
-            ILlmProvider impl = p.Type == "anthropic"
-                ? new AnthropicProvider(p, http)
-                : new OpenAiCompatibleProvider(p, http);
+            ILlmProvider impl = p.Type switch
+            {
+                "anthropic" => new AnthropicProvider(p, http),
+                "ollama" => new OllamaProvider(p, http),
+                _ => new OpenAiCompatibleProvider(p, http),
+            };
             providers[p.Name] = new Entry(p, impl,
                 new LlmGate(p.MaxConcurrent, p.RequestsPerMinute, p.TokensPerMinute, p.DailyRequestBudget, utcNow));
         }

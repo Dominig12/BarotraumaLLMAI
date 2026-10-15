@@ -11,7 +11,7 @@ public class SettingsTests
     {
         var s = ModSettings.LoadFile(Path.Combine(System.AppContext.BaseDirectory, "llm_config.json"));
         Assert.True(s.Enabled);
-        Assert.Contains(s.Providers, p => p.Type == "openai");
+        Assert.Contains(s.Providers, p => p.Type == "ollama");
         Assert.Contains(s.Providers, p => p.Type == "anthropic");
         Assert.Equal("cloud", s.ProviderFor("Captain")); // job lookup is case-insensitive
         Assert.Equal(s.DefaultProvider, s.ProviderFor("mechanic"));

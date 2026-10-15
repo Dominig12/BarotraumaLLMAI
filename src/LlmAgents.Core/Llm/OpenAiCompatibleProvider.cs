@@ -33,6 +33,7 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
     {
         bool promptMode = cfg.ToolMode == "prompt" && req.Tools.Count > 0;
         var system = promptMode ? ToolPrompt.Build(req.System, req.Tools) : req.System;
+        if (cfg.Thinking == "off") system += "\n" + Thinking.NoThinkSwitch;
         var messages = new JsonArray { new JsonObject { ["role"] = "system", ["content"] = system } };
         foreach (var t in req.Turns)
             messages.Add(new JsonObject { ["role"] = t.Role, ["content"] = t.Text });
@@ -78,7 +79,7 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
         if (root["error"] is JsonNode err) throw new FormatException("provider error: " + JsonUtil.Trim(err.ToJsonString()));
 
         var message = root["choices"]?[0]?["message"];
-        var text = JsonUtil.Str(message?["content"]) ?? "";
+        var text = Thinking.Strip(JsonUtil.Str(message?["content"]) ?? "");
 
         var calls = new List<ToolCall>();
         if (message?["tool_calls"] is JsonArray arr)

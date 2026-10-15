@@ -106,7 +106,20 @@ public static class SettingsSchema
             Add(F(Models, "Ключ API", FieldType.Info,
                 V(string.IsNullOrEmpty(p.ResolvedKey) ? (p.ApiKeyEnv.Length > 0 ? $"не задан (переменная {p.ApiKeyEnv} пуста)" : "не нужен / не задан") : "задан"),
                 "providers", p.Name, "keyStatus"), "Ключи в игре не редактируются: задайте переменную окружения на сервере и укажите её имя ниже.", group: grp);
+            Add(F(Models, "Тип API", FieldType.Enum, V(p.Type), "providers", p.Name, "type"),
+                "ollama: родной API Ollama (работают «размышления выкл» и длина контекста); openai: любой OpenAI-совместимый сервер (адрес с /v1); anthropic: Claude.",
+                options: new() { "ollama", "openai", "anthropic" }, group: grp);
             Add(F(Models, "Модель", FieldType.String, V(p.Model), "providers", p.Name, "model"), group: grp);
+            Add(F(Models, "Размышления модели", FieldType.Enum, V(p.Thinking), "providers", p.Name, "thinking"),
+                "Выкл: модели вроде Qwen3 отвечают в разы быстрее, ботам размышления не нужны. Авто: как настроено у модели.",
+                options: new() { "off", "auto", "on" }, labels: new() { "Выключены (быстро)", "Как у модели", "Включены" }, group: grp);
+            if (p.Type == "ollama")
+            {
+                Add(F(Models, "Контекст, токенов", FieldType.Int, V(p.ContextLength), "providers", p.Name, "contextLength"),
+                    "num_ctx для Ollama. 0 = по умолчанию сервера (часто слишком мало: длинный запрос молча обрезается). Рекомендуется 8192–16384; больше = больше видеопамяти.", 0, 131072, group: grp);
+                Add(F(Models, "Держать загруженной, мин", FieldType.Int, V(p.KeepAliveMinutes), "providers", p.Name, "keepAliveMinutes"),
+                    "Сколько минут модель остаётся в памяти между запросами. 0 = по умолчанию (5 мин).", 0, 1440, group: grp);
+            }
             Add(F(Models, "Адрес API", FieldType.String, V(p.BaseUrl), "providers", p.Name, "baseUrl"), group: grp);
             Add(F(Models, "Переменная с ключом", FieldType.String, V(p.ApiKeyEnv), "providers", p.Name, "apiKeyEnv"), group: grp);
             Add(F(Models, "Вызов инструментов", FieldType.Enum, V(p.ToolMode), "providers", p.Name, "toolMode"),

@@ -31,11 +31,11 @@
   "providers": [
     {
       "name": "local",
-      "type": "openai",
-      "baseUrl": "http://127.0.0.1:11434/v1",
+      "type": "ollama",
+      "baseUrl": "http://127.0.0.1:11434",
       "apiKey": "",
       "apiKeyEnv": "",
-      "model": "qwen2.5:14b-instruct",
+      "model": "qwen3:8b",
       "timeoutSeconds": 40,
       "maxConcurrent": 1,
       "requestsPerMinute": 30,
@@ -43,8 +43,11 @@
       "maxOutputTokens": 300,
       "temperature": 0.6,
       "dailyRequestBudget": 0,
-      "toolMode": "prompt",
+      "toolMode": "native",
       "jsonResponseFormat": true,
+      "thinking": "off",
+      "contextLength": 12288,
+      "keepAliveMinutes": 30,
       "extraHeaders": {}
     },
     {
@@ -63,6 +66,9 @@
       "dailyRequestBudget": 0,
       "toolMode": "native",
       "jsonResponseFormat": true,
+      "thinking": "auto",
+      "contextLength": 0,
+      "keepAliveMinutes": 0,
       "extraHeaders": {}
     }
   ],
