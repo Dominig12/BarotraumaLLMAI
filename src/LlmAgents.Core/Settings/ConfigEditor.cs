@@ -152,7 +152,7 @@ public sealed class ConfigEditor
     }
 
     /// <summary>Maps keyed by job etc.: their defaults are examples, not keys to add.</summary>
-    static bool IsMap(string key) => Is(key, "providerByJob") || Is(key, "extraPromptByJob") || Is(key, "extraHeaders");
+    static bool IsMap(string key) => Is(key, "providerByJob") || Is(key, "extraPromptByJob") || Is(key, "extraHeaders") || Is(key, "extraBody");
 
     public JsonNode? Get(string[] p)
     {

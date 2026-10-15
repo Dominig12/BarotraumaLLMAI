@@ -102,16 +102,28 @@ public sealed class BotAgent
         Trait = h.Trait;
     }
 
-    public void AddNote(string note, int max)
+    readonly List<double> noteTimes = new();
+
+    public void AddNote(string note, int max, double at = double.NaN)
     {
         lock (sync)
         {
             notes.Add(Tools.Clip(note, MaxNoteLength));
-            while (notes.Count > Math.Max(1, max)) notes.RemoveAt(0);
+            noteTimes.Add(at);
+            while (notes.Count > Math.Max(1, max)) { notes.RemoveAt(0); noteTimes.RemoveAt(0); }
         }
     }
 
     public List<string> Notes() { lock (sync) return notes.ToList(); }
+
+    /// <summary>Notes for the model, older ones with their age ("(4 min ago) Player order: ..."), so an old order
+    /// does not read like a fresh one.</summary>
+    public List<string> Notes(double now)
+    {
+        lock (sync)
+            return notes.Select((n, i) => !double.IsNaN(noteTimes[i]) && now - noteTimes[i] >= 60
+                ? $"({ModStatus.Ago(now - noteTimes[i])}) {n}" : n).ToList();
+    }
 
     public bool HasMail => !inbox.IsEmpty;
 
@@ -211,6 +223,11 @@ public sealed class BotAgent
     /// <summary>Urgency flags of the observation the current decision was made from.</summary>
     public string DecisionUrgency { get; set; } = "";
     public double NextArrivalCheckAt { get; set; }
+
+    /// <summary>The last decision changed something (an order, a task, an item...), not only talk or "already doing that".</summary>
+    public bool ActedSinceDecision { get; set; }
+    /// <summary>Routine decisions in a row that changed nothing; each one stretches the time to the next routine decision.</summary>
+    public int IdleStreak { get; set; }
 
     /// <summary>Carrying out a plan or waiting for a task: no new decision unless something important happens.</summary>
     public bool Busy => Plan.Count > 0 || Waiting != PlanWait.None;

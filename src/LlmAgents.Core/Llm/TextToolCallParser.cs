@@ -214,12 +214,15 @@ public static class TextToolCallParser
         bool callSyntax = trimmed.StartsWith("(");
         var positional = (args.Count == 0 || callSyntax ? Quoted.Matches(body).Cast<Match>() : Enumerable.Empty<Match>())
             .Where(q => !used.Any(u => q.Index >= u.Start && q.Index < u.End))
-            .Select(q => Unescape(q.Groups["v"].Value)).Where(v => v.Length > 0).ToList();
+            // ", " between two JSON strings of a cut-off reply is not a value
+            .Select(q => Unescape(q.Groups["v"].Value)).Where(v => v.Any(char.IsLetterOrDigit)).ToList();
         var free = props.Where(p => !args.ContainsKey(p.Name)).ToList();
         for (int i = 0; i < positional.Count && i < free.Count; i++) args[free[i].Name] = positional[i];
 
         var required = props.Where(p => p.Required).ToList();
-        if (args.Count == 0 && required.Count == 1)
+        // right after a JSON string ("say", "arguments": ...) the rest is JSON syntax, not the value
+        bool insideJson = System.Text.RegularExpressions.Regex.IsMatch(segment, @"^[""\u0001]\s*[,:]");
+        if (args.Count == 0 && required.Count == 1 && !insideJson)
         {
             // e.g. "sayЯ в инженерном отсеке..." : the rest of the line is the value
             var line = segment.Split('\n')[0].Trim().Trim('"', '\u0001', ':', ',', '{', '}', '(', ')', ' ');

@@ -65,6 +65,8 @@ public sealed class ModSettings
         {
             p.Type = (p.Type ?? "").Trim().ToLowerInvariant();
             p.ExtraHeaders ??= new Dictionary<string, string>();
+            p.ExtraBody ??= new System.Text.Json.Nodes.JsonObject();
+            p.Proxy ??= "";
             p.ToolMode = (p.ToolMode ?? "native").Trim().ToLowerInvariant();
             p.Thinking = (p.Thinking ?? "auto").Trim().ToLowerInvariant();
         }
@@ -88,6 +90,9 @@ public sealed class ModSettings
             if (p.Thinking is not ("auto" or "off" or "on"))
                 throw new InvalidDataException($"Provider '{p.Name}': thinking must be 'auto', 'off' or 'on'");
             if (p.ContextLength < 0) throw new InvalidDataException($"Provider '{p.Name}': contextLength must be >= 0");
+            if (p.Proxy.Length > 0 && (!Uri.TryCreate(p.Proxy, UriKind.Absolute, out var proxyUri) ||
+                                       proxyUri.Scheme is not ("http" or "https" or "socks4" or "socks4a" or "socks5")))
+                throw new InvalidDataException($"Provider '{p.Name}': proxy must look like http://host:port or socks5://host:port");
             if (!Uri.TryCreate(p.BaseUrl, UriKind.Absolute, out _))
                 throw new InvalidDataException($"Provider '{p.Name}': baseUrl is not a valid absolute URL");
             if (string.IsNullOrWhiteSpace(p.Model)) throw new InvalidDataException($"Provider '{p.Name}': model is required");
@@ -111,6 +116,8 @@ public sealed class ModSettings
             throw new InvalidDataException("global.speechChannel must be 'auto', 'radio' or 'local'");
         if (Global.TickSeconds <= 0) throw new InvalidDataException("global.tickSeconds must be > 0");
         if (Global.MaxActionsPerDecision < 1) throw new InvalidDataException("global.maxActionsPerDecision must be >= 1");
+        if (Global.MaxIdleIntervalSeconds <= 0) throw new InvalidDataException("global.maxIdleIntervalSeconds must be > 0");
+        if (Chat.DispatchWaitSeconds <= 0) throw new InvalidDataException("chat.dispatchWaitSeconds must be > 0");
         if (Global.MaxPlanSeconds <= 0) throw new InvalidDataException("global.maxPlanSeconds must be > 0");
         if (Global.PlanStepTimeoutSeconds <= 0) throw new InvalidDataException("global.planStepTimeoutSeconds must be > 0");
     }
@@ -149,6 +156,14 @@ public sealed class GlobalSettings
     /// a player gives an order or something new and urgent happens. false = all calls run at once (old behaviour).
     /// </summary>
     public bool SequentialActions { get; set; } = true;
+    /// <summary>A bot whose routine decisions keep changing nothing ("wait", "already doing that") thinks less and less often
+    /// (x2, x4... up to maxIdleIntervalSeconds) until something happens. Saves requests and stops "standing by" chatter.</summary>
+    public bool IdleBackoff { get; set; } = true;
+    /// <summary>come_to ("come to me"): how long the bot stays with the person after arriving before the order is over.</summary>
+    public double ComeToWaitSeconds { get; set; } = 90;
+    /// <summary>A goal older than this is dropped (the bot may set it again). 0 = never.</summary>
+    public double GoalTimeoutMinutes { get; set; } = 8;
+    public double MaxIdleIntervalSeconds { get; set; } = 60;
     /// <summary>A plan running longer than this lets the bot think again (it may keep the plan with keep_plan).</summary>
     public double MaxPlanSeconds { get; set; } = 180;
     /// <summary>A go_to_room step that has not arrived after this long stops the plan.</summary>
@@ -196,6 +211,8 @@ public sealed class ChatSettings
     public int MaxQueue { get; set; } = 10;
     /// <summary>Messages that could not be dispatched within this time (limits, outage) are dropped.</summary>
     public double MaxAgeSeconds { get; set; } = 30;
+    /// <summary>If the dispatcher gets no LLM slot this soon, the order is routed by names (or to everyone who heard it).</summary>
+    public double DispatchWaitSeconds { get; set; } = 6;
 }
 
 public sealed class ProviderConfig
@@ -219,9 +236,18 @@ public sealed class ProviderConfig
     public int TokensPerMinute { get; set; } = 0;
     /// <summary>0 = unlimited. Counted per UTC day.</summary>
     public int DailyRequestBudget { get; set; } = 0;
-    public int MaxOutputTokens { get; set; } = 300;
+    /// <summary>A plan of several steps with Russian text needs 500-900 tokens; reasoning models need more (or thinking off).</summary>
+    public int MaxOutputTokens { get; set; } = 800;
     public double Temperature { get; set; } = 0.6;
     public Dictionary<string, string> ExtraHeaders { get; set; } = new();
+    /// <summary>Extra fields merged into every request body, for provider-specific switches,
+    /// e.g. {"reasoning": {"enabled": false}} (OpenRouter), {"chat_template_kwargs": {"enable_thinking": false}} (vLLM/Qwen3).</summary>
+    public System.Text.Json.Nodes.JsonObject ExtraBody { get; set; } = new();
+    /// <summary>HTTP(S) or SOCKS5 proxy for this provider, e.g. "http://127.0.0.1:10809" or "socks5://127.0.0.1:1080". Empty = the system's
+    /// proxy settings.</summary>
+    public string Proxy { get; set; } = "";
+    /// <summary>Give up connecting after this many seconds (an unreachable server otherwise blocks a bot for the whole timeout).</summary>
+    public double ConnectTimeoutSeconds { get; set; } = 8;
     /// <summary>
     /// "native": the API's tool calling (best when the server supports it for this model).
     /// "prompt": tools are described in the prompt and the model replies with JSON. Use for local models whose

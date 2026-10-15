@@ -14,7 +14,7 @@ public static class OrderHints
     static readonly (Regex Pattern, Func<string, string?, string> Hint)[] Rules =
     {
         (R(@"за\s*мной|follow\s*me|on\s*me\b"), (who, _) => $"follow(target=\"{who}\")"),
-        (R(@"ко\s*мне|сюда|come\s*(here|to\s*me)"), (who, room) => room != null ? $"go_to_room(room=\"{room}\")" : $"follow(target=\"{who}\")"),
+        (R(@"ко\s*мне|сюда|come\s*(here|to\s*me)"), (who, _) => $"come_to(target=\"{who}\")"),
         (R(@"\bстой|\bстоп|\bжди(те)?\b|\bstop\b|\bhold\s*position|\bstay\b"), (_, _) => "wait()"),
         (R(@"\bвольно\b|\bотбой\b|\bas\s*you\s*were|\bdismiss"), (_, _) => "return_to_default()"),
         (R(@"течь|течи|пробоин|заварит|leak|breach"), (_, _) => "fix_leaks()"),

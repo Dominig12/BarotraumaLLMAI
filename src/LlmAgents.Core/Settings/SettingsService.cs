@@ -211,10 +211,35 @@ public sealed class SettingsService
 
     // ------------------------------------------------------------------ chat commands
 
-    public static bool IsCommand(string text)
+    public static bool IsCommand(string text) => HasPrefix(NormalizeCommand(text));
+
+    static bool HasPrefix(string text)
     {
         var t = text.TrimStart();
         return CommandPrefixes.Any(p => t.Equals(p, StringComparison.OrdinalIgnoreCase) || t.StartsWith(p + " ", StringComparison.OrdinalIgnoreCase));
+    }
+
+    const string RuKeys = "йцукенгшщзхъфывапролджэячсмитьбюё";
+    const string EnKeys = "qwertyuiop[]asdfghjkl;'zxcvbnm,.`";
+
+    /// <summary>Text typed on the Russian keyboard layout as if it were the English one: "ыефегы" -> "status".</summary>
+    public static string FromRussianLayout(string text)
+    {
+        var sb = new System.Text.StringBuilder(text.Length);
+        foreach (var ch in text)
+        {
+            int i = RuKeys.IndexOf(char.ToLowerInvariant(ch));
+            sb.Append(i < 0 ? ch : char.IsUpper(ch) ? char.ToUpperInvariant(EnKeys[i]) : EnKeys[i]);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>"!ддь ыефегы" (the layout was not switched) is understood as "!llm status".</summary>
+    public static string NormalizeCommand(string text)
+    {
+        if (HasPrefix(text)) return text;
+        var converted = FromRussianLayout(text);
+        return HasPrefix(converted) ? converted : text;
     }
 
     public const string Help =
@@ -228,7 +253,7 @@ public sealed class SettingsService
     /// <summary>Runs a "!llm ..." command and returns the reply for the sender.</summary>
     public string HandleCommand(string text, bool canEdit)
     {
-        var args = Tokenize(text.Trim());
+        var args = Tokenize(NormalizeCommand(text).Trim());
         if (args.Count > 0) args.RemoveAt(0); // the prefix
         if (args.Count == 0 || args[0] is "help" or "?" or "помощь") return Help;
         if (!canEdit) return "Нет прав: нужен владелец сервера или право «Управление настройками».";

@@ -45,7 +45,7 @@ public sealed class AgentManager : IDisposable
 
     public const int MaxBatchesPerUpdate = 16;
     /// <summary>Tools that start a multi-step task; with sequentialActions the next step waits for its result.</summary>
-    public static readonly IReadOnlyCollection<string> TaskTools = new[] { "equip", "refuel_reactor", "craft", "deconstruct", "treat", "move_item" };
+    public static readonly IReadOnlyCollection<string> TaskTools = new[] { "equip", "refuel_reactor", "craft", "deconstruct", "treat", "move_item", "come_to" };
     /// <summary>Calls that only talk or note things down: a reply made only of these doesn't turn an order into a goal.</summary>
     static readonly IReadOnlyCollection<string> TalkTools = new[] { "say", "message_crew", "remember", "forget", "note_relationship", "note_preference", "inspect", "keep_plan" };
     /// <summary>Echoed bot-to-bot messages are clipped to this (the game's chat limit is about 200).</summary>
@@ -283,6 +283,8 @@ public sealed class AgentManager : IDisposable
         var result = Tools.Execute(step.Call, agent, game, this);
         var line = $"{step.Call.Name}({Tools.ArgsToString(step.Call)}) -> {result}";
         if (step.Call.Name != "keep_plan") agent.RecordResult(line);
+        if (!TalkTools.Contains(step.Call.Name) && step.Call.Name != "set_goal" && result.StartsWith("ok") && !result.Contains("already"))
+            agent.ActedSinceDecision = true;
         if (result.StartsWith("error")) agent.AddError(line);
         // the round log feeds the end-of-round summary: keep what matters, skip routine noise
         if (step.Call.Name is not ("inspect" or "remember" or "return_to_default" or "wait" or "keep_gear" or "forget" or "keep_plan" or "set_goal")
@@ -409,7 +411,7 @@ public sealed class AgentManager : IDisposable
             }
             try
             {
-                StartDecision(c.Agent, c.Obs, reservation!, now);
+                StartDecision(c.Agent, c.Obs, reservation!, now, routine: c.Tier == Tier.Routine && !c.Agent.HasPlayerOrder);
             }
             catch (Exception e)
             {
@@ -437,6 +439,8 @@ public sealed class AgentManager : IDisposable
         // "order" autonomy: without full AI control a bot only thinks when asked (orders, messages, task results).
         bool autonomous = Settings.Bots.Autonomy == "always" || agent.AiControl;
         double interval = agent.AiControl ? Math.Min(g.DecisionIntervalSeconds, Settings.Bots.ControlDecisionIntervalSeconds) : g.DecisionIntervalSeconds;
+        if (g.IdleBackoff && agent.IdleStreak > 0)
+            interval = Math.Max(interval, Math.Min(interval * Math.Pow(2, Math.Min(agent.IdleStreak, 8)), g.MaxIdleIntervalSeconds));
         // A player's order is answered right away; everything else respects the minimum gap.
         if (!playerOrder && since < g.MinSecondsBetweenCallsPerBot) return null;
         if (playerOrder && since < Math.Min(g.RetrySeconds, g.MinSecondsBetweenCallsPerBot)) return null;
@@ -475,16 +479,25 @@ public sealed class AgentManager : IDisposable
         return current.Split(',').Any(f => !old.Contains(f));
     }
 
-    void StartDecision(BotAgent agent, Observation obs, LlmRouter.Reservation reservation, double now)
+    void StartDecision(BotAgent agent, Observation obs, LlmRouter.Reservation reservation, double now, bool routine = false)
     {
+        // nothing happened and the previous decision changed nothing either: think less often next time
+        agent.IdleStreak = routine && !agent.ActedSinceDecision && agent.Decisions > 0 ? agent.IdleStreak + 1 : 0;
+        agent.ActedSinceDecision = false;
         var g = Settings.Global;
         var takenOrders = agent.DrainOrders();
         obs.PlayerOrders = takenOrders.Select(o => o.Text).ToList();
         obs.Inbox = agent.DrainInbox();
-        obs.Notes = agent.Notes();
+        obs.Notes = agent.Notes(now);
         obs.LastActionResults = agent.TakeResults();
         if (agent.AiControl) obs.Control = $"FULL AI CONTROL (given by {agent.ControlBy ?? "a player"})";
         if (MemoryOn) obs.Memory = MemoryFor(agent, obs);
+        if (agent.Goal != null && g.GoalTimeoutMinutes > 0 && now - agent.GoalSetAt > g.GoalTimeoutMinutes * 60)
+        {
+            // a forgotten goal ("come to me" from minutes ago) must not pin the bot for the rest of the round
+            obs.LastActionResults.Add($"your goal '{agent.Goal}' expired after {g.GoalTimeoutMinutes:0} min; set it again only if it still matters");
+            agent.SetGoal(null, now);
+        }
         if (agent.Goal != null) obs.Goal = $"{agent.Goal} (set {ModStatus.Ago(now - agent.GoalSetAt)})";
         if (g.SequentialActions) obs.Plan = agent.PlanText();
         agent.DecisionUrgency = obs.UrgencyKey;
@@ -534,6 +547,11 @@ public sealed class AgentManager : IDisposable
                 if (gen != Volatile.Read(ref generation)) return;
 
                 var calls = r.Response.ToolCalls.Take(g.MaxActionsPerDecision).ToList();
+                if (r.Response.Truncated)
+                {
+                    agent.RecordResult($"warning: your last reply was too long and got cut off, so part of it was lost. Use fewer and shorter calls (short say texts).");
+                    WarnTruncated(r.Provider, r.Response);
+                }
                 // Only canonical calls go into the history: raw broken replies would teach the model to keep writing them.
                 var summary = calls.Count == 0 ? "(no tool call)" : string.Join("; ", calls.Select(c => $"{c.Name}({Tools.ArgsToString(c)})"));
                 // Past turns are kept short: the model only needs what happened then, not the whole old observation
@@ -548,7 +566,7 @@ public sealed class AgentManager : IDisposable
                     Log.Warn($"[{agent.Name}] reply had no recognizable tool call ({r.Provider}); if this repeats, set \"toolMode\": \"prompt\" for this provider. Reply: {Tools.Clip(JsonUtil.OneLine(r.Response.Text), 300)}");
                 }
                 // keep player orders visible after this exchange scrolls out of the history
-                foreach (var o in takenOrders) agent.AddNote((o.Authority ? "Player order: " : "Order: ") + o.Text, g.MaxNotes);
+                foreach (var o in takenOrders) agent.AddNote((o.Authority ? "Player order: " : "Order: ") + GoalText(o.Text), g.MaxNotes, clock());
 
                 if (g.LogPrompts) Log.Info($"[{agent.Name}] <- {r.Provider}: {summary}" +
                     (g.LogRawReplies && !string.IsNullOrWhiteSpace(r.Response.Text) ? $"  [raw: {Tools.Clip(JsonUtil.OneLine(r.Response.Text), 500)}]" : ""));
@@ -561,6 +579,23 @@ public sealed class AgentManager : IDisposable
             catch (Exception e) { Log.Error($"[{agent.Name}] decision failed: {e.Message}"); }
             finally { agent.Pending = false; }
         }));
+    }
+
+    readonly ConcurrentDictionary<string, double> truncatedWarnedAt = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Worker thread. Says once a minute per provider that replies hit maxOutputTokens, and what to do.</summary>
+    void WarnTruncated(string provider, LlmResponse res)
+    {
+        double now = clock();
+        if (truncatedWarnedAt.TryGetValue(provider, out var at) && now - at < 60) return;
+        truncatedWarnedAt[provider] = now;
+        var cfg = Settings.Providers.FirstOrDefault(p => p.Name.Equals(provider, StringComparison.OrdinalIgnoreCase));
+        var limit = cfg?.MaxOutputTokens.ToString() ?? "?";
+        Log.Warn($"reply from '{provider}' was cut off at maxOutputTokens={limit} ({res.OutputTokens} output tokens" +
+                 (res.ReasoningTokens > 0 ? $", {res.ReasoningTokens} of them spent on reasoning" : "") +
+                 $"): calls were lost. Raise maxOutputTokens for '{provider}' (Models tab, e.g. 800-1500)" +
+                 (res.ReasoningTokens > 0 || res.OutputTokens >= (cfg?.MaxOutputTokens ?? int.MaxValue) && res.ToolCalls.Count == 0
+                     ? ", or turn the model's reasoning off (thinking: off; for some servers extraBody, e.g. {\"reasoning\": {\"enabled\": false}})" : "") + ".");
     }
 
     /// <summary>A player's order becomes the bot's goal, so it is not forgotten after a few small steps.</summary>
@@ -601,6 +636,12 @@ public sealed class AgentManager : IDisposable
             text = text.Substring(chat.Prefix.Length).Trim();
         }
         if (text.Length == 0) return;
+        // "!command" of another mod, or one of ours with a typo: not an order for the crew
+        if (text.StartsWith("!") || text.StartsWith("/"))
+        {
+            Log.Info($"chat from {cmd.SenderName}: \"{Tools.Clip(text, 60)}\" looks like a command, not passed to the crew");
+            return;
+        }
         cmd = cmd with { Text = Tools.Clip(text, 500) };
 
         if (pendingChats.Count >= Math.Max(1, chat.MaxQueue)) pendingChats.RemoveAt(0);
@@ -638,8 +679,15 @@ public sealed class AgentManager : IDisposable
             }
 
             var provider = string.IsNullOrEmpty(chat.Provider) ? Settings.DefaultProvider : chat.Provider;
-            if (!router.TryReserve(provider, out var reservation, out _))
+            if (!router.TryReserve(provider, out var reservation, out var why))
             {
+                if (now - at >= chat.DispatchWaitSeconds)
+                {
+                    // no LLM slot for the dispatcher (limits, busy, provider down): route by names instead of dropping the order
+                    Deliver(cmd, ChatDispatcher.Fallback(cmd, roster), "fallback: no free LLM slot for the dispatcher (" + why + ")");
+                    pendingChats.RemoveAt(i);
+                    continue;
+                }
                 i++; // try again next tick
                 continue;
             }
@@ -866,7 +914,7 @@ public sealed class AgentManager : IDisposable
 
     public string Remember(BotAgent agent, string note, bool longTerm)
     {
-        agent.AddNote(note, Settings.Global.MaxNotes);
+        agent.AddNote(note, Settings.Global.MaxNotes, clock());
         if (!longTerm) return "ok";
         if (!MemoryOn) return "ok (long-term memory is disabled, kept for this round)";
         memory.AddFact(agent.Name, agent.Job, note, Settings.Memory.MaxFacts);

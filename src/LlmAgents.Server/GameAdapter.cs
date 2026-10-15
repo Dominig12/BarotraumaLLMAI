@@ -284,6 +284,14 @@ public sealed class GameAdapter : IGameApi
         return Issue(c, order, $"ok, heading to {RoomId(hull)}", priority);
     }
 
+    public string ComeTo(int botId, string targetName)
+    {
+        if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
+        var target = FindCrew(targetName, c, includeSelf: false);
+        if (target == null) return $"error: no crew member '{targetName}'";
+        return StartTask(c, new ComeToTask(c, ai, target, Settings.Global.ComeToWaitSeconds));
+    }
+
     public string Follow(int botId, string targetName, int priority = Tools.TopPriority)
     {
         if (Find(botId) is not { } c) return "error: character gone";

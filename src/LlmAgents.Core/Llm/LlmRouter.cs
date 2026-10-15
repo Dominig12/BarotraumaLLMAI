@@ -75,6 +75,19 @@ public sealed class LlmRouter : IDisposable
     readonly LlmGate globalGate;
     readonly ModSettings settings;
     readonly HttpClient http;
+    readonly List<HttpClient> ownClients = new();
+
+    static HttpMessageHandler RealHandler(string? proxy, double connectTimeoutSeconds)
+    {
+        var h = new SocketsHttpHandler
+        {
+            ConnectTimeout = TimeSpan.FromSeconds(Math.Clamp(connectTimeoutSeconds, 1, 120)),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+        };
+        // empty = the system proxy settings, like before
+        if (!string.IsNullOrWhiteSpace(proxy)) h.Proxy = new WebProxy(new Uri(proxy!));
+        return h;
+    }
     readonly Func<DateTime> utcNow;
 
     public LlmRouter(ModSettings settings, HttpMessageHandler? handler = null, Func<DateTime>? utcNow = null)
@@ -88,16 +101,23 @@ public sealed class LlmRouter : IDisposable
             dailyBudget: settings.Global.DailyRequestBudget,
             utcNow: utcNow);
 
-        http = handler != null ? new HttpClient(handler, disposeHandler: false) : new HttpClient();
+        http = handler != null ? new HttpClient(handler, disposeHandler: false) : new HttpClient(RealHandler(null, 8));
         http.Timeout = Timeout.InfiniteTimeSpan; // per-request timeouts are handled by the providers
 
         foreach (var p in settings.Providers)
         {
+            var client = http;
+            if (handler == null)
+            {
+                // own client: its own proxy and a short connect timeout (a blocked host otherwise hangs ~20 s per request)
+                client = new HttpClient(RealHandler(p.Proxy, p.ConnectTimeoutSeconds)) { Timeout = Timeout.InfiniteTimeSpan };
+                ownClients.Add(client);
+            }
             ILlmProvider impl = p.Type switch
             {
-                "anthropic" => new AnthropicProvider(p, http),
-                "ollama" => new OllamaProvider(p, http),
-                _ => new OpenAiCompatibleProvider(p, http),
+                "anthropic" => new AnthropicProvider(p, client),
+                "ollama" => new OllamaProvider(p, client),
+                _ => new OpenAiCompatibleProvider(p, client),
             };
             providers[p.Name] = new Entry(p, impl,
                 new LlmGate(p.MaxConcurrent, p.RequestsPerMinute, p.TokensPerMinute, p.DailyRequestBudget, utcNow));
@@ -262,5 +282,9 @@ public sealed class LlmRouter : IDisposable
         return await CompleteAsync(reservation!, system, turns, tools, ct).ConfigureAwait(false);
     }
 
-    public void Dispose() => http.Dispose();
+    public void Dispose()
+    {
+        http.Dispose();
+        foreach (var c in ownClients) c.Dispose();
+    }
 }

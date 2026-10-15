@@ -56,6 +56,7 @@ public sealed class AnthropicProvider : ILlmProvider
             }
             body["tools"] = tools;
         }
+        JsonUtil.Merge(body, cfg.ExtraBody);
         return body;
     }
 
@@ -89,7 +90,8 @@ public sealed class AnthropicProvider : ILlmProvider
 
         return new LlmResponse(text.ToString(), calls,
             JsonUtil.Int(root["usage"]?["input_tokens"]),
-            JsonUtil.Int(root["usage"]?["output_tokens"]));
+            JsonUtil.Int(root["usage"]?["output_tokens"]),
+            Truncated: JsonUtil.Str(root["stop_reason"]) == "max_tokens");
     }
 
     public async Task<LlmResponse> CompleteAsync(LlmRequest req, CancellationToken ct)

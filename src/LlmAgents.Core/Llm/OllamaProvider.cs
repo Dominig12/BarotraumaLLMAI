@@ -84,6 +84,7 @@ public sealed class OllamaProvider : ILlmProvider
                 });
             body["tools"] = tools;
         }
+        JsonUtil.Merge(body, cfg.ExtraBody);
         return body;
     }
 
@@ -106,7 +107,8 @@ public sealed class OllamaProvider : ILlmProvider
             }
         }
         if (calls.Count == 0) calls = TextToolCallParser.Parse(text, tools);
-        return new LlmResponse(text, calls, JsonUtil.Int(root["prompt_eval_count"]), JsonUtil.Int(root["eval_count"]));
+        return new LlmResponse(text, calls, JsonUtil.Int(root["prompt_eval_count"]), JsonUtil.Int(root["eval_count"]),
+            Truncated: JsonUtil.Str(root["done_reason"]) == "length");
     }
 
     static JsonObject Args(JsonNode? node)

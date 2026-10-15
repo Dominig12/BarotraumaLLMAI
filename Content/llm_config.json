@@ -13,6 +13,10 @@
     "retrySeconds": 1,
     "maxActionsPerDecision": 6,
     "sequentialActions": true,
+    "idleBackoff": true,
+    "maxIdleIntervalSeconds": 60,
+    "comeToWaitSeconds": 90,
+    "goalTimeoutMinutes": 8,
     "maxPlanSeconds": 180,
     "planStepTimeoutSeconds": 90,
     "maxMessagesPerMinute": 3,
@@ -43,7 +47,7 @@
       "maxConcurrent": 1,
       "requestsPerMinute": 30,
       "tokensPerMinute": 0,
-      "maxOutputTokens": 300,
+      "maxOutputTokens": 800,
       "temperature": 0.6,
       "dailyRequestBudget": 0,
       "toolMode": "native",
@@ -51,7 +55,10 @@
       "thinking": "off",
       "contextLength": 12288,
       "keepAliveMinutes": 30,
-      "extraHeaders": {}
+      "extraHeaders": {},
+      "extraBody": {},
+      "proxy": "",
+      "connectTimeoutSeconds": 8
     },
     {
       "name": "cloud",
@@ -64,7 +71,7 @@
       "maxConcurrent": 2,
       "requestsPerMinute": 40,
       "tokensPerMinute": 60000,
-      "maxOutputTokens": 300,
+      "maxOutputTokens": 800,
       "temperature": 0.6,
       "dailyRequestBudget": 0,
       "toolMode": "native",
@@ -72,7 +79,10 @@
       "thinking": "auto",
       "contextLength": 0,
       "keepAliveMinutes": 0,
-      "extraHeaders": {}
+      "extraHeaders": {},
+      "extraBody": {},
+      "proxy": "",
+      "connectTimeoutSeconds": 8
     }
   ],
   "bots": {
@@ -99,7 +109,8 @@
     "allowSpectators": true,
     "directIfSingleListener": true,
     "maxQueue": 10,
-    "maxAgeSeconds": 30
+    "maxAgeSeconds": 30,
+    "dispatchWaitSeconds": 6
   },
   "memory": {
     "enabled": true,

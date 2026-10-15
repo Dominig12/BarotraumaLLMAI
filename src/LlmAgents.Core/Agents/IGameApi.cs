@@ -33,6 +33,8 @@ public interface IGameApi
     // orders at p or lower one step down; at most 3 orders, the lowest falls off.
     string GoToRoom(int botId, string roomId, int priority = Tools.TopPriority);
     string Follow(int botId, string targetName, int priority = Tools.TopPriority);
+    /// <summary>Task: walk to the person's current position, stay with them for a while, done. ("come to me")</summary>
+    string ComeTo(int botId, string targetName);
 
     /// <summary>orderKey is one of <see cref="Tools.SimpleOrders"/> keys.</summary>
     string SimpleOrder(int botId, string orderKey, int priority = Tools.TopPriority);

@@ -94,6 +94,47 @@ internal abstract class BotTask
         Vector2.Distance(Bot.WorldPosition, target.WorldPosition) < distance;
 }
 
+// ------------------------------------------------------------------------------------------- come to
+
+/// <summary>
+/// "Come to me": walk to where the person is NOW (keeps up if they move), stay next to them for a while, then the order
+/// is over. A go_to_room order instead pinned bots to the room the player had already left, for the rest of the round.
+/// </summary>
+internal sealed class ComeToTask : BotTask
+{
+    readonly Character target;
+    readonly double hold;
+    double arrivedAt = -1;
+    public override string Name => $"come to {target.Name}";
+    protected override double TimeoutSeconds => 150 + hold;
+
+    public ComeToTask(Character bot, HumanAIController ai, Character target, double holdSeconds) : base(bot, ai)
+    {
+        this.target = target;
+        hold = holdSeconds;
+    }
+
+    protected override string? Update()
+    {
+        if (target.Removed || target.IsDead) return $"failed: {target.Name} is dead";
+        // repeat = keeps following, like the vanilla follow order, so the bot stays with them until the hold is over
+        if (!HasObjective || ObjectiveDone)
+            Run(new AIObjectiveGoTo(target, Bot, Ai.ObjectiveManager, repeat: true, getDivingGearIfNeeded: true, closeEnough: 120f),
+                $"walking to {target.Name}");
+        else if (ObjectiveFailed) return $"failed: cannot reach {target.Name}";
+
+        bool near = IsNear(target, 250f);
+        if (near && arrivedAt < 0)
+        {
+            arrivedAt = Timing.TotalTime;
+            Step = $"next to {target.Name}, waiting for orders";
+        }
+        if (arrivedAt >= 0 && Timing.TotalTime - arrivedAt >= hold)
+            return $"ok: you came to {target.Name} and stayed {hold:0}s. This order is DONE: set_goal(done=true) and go back to your duties, unless {target.Name} gave you a new order";
+        return null;
+    }
+}
+
 // ------------------------------------------------------------------------------------------- equip
 
 internal sealed class EquipTask : BotTask
@@ -191,6 +232,9 @@ internal sealed class CraftTask : BotTask
     readonly int amount;
     int made, ingredientIndex;
     bool started;
+    Item? fetching;
+    readonly HashSet<Item> unreachable = new();
+    readonly List<string> unreachableWhere = new();
     double startedFabricatingAt;
     protected override double TimeoutSeconds => 120 + 120 * amount;
     public override string Name => $"craft {recipe.DisplayName.Value} x{amount} ({made} done)";
@@ -222,29 +266,66 @@ internal sealed class CraftTask : BotTask
                 return $"ok: made {made}x {recipe.DisplayName.Value}; it is in the fabricator's output";
         }
 
-        // 1. bring every ingredient into the fabricator's input
+        // 1. bring every ingredient into the fabricator's input, one concrete item at a time:
+        //    pick it up first (also out of cabinets and the deconstructor's output), then put it in.
+        //    "Contain item by identifier" alone gave up on items in machine outputs ("could not bring steel bar").
+        var input = fabricator.InputContainer.Inventory;
         while (ingredientIndex < recipe.RequiredItems.Length)
         {
             var required = recipe.RequiredItems[ingredientIndex];
-            int have = fabricator.InputContainer.Inventory.AllItems.Count(required.MatchesItem);
-            if (have >= required.Amount) { ingredientIndex++; ClearObjective(); continue; }
+            var name = required.FirstMatchingPrefab?.Name.Value ?? "ingredient";
+            int have = input.AllItems.Count(required.MatchesItem);
+            if (have >= required.Amount) { ingredientIndex++; fetching = null; ClearObjective(); continue; }
+
+            if (fetching != null && (fetching.Removed || fetching.ParentInventory == input))
+            {
+                fetching = null;
+                ClearObjective();
+                continue;
+            }
+            if (fetching == null)
+            {
+                fetching = ItemQueries.Available(Bot)
+                    .Where(i => required.MatchesItem(i) && i.ParentInventory != input && !unreachable.Contains(i))
+                    .OrderBy(i => i.GetRootInventoryOwner() == Bot ? 0 : 1)
+                    .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, Bot.WorldPosition))
+                    .FirstOrDefault();
+                if (fetching == null)
+                    return unreachable.Count > 0
+                        ? $"failed: could not get {name} ({string.Join("; ", unreachableWhere.Take(3))})"
+                        : $"failed: no {name} available on the sub (need {required.Amount - have} more)";
+                ClearObjective();
+            }
+
+            if (fetching.GetRootInventoryOwner() != Bot)
+            {
+                if (!HasObjective)
+                {
+                    Run(new AIObjectiveGetItem(Bot, fetching, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false },
+                        $"getting {name} ({ItemQueries.Where(fetching, Bot)})");
+                    return null;
+                }
+                if (ObjectiveFailed)
+                {
+                    // try the next one (another cabinet, another room) before giving up
+                    unreachable.Add(fetching);
+                    unreachableWhere.Add("unreachable in " + ItemQueries.Where(fetching, Bot));
+                    fetching = null;
+                    ClearObjective();
+                    return null;
+                }
+                if (ObjectiveDone) ClearObjective();
+                return null;
+            }
 
             if (!HasObjective)
             {
-                var ids = required.ItemPrefabs.Select(p => p.Identifier).ToImmutableHashSet();
-                var name = required.FirstMatchingPrefab?.Name.Value ?? "ingredient";
-                bool anyAvailable = ItemQueries.Available(Bot).Any(i => required.MatchesItem(i) && i.ParentInventory != fabricator.InputContainer.Inventory);
-                if (!anyAvailable) return $"failed: no {name} available on the sub (need {required.Amount - have} more)";
-                var contain = new AIObjectiveContainItem(Bot, ids, fabricator.InputContainer, Ai.ObjectiveManager)
-                {
-                    ItemCount = required.Amount - have,
-                    RemoveEmpty = false,
-                };
-                Run(contain, $"bringing {name} ({have}/{required.Amount}) to the fabricator");
+                Run(new AIObjectiveContainItem(Bot, fetching, fabricator.InputContainer, Ai.ObjectiveManager) { RemoveEmpty = false },
+                    $"bringing {name} ({have}/{required.Amount}) to the fabricator");
                 return null;
             }
-            if (ObjectiveFailed) return $"failed: could not bring {required.FirstMatchingPrefab?.Name.Value ?? "an ingredient"}";
-            if (ObjectiveDone) { ClearObjective(); continue; }  // re-check the count
+            if (ObjectiveFailed) return $"failed: could not put {name} into the fabricator (input full or unreachable?)";
+            if (ObjectiveDone) { fetching = null; ClearObjective(); continue; }  // re-check the count
             return null;
         }
 

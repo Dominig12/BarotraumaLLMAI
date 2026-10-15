@@ -70,6 +70,7 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
             body["tools"] = tools;
             body["tool_choice"] = "auto";
         }
+        JsonUtil.Merge(body, cfg.ExtraBody);
         return body;
     }
 
@@ -78,7 +79,8 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
         var root = JsonNode.Parse(raw) as JsonObject ?? throw new FormatException("response is not a JSON object");
         if (root["error"] is JsonNode err) throw new FormatException("provider error: " + JsonUtil.Trim(err.ToJsonString()));
 
-        var message = root["choices"]?[0]?["message"];
+        var choice = root["choices"]?[0];
+        var message = choice?["message"];
         var text = Thinking.Strip(JsonUtil.Str(message?["content"]) ?? "");
 
         var calls = new List<ToolCall>();
@@ -96,7 +98,9 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
 
         return new LlmResponse(text, calls,
             JsonUtil.Int(root["usage"]?["prompt_tokens"]),
-            JsonUtil.Int(root["usage"]?["completion_tokens"]));
+            JsonUtil.Int(root["usage"]?["completion_tokens"]),
+            Truncated: JsonUtil.Str(choice?["finish_reason"]) == "length",
+            ReasoningTokens: JsonUtil.Int(root["usage"]?["completion_tokens_details"]?["reasoning_tokens"]));
     }
 
     public async Task<LlmResponse> CompleteAsync(LlmRequest req, CancellationToken ct)

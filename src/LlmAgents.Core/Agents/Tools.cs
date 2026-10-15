@@ -74,6 +74,8 @@ public static class Tools
             OrderArgs(("room", "string", "Room id from the 'rooms' list, e.g. \"Engine Room [h57]\"", null, true))),
         new("follow", "Follow a crew member (a player or another bot).",
             OrderArgs(("target", "string", "Crew member name from 'crew'", null, true))),
+        new("come_to", "Go to a crew member wherever they are now (keeps up if they move) and stay with them for a while; then the order is over and you are told so. Use for 'come to me', 'ко мне', 'сюда', 'all to me'. Better than go_to_room, which sends you to a room they may already have left.",
+            Schema(("target", "string", "Crew member name from 'crew' (the player who called)", null, true))),
         new("fix_leaks", "Weld hull breaches / leaks anywhere on the sub.", OrderArgs()),
         new("repair_systems", "Repair damaged devices and machinery.", OrderArgs()),
         new("extinguish_fires", "Put out fires.", OrderArgs()),
@@ -202,6 +204,8 @@ public static class Tools
             {
                 case "go_to_room":
                     return Need(Str(a, "room"), "room", v => game.GoToRoom(agent.Id, v, Priority(a)));
+                case "come_to":
+                    return Need(Str(a, "target"), "target", v => game.ComeTo(agent.Id, v));
                 case "follow":
                     return Need(Str(a, "target"), "target", v => game.Follow(agent.Id, v, Priority(a)));
                 case "operate":

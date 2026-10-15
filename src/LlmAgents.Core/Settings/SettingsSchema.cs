@@ -77,6 +77,16 @@ public static class SettingsSchema
             "Ответ модели — план: задача (надеть, скрафтить, разобрать...) или переход в отсек завершается до начала следующего шага, " +
             "и бота не спрашивают заново, пока план не выполнен, шаг не провалился, игрок не отдал приказ или не случилось что-то новое и срочное. " +
             "Выключено: все действия ответа выполняются сразу (следующая задача отменяет предыдущую).");
+        Add(F(General, "Реже думать, когда нечего делать", FieldType.Bool, V(g.IdleBackoff), "global", "idleBackoff"),
+            "Если плановые решения бота ничего не меняют («жду», «уже делаю»), следующие идут всё реже (×2, ×4...) до предела ниже. " +
+            "Приказ, сообщение, тревога или результат задачи сразу возвращают обычный темп. Экономит запросы и убирает болтовню «жду указаний».");
+        Add(F(General, "Ждать у игрока после «ко мне», с", FieldType.Float, V(g.ComeToWaitSeconds), "global", "comeToWaitSeconds"),
+            "Сколько бот стоит рядом с позвавшим (и идёт за ним, если тот уходит), прежде чем приказ «ко мне» считается выполненным.", 5, 600);
+        Add(F(General, "Цель забывается через, мин", FieldType.Float, V(g.GoalTimeoutMinutes), "global", "goalTimeoutMinutes"),
+            "Старая цель снимается, чтобы давно выполненный приказ не держал бота весь раунд (бот может поставить её снова). 0 = никогда.", 0, 120);
+        Add(F(General, "Предел паузы без дела, с", FieldType.Float, V(g.MaxIdleIntervalSeconds), "global", "maxIdleIntervalSeconds"), min: 5, max: 600);
+        Add(F(General, "Ждать разборщика приказов, с", FieldType.Float, V(s.Chat.DispatchWaitSeconds), "chat", "dispatchWaitSeconds"),
+            "Если для разбора приказа из чата нет свободного запроса к модели так долго, приказ получают боты по именам в тексте (или все, кто слышал), а не теряется.", 1, 60);
         Add(F(General, "Пересмотр плана не реже, с", FieldType.Float, V(g.MaxPlanSeconds), "global", "maxPlanSeconds"),
             "Если план выполняется дольше, бот думает снова (и может продолжить план).", 20, 1200);
         Add(F(General, "Ожидание прихода в отсек, с", FieldType.Float, V(g.PlanStepTimeoutSeconds), "global", "planStepTimeoutSeconds"),
@@ -132,11 +142,14 @@ public static class SettingsSchema
             }
             Add(F(Models, "Адрес API", FieldType.String, V(p.BaseUrl), "providers", p.Name, "baseUrl"), group: grp);
             Add(F(Models, "Переменная с ключом", FieldType.String, V(p.ApiKeyEnv), "providers", p.Name, "apiKeyEnv"), group: grp);
+            Add(F(Models, "Прокси", FieldType.String, V(p.Proxy), "providers", p.Name, "proxy"),
+                "Например http://127.0.0.1:10809 или socks5://127.0.0.1:1080, если API недоступен напрямую. Пусто = системные настройки прокси.", group: grp);
             Add(F(Models, "Вызов инструментов", FieldType.Enum, V(p.ToolMode), "providers", p.Name, "toolMode"),
                 "native: tool calling самого API. prompt: инструменты описаны в промпте, ответ JSON (для Gemma и т.п.).",
                 options: new() { "native", "prompt" }, group: grp);
             Add(F(Models, "Температура", FieldType.Float, V(p.Temperature), "providers", p.Name, "temperature"), min: 0, max: 2, group: grp);
-            Add(F(Models, "Токенов в ответе", FieldType.Int, V(p.MaxOutputTokens), "providers", p.Name, "maxOutputTokens"), min: 50, max: 4000, group: grp);
+            Add(F(Models, "Токенов в ответе", FieldType.Int, V(p.MaxOutputTokens), "providers", p.Name, "maxOutputTokens"),
+                "План из нескольких шагов с русским текстом занимает 500–900 токенов; рассуждающим моделям нужно больше. Если в логе «reply was cut off» — увеличьте.", 50, 8000, group: grp);
             Add(F(Models, "Таймаут, с", FieldType.Float, V(p.TimeoutSeconds), "providers", p.Name, "timeoutSeconds"), min: 1, max: 300, group: grp);
             Add(F(Models, "Одновременных запросов", FieldType.Int, V(p.MaxConcurrent), "providers", p.Name, "maxConcurrent"), min: 1, max: 32, group: grp);
             Add(F(Models, "Запросов в минуту", FieldType.Int, V(p.RequestsPerMinute), "providers", p.Name, "requestsPerMinute"), "0 = без лимита.", 0, 10000, group: grp);

@@ -25,7 +25,11 @@ public sealed record LlmResponse(
     string Text,
     IReadOnlyList<ToolCall> ToolCalls,
     int InputTokens,
-    int OutputTokens);
+    int OutputTokens,
+    // the answer hit the output token limit (finish_reason "length" / stop_reason "max_tokens")
+    bool Truncated = false,
+    // tokens the model spent "thinking" (if the server reports them)
+    int ReasoningTokens = 0);
 
 public interface ILlmProvider
 {
@@ -35,6 +39,13 @@ public interface ILlmProvider
 
 internal static class JsonUtil
 {
+    /// <summary>Provider-specific request fields from the config (extraBody), e.g. {"reasoning": {"enabled": false}}.</summary>
+    public static void Merge(JsonObject body, JsonObject? extra)
+    {
+        if (extra == null) return;
+        foreach (var (k, v) in extra) body[k] = v?.DeepClone();
+    }
+
     public static int Int(JsonNode? n)
     {
         if (n is not JsonValue v) return 0;

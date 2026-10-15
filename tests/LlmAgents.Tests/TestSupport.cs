@@ -61,7 +61,10 @@ public sealed class FakeGame : IGameApi
     public string GoToRoom(int botId, string roomId, int priority = Tools.TopPriority) =>
         Observations[botId].Rooms.Any(r => r.Id == roomId) ? Act(botId, $"goto {roomId}{P(priority)}") : $"error: unknown room '{roomId}'";
     public string Follow(int botId, string targetName, int priority = Tools.TopPriority) => Act(botId, $"follow {targetName}{P(priority)}");
-    public string SimpleOrder(int botId, string orderKey, int priority = Tools.TopPriority) => Act(botId, orderKey + P(priority));
+    public string ComeTo(int botId, string targetName) => Act(botId, $"come to {targetName}", "ok, started: come to " + targetName);
+    /// <summary>What SimpleOrder answers (e.g. "ok (already doing that)").</summary>
+    public string SimpleOrderResult = "ok";
+    public string SimpleOrder(int botId, string orderKey, int priority = Tools.TopPriority) => Act(botId, orderKey + P(priority), SimpleOrderResult);
     public string Operate(int botId, string role, string? option, int priority = Tools.TopPriority) => Act(botId, $"operate {role} {option}".TrimEnd() + P(priority));
     public string SetOrderPriority(int botId, string order, int priority) => Act(botId, $"priority {order} {priority}");
     public string Dismiss(int botId) => Act(botId, "dismiss");

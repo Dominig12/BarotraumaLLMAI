@@ -68,6 +68,7 @@ internal sealed class SettingsBridge
     public bool TryHandleChat(Client sender, string text)
     {
         if (!SettingsService.IsCommand(text)) return false;
+        text = SettingsService.NormalizeCommand(text);
         if (net == null)
         {
             try { Register(); } catch { /* the window stays unavailable; text commands still work */ }
