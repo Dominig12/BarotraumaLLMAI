@@ -85,6 +85,15 @@ public static class Tools
         new("treat", "Treat a wounded crew member (or yourself) with medicine. Without 'item' the cheapest treatment that is good enough is chosen, so precious medicine is not wasted.",
             Schema(("target", "string", "Crew member name, or 'me'", null, true),
                    ("item", "string", "Optional: a specific medical item to use, e.g. 'bandage'", null, false))),
+        new("unequip", "Take off a worn item or put a held item away into your inventory (it stays with you).",
+            Schema(("item", "string", "Item you wear or hold", null, true))),
+        new("drop", "Drop an item from your inventory on the floor here.",
+            Schema(("item", "string", "Item in your inventory", null, true))),
+        new("move_item", "Carry an item somewhere: into a container (cabinet, locker...), to a room (left on the floor), or hand it to a crew member.",
+            Schema(("item", "string", "Item to carry (yours or one on the sub)", null, true),
+                   ("to", "string", "A container name (e.g. 'medical cabinet', 'locker'), a room id from 'rooms', or a crew member name", null, true))),
+        new("keep_gear", "Lock or unlock your diving gear. While locked you never take the diving suit/mask off by yourself, even in dry rooms. Turn it on before or during combat and whenever the hull may be breached.",
+            Schema(("on", "boolean", "true = keep it on, false = normal behaviour", null, true))),
         new("inspect", "Look something up; the answer appears in lastActionResults next turn. kind: patient (injuries and suitable medicine for a crew member), items (where items are and how many), recipe (what an item needs at the fabricator and whether it is available).",
             Schema(("kind", "string", "What to look up", InspectKinds.ToArray(), true),
                    ("query", "string", "Crew member name (patient) or item name (items, recipe)", null, true))),
@@ -167,6 +176,23 @@ public static class Tools
                         var target = v.Equals("me", StringComparison.OrdinalIgnoreCase) || v.Equals("self", StringComparison.OrdinalIgnoreCase) ? agent.Name : v;
                         return game.Treat(agent.Id, target, string.IsNullOrEmpty(item) ? null : item);
                     });
+                case "unequip":
+                    return Need(Str(a, "item"), "item", v => game.Unequip(agent.Id, v));
+                case "drop":
+                    return Need(Str(a, "item"), "item", v => game.Drop(agent.Id, v));
+                case "move_item":
+                {
+                    var item = Str(a, "item");
+                    var to = Str(a, "to");
+                    if (string.IsNullOrEmpty(item) || string.IsNullOrEmpty(to)) return "error: 'item' and 'to' are required";
+                    return game.MoveItem(agent.Id, item!, to!);
+                }
+                case "keep_gear":
+                {
+                    var on = Str(a, "on")?.ToLowerInvariant();
+                    if (on is not ("true" or "false" or "on" or "off" or "1" or "0" or "yes" or "no")) return "error: 'on' must be true or false";
+                    return game.KeepGear(agent.Id, on is "true" or "on" or "1" or "yes");
+                }
                 case "inspect":
                 {
                     var kind = Str(a, "kind")?.ToLowerInvariant();

@@ -30,7 +30,7 @@ public sealed class GameAdapter : IGameApi
     readonly Dictionary<ushort, HashSet<string>> ownOrders = new();   // signatures of orders this mod issued, per bot
     readonly Dictionary<ushort, bool> authority = new();
     readonly List<GameReport> reports = new();
-    double nextTaskTick;
+    double nextTaskTick, nextDangerCheck;
 
     public GameAdapter(ModSettings settings) { this.settings = settings; }
 
@@ -76,10 +76,13 @@ public sealed class GameAdapter : IGameApi
         o.CurrentOrder = DescribeOrders(c);
         o.CurrentTask = tasks.TryGetValue(c.ID, out var task) ? task.Describe() : null;
 
-        o.Inventory = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>())
+        var carried = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>()).ToList();
+        o.Equipped = carried.Where(i => c.HasEquippedItem(i)).Select(ItemQueries.Label).Distinct().Take(10).ToList();
+        o.Inventory = carried.Where(i => !c.HasEquippedItem(i))
             .GroupBy(i => i.Prefab)
             .Select(g => g.Count() > 1 ? $"{ItemQueries.Label(g.First())} x{g.Count()}" : ItemQueries.Label(g.First()))
             .Take(20).ToList();
+        o.Gear = DescribeGear(c);
 
         var sub = c.Submarine;
         if (sub != null)
@@ -139,6 +142,23 @@ public sealed class GameAdapter : IGameApi
             .Take(6).ToList();
 
         return o;
+    }
+
+    static string DescribeGear(Character c)
+    {
+        var suit = c.Inventory?.FindEquippedItemByTag(Tags.HeavyDivingGear);
+        var mask = suit == null ? c.Inventory?.FindEquippedItemByTag(Tags.LightDivingGear) : null;
+        var worn = suit ?? mask;
+        string s;
+        if (worn == null) s = "no diving gear on";
+        else
+        {
+            var tank = worn.OwnInventory?.AllItems.FirstOrDefault(i => i.HasTag(Tags.OxygenSource));
+            s = $"{worn.Name} on ({(tank != null ? $"oxygen {tank.Condition:0}%" : "NO oxygen tank")})";
+        }
+        if (GearLock.IsManual(c)) s += "; gear locked (keep_gear)";
+        else if (GearLock.InDanger(c)) s += "; DANGER: gear locked automatically";
+        return s;
     }
 
     internal static int HealthPercent(Character c) =>
@@ -398,6 +418,11 @@ public sealed class GameAdapter : IGameApi
     /// <summary>Called every frame from the plugin; ticks the running tasks a few times per second.</summary>
     public void Tick()
     {
+        if (Timing.TotalTime >= nextDangerCheck)
+        {
+            nextDangerCheck = Timing.TotalTime + 1.0;
+            try { GearLock.UpdateDanger(settings); } catch (Exception e) { Log.Warn("danger check failed: " + e.Message); }
+        }
         if (tasks.Count == 0 || Timing.TotalTime < nextTaskTick) return;
         nextTaskTick = Timing.TotalTime + TaskTickSeconds;
         foreach (var (id, task) in tasks.ToList())
@@ -411,6 +436,7 @@ public sealed class GameAdapter : IGameApi
 
     public void Reset()
     {
+        GearLock.Reset();
         foreach (var t in tasks.Values) t.Cancel();
         tasks.Clear();
         ownOrders.Clear();
@@ -498,6 +524,81 @@ public sealed class GameAdapter : IGameApi
         if (itemQuery == null && ItemQueries.ChooseTreatment(c, patient) == null)
             return $"error: no medicine on the sub helps with {ItemQueries.DescribeInjuries(patient)}; craft some (inspect recipe) or find it";
         return StartTask(c, new TreatTask(c, ai, patient, itemQuery));
+    }
+
+    // --------------------------------------------------------------- inventory
+
+    static Item? FindCarried(Character c, string query) =>
+        (c.Inventory?.AllItems ?? Enumerable.Empty<Item>())
+            .Select(i => (i, score: ItemQueries.MatchScore(i.Prefab, query)))
+            .Where(t => t.score > 0)
+            .OrderByDescending(t => t.score)
+            .ThenByDescending(t => c.HasEquippedItem(t.i) ? 1 : 0)
+            .Select(t => t.i)
+            .FirstOrDefault();
+
+    public string Unequip(int botId, string query)
+    {
+        if (Find(botId) is not { } c) return "error: character gone";
+        var item = FindCarried(c, query);
+        if (item == null) return $"error: you don't carry '{query}'";
+        if (!c.HasEquippedItem(item)) return $"ok ({item.Name} is not equipped)";
+        if (item.HasTag(Tags.HeavyDivingGear) && GearLock.IsLocked(c) && !HasAuthority(c))
+            return "error: your diving gear is locked (danger or keep_gear); turn keep_gear off first if it is really safe";
+        if (c.Inventory.TryPutItem(item, c, new List<InvSlotType> { InvSlotType.Any })) return $"ok, {item.Name} put away";
+        return $"error: no free inventory slot for {item.Name}; drop or store something first";
+    }
+
+    public string Drop(int botId, string query)
+    {
+        if (Find(botId) is not { } c) return "error: character gone";
+        var item = FindCarried(c, query);
+        if (item == null) return $"error: you don't carry '{query}'";
+        if (item.HasTag(Tags.HeavyDivingGear) && c.HasEquippedItem(item) && GearLock.IsLocked(c) && !HasAuthority(c))
+            return "error: your diving gear is locked (danger or keep_gear)";
+        item.Drop(c);
+        return $"ok, dropped {item.Name}";
+    }
+
+    public string MoveItem(int botId, string query, string to)
+    {
+        if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
+        var item = FindCarried(c, query) ?? ItemQueries.Find(c, query).FirstOrDefault();
+        if (item == null) return $"error: no '{query}' available";
+        if (item.HasTag(Tags.HeavyDivingGear) && c.HasEquippedItem(item) && GearLock.IsLocked(c) && !HasAuthority(c))
+            return "error: your diving gear is locked (danger or keep_gear)";
+
+        // a crew member?
+        var receiver = FindCrew(to, c, includeSelf: false);
+        if (receiver != null) return StartTask(c, new MoveItemTask(c, ai, item, null, null, receiver, receiver.Name));
+
+        // a room?
+        var hull = to.Contains("[h") ? ResolveRoom(to) : null;
+        if (hull != null) return StartTask(c, new MoveItemTask(c, ai, item, null, hull, null, RoomId(hull)));
+
+        // a container on the sub that accepts the item
+        var container = Item.ItemList
+            .Where(i => i.Submarine == c.Submarine && !i.Removed && i != item && i.GetRootInventoryOwner() is not Character)
+            .Select(i => (i, ic: i.GetComponent<ItemContainer>(), score: ItemQueries.MatchScore(i.Prefab, to)))
+            .Where(t => t.ic != null && t.score > 0 && t.ic.Inventory.CanBePut(item))
+            .OrderByDescending(t => t.score)
+            .ThenBy(t => Vector2.DistanceSquared(t.i.WorldPosition, c.WorldPosition))
+            .FirstOrDefault();
+        if (container.ic != null)
+            return StartTask(c, new MoveItemTask(c, ai, item, container.ic, null, null, $"{container.i.Name} in {(container.i.CurrentHull != null ? RoomId(container.i.CurrentHull) : "?")}"));
+
+        hull = ResolveRoom(to);
+        if (hull != null) return StartTask(c, new MoveItemTask(c, ai, item, null, hull, null, RoomId(hull)));
+        return $"error: '{to}' is not a crew member, a room id or a container that can hold {item.Name}";
+    }
+
+    public string KeepGear(int botId, bool on)
+    {
+        if (Find(botId) is not { } c) return "error: character gone";
+        GearLock.SetManual(c, on);
+        if (!on) return GearLock.InDanger(c) ? "ok, unlocked (but it stays locked automatically while there is danger)" : "ok, gear unlocked";
+        var hasSuit = c.Inventory?.FindEquippedItemByTag(Tags.HeavyDivingGear) != null;
+        return hasSuit ? "ok, diving gear locked on" : "ok, locked; you wear no diving suit yet: equip 'diving suit' to be safe";
     }
 
     // --------------------------------------------------------------- inspect

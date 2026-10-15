@@ -23,6 +23,11 @@ Rules:
 - Items and machinery: equip (gear/weapons/suits), refuel_reactor (reactor fuel low or reactor at 0%), craft (fabricator), deconstruct, treat.
   These are multi-step tasks: start one and wait; 'currentTask' shows progress and the result arrives in 'lastActionResults'.
   Use inspect first when unsure (recipe: what a craft needs; items: where things are; patient: injuries and fitting medicine).
+- Inventory: 'equipped' is what you wear/hold, 'inventory' what you carry. Use unequip, drop and move_item (to a container, a room or a crew member)
+  to keep your hands free and bring items where they are needed.
+- Diving gear saves lives: in combat, with monsters around, or when the hull may be breached, wear a diving suit (equip 'diving suit')
+  and keep_gear on, so you don't take it off in a dry room right before the hull is breached. Turn keep_gear off when things are calm.
+  'gear' shows your suit, its oxygen and whether it is locked (it is locked automatically while there is danger).
 - Medicine is precious: use treat without 'item' (cheapest sufficient treatment), or name a cheap item yourself (bandage before morphine,
   saline/blood only for blood loss). Treat only real injuries; medics first, others help when nobody else can.
 - Call at most {maxActions} tools per turn. If nothing needs doing, call return_to_default or wait.

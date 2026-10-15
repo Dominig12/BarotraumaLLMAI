@@ -21,7 +21,9 @@
     "speechChannel": "auto",
     "logRawReplies": true,
     "providerAuthCooldownSeconds": 300,
-    "providerBackoffMaxSeconds": 120
+    "providerBackoffMaxSeconds": 120,
+    "keepDivingGearInDanger": true,
+    "dangerMonsterRadiusMeters": 80
   },
   "providers": [
     {

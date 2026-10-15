@@ -47,6 +47,15 @@ public interface IGameApi
     /// <summary>item null = choose the cheapest treatment that is good enough.</summary>
     string Treat(int botId, string target, string? item);
 
+    // ---- inventory
+    /// <summary>Move a worn/held item into the bot's own inventory.</summary>
+    string Unequip(int botId, string item);
+    string Drop(int botId, string item);
+    /// <summary>to = container name, room id, or crew member name. Multi-step task.</summary>
+    string MoveItem(int botId, string item, string to);
+    /// <summary>While on, the bot never takes its diving gear off by itself (except when its suit runs out of air).</summary>
+    string KeepGear(int botId, bool on);
+
     /// <summary>Immediate lookup. kind: patient | items | recipe.</summary>
     string Inspect(int botId, string kind, string query);
 

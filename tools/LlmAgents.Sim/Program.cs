@@ -16,7 +16,7 @@ using LlmAgents.Llm;
 //
 // Scripted events: a hull breach at t=8s, a fire at t=20s, a crawler boarding at t=35s,
 // and player chat orders at t=14s ("Механики, откачайте воду насосами"), t=28s ("Анна, иди в медотсек"),
-// t=40s ("Анна, вылечи Макса, только бинтами") and t=44s ("Ольга, перезаряди реактор").
+// t=33s ("Всем надеть водолазные костюмы, идёт бой"), t=40s ("Анна, вылечи Макса, только бинтами") and t=44s ("Ольга, перезаряди реактор").
 // While it runs you can also type your own chat orders into the console (as the player "Daniil").
 // Bots react via their LLM. Actions change the fake world (fix_leaks seals the breach, etc.).
 // ---------------------------------------------------------------------------------------------
@@ -71,8 +71,10 @@ if (scriptedChat)
 {
     script.Add((14, "Механики, откачайте воду насосами"));
     script.Add((28, "Анна, иди в медотсек"));
+    script.Add((33, "Всем надеть водолазные костюмы, идёт бой"));
     script.Add((40, "Анна, вылечи Макса, только бинтами"));
     script.Add((44, "Ольга, перезаряди реактор"));
+
 }
 
 void SendChat(string text)
@@ -172,6 +174,7 @@ sealed class SimWorld : IGameApi
             Rooms = rooms.Select(r => new RoomInfo(r, RoomWater(r), RoomFire(r))).ToList(),
             Crew = bots.Where(b => b != me).Select(b => new CrewInfo(b.Name, b.Job, b.Room, b.Health, false, b.Order)).ToList(),
             Leaks = Breach ? new() { "Ballast [h5]" } : new(),
+            Gear = (gearOn.Contains(me.Id) ? "Diving Suit on (oxygen 100%)" : "no diving gear on") + (Breach || Intruder ? "; DANGER: gear locked automatically" : ""),
             Threats = Intruder ? new() { new ThreatInfo("Crawler", me.Room == "Crew Quarters [h3]" ? 2 : 14, "Crew Quarters [h3]") } : new(),
         };
     }
@@ -200,7 +203,8 @@ sealed class SimWorld : IGameApi
 
     readonly List<GameReport> reports = new();
     public void BeginCommand(int botId, bool playerAuthority) { }
-    public string Equip(int botId, string item) { Report(botId, $"task 'equip {item}' ok: equipped"); return Do(botId, $"equip {item}"); }
+    readonly HashSet<int> gearOn = new();
+    public string Equip(int botId, string item) { if (item.Contains("suit")) gearOn.Add(botId); Report(botId, $"task 'equip {item}' ok: equipped"); return Do(botId, $"equip {item}"); }
     public string RefuelReactor(int botId) { Report(botId, "task 'refuel reactor' ok: fuel rod loaded"); return Do(botId, "refuel reactor"); }
     public string Craft(int botId, string item, int amount) { Report(botId, $"task 'craft {item}' ok: made {amount}"); return Do(botId, $"craft {item} x{amount}"); }
     public string Deconstruct(int botId, string item) { Report(botId, $"task 'deconstruct {item}' ok"); return Do(botId, $"deconstruct {item}"); }
@@ -212,6 +216,10 @@ sealed class SimWorld : IGameApi
         Report(botId, $"task 'treat {p.Name}' ok: used {item ?? "Bandage"} x1, health {p.Health}%");
         return Do(botId, $"treat {p.Name} with {item ?? "cheapest"}");
     }
+    public string Unequip(int botId, string item) => Do(botId, $"unequip {item}");
+    public string Drop(int botId, string item) => Do(botId, $"drop {item}");
+    public string MoveItem(int botId, string item, string to) { Report(botId, $"task 'move {item}' ok: delivered to {to}"); return Do(botId, $"move {item} -> {to}"); }
+    public string KeepGear(int botId, bool on) => Do(botId, on ? "keep gear ON" : "keep gear off");
     public string Inspect(int botId, string kind, string query) => kind switch
     {
         "patient" => $"{query}: injuries: bleeding 20 (torso); treatments: Bandage [antibleeding1] (suitability 40, price 10, available 6)",

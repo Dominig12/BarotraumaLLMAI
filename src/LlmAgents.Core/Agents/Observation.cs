@@ -21,7 +21,12 @@ public sealed class Observation
     public string? CurrentTask { get; set; }
     /// <summary>Own injuries, e.g. "burn 30 (left arm), bleeding 12".</summary>
     public string? Injuries { get; set; }
+    /// <summary>Items worn or held (equipped).</summary>
+    public List<string> Equipped { get; set; } = new();
+    /// <summary>Other items carried.</summary>
     public List<string> Inventory { get; set; } = new();
+    /// <summary>Diving gear state, e.g. "diving suit on (oxygen 80%); gear locked (danger)".</summary>
+    public string? Gear { get; set; }
     /// <summary>Medical items available on the sub (own inventory first), with counts. Only filled when someone is hurt or for medics.</summary>
     public List<string>? MedicalSupplies { get; set; }
     public SubInfo? Submarine { get; set; }
@@ -41,7 +46,12 @@ public sealed class Observation
     public bool Urgent =>
         HealthPercent < 50 || OxygenPercent < 40 || RoomWaterPercent > 60 || RoomFires > 0 ||
         Threats.Count > 0 || Leaks.Count > 0 ||
-        (Submarine?.ReactorFuelPercent is int fuel && fuel < 10) || (Submarine?.OxygenPercent is int o2 && o2 < 50);
+        (Submarine?.ReactorFuelPercent is int fuel && fuel < 10) || (Submarine?.OxygenPercent is int o2 && o2 < 50) ||
+        DangerWithoutSuit;
+
+    /// <summary>The sub is in danger and this bot wears no diving gear: think now, put a suit on.</summary>
+    [JsonIgnore]
+    public bool DangerWithoutSuit => Gear != null && Gear.Contains("DANGER") && Gear.StartsWith("no diving gear");
 
     static readonly JsonSerializerOptions Opts = new()
     {

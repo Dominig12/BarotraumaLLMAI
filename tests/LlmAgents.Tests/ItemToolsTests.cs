@@ -32,6 +32,11 @@ public class ItemToolsTests
     [InlineData("deconstruct", "{\"item\":\"old wrench\"}", "1:deconstruct old wrench")]
     [InlineData("treat", "{\"target\":\"Mose Giorgio\"}", "1:treat Mose Giorgio")]
     [InlineData("treat", "{\"target\":\"me\",\"item\":\"bandage\"}", "1:treat Tyler Sexton with bandage")]
+    [InlineData("unequip", "{\"item\":\"welding tool\"}", "1:unequip welding tool")]
+    [InlineData("drop", "{\"item\":\"empty tank\"}", "1:drop empty tank")]
+    [InlineData("move_item", "{\"item\":\"bandage\",\"to\":\"Mose Giorgio\"}", "1:move bandage -> Mose Giorgio")]
+    [InlineData("keep_gear", "{\"on\":true}", "1:keepgear True")]
+    [InlineData("keep_gear", "{\"on\":\"off\"}", "1:keepgear False")]
     public void MapsToGame(string tool, string args, string expected)
     {
         Assert.StartsWith("ok", Run(tool, args));
@@ -47,6 +52,8 @@ public class ItemToolsTests
         Assert.StartsWith("error: kind must be", Run("inspect", "{\"kind\":\"weather\",\"query\":\"x\"}"));
         Assert.StartsWith("error: missing 'query'", Run("inspect", "{\"kind\":\"items\"}"));
         Assert.StartsWith("error: missing 'item'", Run("craft", "{}"));
+        Assert.StartsWith("error: 'on' must be", Run("keep_gear", "{\"on\":\"maybe\"}"));
+        Assert.StartsWith("error: 'item' and 'to'", Run("move_item", "{\"item\":\"x\"}"));
     }
 
     [Fact]
@@ -100,5 +107,18 @@ public class TaskReportsAndAuthorityTests
         mgr.SubmitChat(new ChatCommand("Daniil", null, "Tyler, fix leaks", new[] { 1 }, true));
         for (int i = 0; i < 6; i++) { clock.Advance(0.5); mgr.Update(); await mgr.WhenIdle(); }
         Assert.True(game.Authority[1]);                       // carrying out a chat order: may replace it
+    }
+
+    [Fact]
+    public void DangerWithoutSuitIsUrgent()
+    {
+        var o = new Observation { Gear = "no diving gear on; DANGER: gear locked automatically" };
+        Assert.True(o.Urgent);
+        o.Gear = "Водолазный костюм on (oxygen 90%); DANGER: gear locked automatically";
+        Assert.False(o.Urgent);
+        o.Gear = "no diving gear on";
+        Assert.False(o.Urgent);
+        Assert.DoesNotContain("dangerWithoutSuit", o.ToJson());
+        Assert.Contains("\"gear\":\"no diving gear on\"", o.ToJson());
     }
 }

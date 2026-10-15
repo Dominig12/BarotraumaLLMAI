@@ -68,8 +68,9 @@ def decide(obs: dict) -> list[dict]:
             calls.append({"name": "refuel_reactor", "arguments": {}})
         elif any(w in text for w in ["скрафт", "сделай", "изготов", "craft"]):
             calls.append({"name": "craft", "arguments": {"item": "bandage", "amount": 2}})
-        elif any(w in text for w in ["надень", "экипир", "equip", "wear"]):
+        elif any(w in text for w in ["надень", "надеть", "экипир", "equip", "wear", "костюм"]):
             calls.append({"name": "equip", "arguments": {"item": "diving suit"}})
+            calls.append({"name": "keep_gear", "arguments": {"on": True}})
         elif "насос" in text or "pump" in text:
             calls.append({"name": "operate", "arguments": {"role": "pumps", "option": "pumpout"}})
         elif "реактор" in text or "reactor" in text:

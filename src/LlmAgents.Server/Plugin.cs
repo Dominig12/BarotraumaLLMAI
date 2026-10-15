@@ -59,6 +59,15 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         // only chat orders are lost, not the whole mod.
         try
         {
+            GearLock.Patch();
+        }
+        catch (Exception e)
+        {
+            Log.Error("diving gear lock disabled, could not patch the game: " + e.Message);
+        }
+
+        try
+        {
             SubscribeChat();
         }
         catch (Exception e)
@@ -161,6 +170,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
             if (chatListener != null) UnsubscribeChat();
         }
         catch { /* shutting down */ }
+        try { GearLock.Unpatch(); } catch { /* shutting down */ }
         manager?.Dispose();
         manager = null;
         adapter = null;

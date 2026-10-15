@@ -133,6 +133,10 @@ public sealed class GlobalSettings
     /// "radio" = same as auto (radio is always preferred); "local" = always out loud, nearby only.
     /// </summary>
     public string SpeechChannel { get; set; } = "auto";
+    /// <summary>While the sub is in danger (monsters nearby, breaches, water aboard, intruders) bots never take off their diving gear.</summary>
+    public bool KeepDivingGearInDanger { get; set; } = true;
+    /// <summary>Monsters closer than this to the sub count as danger.</summary>
+    public double DangerMonsterRadiusMeters { get; set; } = 80;
     /// <summary>A provider that answers 401/403/404 (bad key, region block, unknown model) is skipped for this long.</summary>
     public double ProviderAuthCooldownSeconds { get; set; } = 300;
     /// <summary>After 429/5xx/timeouts a provider is paused 5 s, 10 s, 20 s... up to this many seconds.</summary>

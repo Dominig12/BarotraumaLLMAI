@@ -369,3 +369,84 @@ internal sealed class TreatTask : BotTask
         return null;
     }
 }
+
+// ------------------------------------------------------------------------------------------- carrying
+
+/// <summary>Carry an item into a container, to a room (dropped there) or into a crew member's inventory.</summary>
+internal sealed class MoveItemTask : BotTask
+{
+    readonly Item item;
+    readonly ItemContainer? container;
+    readonly Hull? room;
+    readonly Character? receiver;
+    readonly string destination;
+    public override string Name => $"move {item.Name} to {destination}";
+
+    public MoveItemTask(Character bot, HumanAIController ai, Item item, ItemContainer? container, Hull? room, Character? receiver, string destination)
+        : base(bot, ai)
+    {
+        this.item = item;
+        this.container = container;
+        this.room = room;
+        this.receiver = receiver;
+        this.destination = destination;
+    }
+
+    protected override string? Update()
+    {
+        if (item.Removed) return $"failed: {item.Name} is gone";
+
+        if (container != null)
+        {
+            if (item.ParentInventory == container.Inventory) return $"ok: {item.Name} is in {destination}";
+            if (!HasObjective)
+            {
+                Run(new AIObjectiveContainItem(Bot, item, container, Ai.ObjectiveManager) { RemoveEmpty = false }, $"carrying {item.Name} to {destination}");
+                return null;
+            }
+            if (ObjectiveFailed) return $"failed: could not put {item.Name} into {destination} (full or unreachable?)";
+            if (ObjectiveDone) return item.ParentInventory == container.Inventory ? $"ok: {item.Name} is in {destination}" : $"failed: {item.Name} did not fit into {destination}";
+            return null;
+        }
+
+        // pick it up first
+        if (item.GetRootInventoryOwner() != Bot)
+        {
+            if (!HasObjective) Run(new AIObjectiveGetItem(Bot, item, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false }, $"getting {item.Name}");
+            else if (ObjectiveFailed) return $"failed: could not get {item.Name}";
+            else if (ObjectiveDone) ClearObjective();
+            return null;
+        }
+
+        if (receiver != null)
+        {
+            if (receiver.Removed || receiver.IsDead) return $"failed: {receiver.Name} is dead";
+            if (!IsNear(receiver, 120f))
+            {
+                if (!HasObjective) Run(GoTo(receiver, 60f), $"bringing {item.Name} to {receiver.Name}");
+                else if (ObjectiveFailed) return $"failed: cannot reach {receiver.Name}";
+                return null;
+            }
+            ClearObjective();
+            if (receiver.Inventory.TryPutItem(item, Bot, new List<InvSlotType> { InvSlotType.Any }))
+                return $"ok: gave {item.Name} to {receiver.Name}";
+            item.Drop(Bot);
+            return $"ok: {receiver.Name}'s inventory is full, left {item.Name} at their feet";
+        }
+
+        if (room != null)
+        {
+            if (Bot.CurrentHull != room)
+            {
+                if (!HasObjective) Run(GoTo(room, 80f), $"carrying {item.Name} to {GameAdapter.RoomId(room)}");
+                else if (ObjectiveFailed) return $"failed: cannot reach {GameAdapter.RoomId(room)}";
+                else if (ObjectiveDone && Bot.CurrentHull != room) return $"failed: did not get into {GameAdapter.RoomId(room)}";
+                return null;
+            }
+            ClearObjective();
+            item.Drop(Bot);
+            return $"ok: left {item.Name} in {GameAdapter.RoomId(room)}";
+        }
+        return "failed: no destination";
+    }
+}
