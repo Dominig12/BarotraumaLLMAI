@@ -272,21 +272,136 @@ internal sealed class CraftTask : BotTask
 internal sealed class DeconstructTask : BotTask
 {
     readonly Item item;
-    public override string Name => $"deconstruct {item.Name}";
+    readonly ItemPrefab prefab;
+    double waitingSince = -1;
+    public override string Name => $"deconstruct {prefab.Name.Value}";
 
-    public DeconstructTask(Character bot, HumanAIController ai, Item item) : base(bot, ai) { this.item = item; }
+    public DeconstructTask(Character bot, HumanAIController ai, Item item) : base(bot, ai)
+    {
+        this.item = item;
+        prefab = item.Prefab;
+    }
+
+    string Done()
+    {
+        var y = Crafting.Yields(prefab, Crafting.Deconstructor(Bot));
+        return $"ok: {prefab.Name.Value} deconstructed" +
+               (y.Count > 0 ? $" into {string.Join(", ", y.Select(t => $"{t.Product.Name.Value} x{t.Amount}"))}{(prefab.RandomDeconstructionOutput ? " (random part of these)" : "")}" : "") +
+               " (in the deconstructor's output)";
+    }
 
     protected override string? Update()
     {
+        if (item.Removed) return Done(); // the deconstructor consumed it
         if (!HasObjective)
         {
             Run(new AIObjectiveDeconstructItem(item, Bot, Ai.ObjectiveManager), $"taking {item.Name} to the deconstructor");
             return null;
         }
-        if (item.Removed || ObjectiveDone) return $"ok: {item.Name} deconstructed (materials are in the deconstructor's output)";
         if (ObjectiveFailed) return $"failed: could not deconstruct {item.Name}";
+        if (!ObjectiveDone) return null;
+
+        // the objective ends once the item is in and the machine is switched on; wait for the result
+        if (waitingSince < 0) waitingSince = Timing.TotalTime;
+        Step = "waiting for the deconstructor";
+        var machine = (item.ParentInventory?.Owner as Item)?.GetComponent<Deconstructor>();
+        if (machine == null) return $"failed: {item.Name} is not in a deconstructor any more";
+        if (!machine.IsActive && Timing.TotalTime - waitingSince > 3) return "failed: the deconstructor stopped (no power?)";
         return null;
     }
+}
+
+/// <summary>deconstruct(item='all', from=...): several items, one after another.</summary>
+internal sealed class DeconstructManyTask : BotTask
+{
+    readonly Queue<Item> items;
+    readonly string where;
+    readonly int total;
+    DeconstructTask? current;
+    readonly List<string> done = new();
+    readonly List<string> failed = new();
+    protected override double TimeoutSeconds => 120 + 90 * total;
+    public override string Name => $"deconstruct {total} item(s) from {where}";
+
+    public DeconstructManyTask(Character bot, HumanAIController ai, List<Item> items, string where) : base(bot, ai)
+    {
+        this.items = new Queue<Item>(items);
+        total = items.Count;
+        this.where = where;
+    }
+
+    protected override string? Update()
+    {
+        while (current == null)
+        {
+            if (items.Count == 0)
+                return (done.Count > 0 ? $"ok: deconstructed {done.Count}/{total}: {string.Join("; ", done)}" : "failed: nothing was deconstructed") +
+                       (failed.Count > 0 ? $". Problems: {string.Join("; ", failed.Distinct().Take(3))}" : "");
+            var next = items.Dequeue();
+            if (!next.Removed) current = new DeconstructTask(Bot, Ai, next);
+        }
+        var r = current.Tick();
+        Step = $"{done.Count + failed.Count + 1}/{total}: {current.Step}";
+        if (r == null) return null;
+        current = null;
+        if (r.StartsWith("ok")) done.Add(r.Replace("ok: ", "").Replace(" (in the deconstructor's output)", ""));
+        else
+        {
+            failed.Add(r);
+            if (r.Contains("no power") || r.Contains("stopped")) { items.Clear(); }  // no point going on
+        }
+        return null;
+    }
+
+    protected override void OnFinish() => current?.Cancel();
+}
+
+/// <summary>craft(salvage=true): break down the planned scrap first, then craft.</summary>
+internal sealed class SalvageAndCraftTask : BotTask
+{
+    readonly Queue<Item> toSalvage;
+    readonly Func<CraftTask> craft;
+    readonly string target;
+    BotTask? current;
+    bool crafting;
+    readonly List<string> salvaged = new();
+    protected override double TimeoutSeconds => 900;
+    public override string Name => $"salvage + craft {target}";
+
+    public SalvageAndCraftTask(Character bot, HumanAIController ai, IEnumerable<Item> salvage, Func<CraftTask> craft, string target) : base(bot, ai)
+    {
+        toSalvage = new Queue<Item>(salvage);
+        this.craft = craft;
+        this.target = target;
+    }
+
+    protected override string? Update()
+    {
+        if (current == null)
+        {
+            if (toSalvage.Count > 0)
+            {
+                var next = toSalvage.Dequeue();
+                if (next.Removed) return null;
+                current = new DeconstructTask(Bot, Ai, next);
+            }
+            else
+            {
+                current = craft();
+                crafting = true;
+            }
+        }
+        var r = current.Tick();
+        Step = (crafting ? "" : $"salvaging ({salvaged.Count + 1}/{salvaged.Count + 1 + toSalvage.Count}): ") + current.Step;
+        if (r == null) return null;
+        current = null;
+        if (crafting) return (salvaged.Count > 0 ? $"salvaged {string.Join(", ", salvaged)}; " : "") + r;
+        if (r.StartsWith("failed")) return $"{r} (while salvaging for {target})";
+        salvaged.Add(r.Replace("ok: ", "").Replace(" (in the deconstructor's output)", ""));
+        return null;
+    }
+
+    protected override void OnFinish() => current?.Cancel();
 }
 
 // ------------------------------------------------------------------------------------------- medicine

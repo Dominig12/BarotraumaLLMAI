@@ -293,7 +293,10 @@ public sealed class AgentManager : IDisposable
         if (!playerOrder && since < g.MinSecondsBetweenCallsPerBot) return null;
         if (playerOrder && since < Math.Min(g.RetrySeconds, g.MinSecondsBetweenCallsPerBot)) return null;
 
-        bool due = playerOrder || agent.WakeUp || agent.HasMail || (autonomous && since >= interval);
+        // Mail is read at the next decision, not instantly: waking the recipient at once made bots answer
+        // each other back and forth ("Roger!" - "Thanks!") faster than anything else happened.
+        bool mailDue = agent.HasMail && since >= Math.Max(g.MinSecondsBetweenCallsPerBot, interval / 2);
+        bool due = playerOrder || agent.WakeUp || mailDue || (autonomous && since >= interval);
         if (!due && !autonomous) return null;
 
         // Observe() walks hulls/gaps/characters, so between scheduled decisions only check urgency now and then.
@@ -329,6 +332,12 @@ public sealed class AgentManager : IDisposable
         agent.LastRequestAt = now;
 
         string obsJson = obs.ToJson();
+        if (takenOrders.Count > 0)
+        {
+            // Said in plain words before the JSON as well: small local models tend to miss it inside a long observation.
+            obsJson = "NEW ORDER" + (takenOrders.Count > 1 ? "S" : "") + " - carry out now, before anything else:\n" +
+                      string.Join("\n", takenOrders.Select(o => "- " + o.Text)) + "\n\nObservation:\n" + obsJson;
+        }
         Settings.Bots.ExtraPromptByJob.TryGetValue(agent.Job, out var extra);
         string system = Prompts.System(agent, g.MaxActionsPerDecision, extra, agent.AiControl, MemoryOn,
             persona: PersonaPrompt(agent), language: Settings.Bots.SpeechLanguage);
@@ -550,7 +559,6 @@ public sealed class AgentManager : IDisposable
         foreach (var t in targets)
         {
             t.Receive(line);
-            t.WakeUp = true;
             t.LogEvent("message " + line);
         }
         from.LogEvent($"told {label}: {text}");
@@ -579,9 +587,16 @@ public sealed class AgentManager : IDisposable
     }
 
     /// <summary>Players hear what bots tell each other (on the radio or nearby, like say).</summary>
+    readonly Queue<double> echoes = new();
+
     void Echo(BotAgent from, string label, string text)
     {
         if (!Settings.Global.ShowBotMessagesInChat) return;
+        int cap = Settings.Global.MaxChatEchoPerMinute;
+        double now = clock();
+        while (echoes.Count > 0 && echoes.Peek() <= now - 60) echoes.Dequeue();
+        if (cap > 0 && echoes.Count >= cap) return; // delivered, but not spoken: players are not flooded
+        echoes.Enqueue(now);
         game.Speak(from.Id, Tools.Clip($"[→ {label}] {text}", MaxChatEcho));
     }
 

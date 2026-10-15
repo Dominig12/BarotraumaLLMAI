@@ -24,7 +24,7 @@ public static class Tools
 
     public static readonly IReadOnlyList<string> OperateRoles = new[] { "reactor", "navigation", "weapons", "pumps" };
 
-    public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipe" };
+    public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipes", "recipe", "salvage" };
 
     public const int MaxCraftAmount = 10;
 
@@ -44,7 +44,7 @@ public static class Tools
 
     public const int MaxSayLength = 160;
     public const int MaxMessageLength = 300;
-    public const int MaxInspectLength = 700;
+    public const int MaxInspectLength = 1400;
 
     static JsonObject Schema(params (string Name, string Type, string Desc, string[]? Enum, bool Required)[] props)
     {
@@ -113,11 +113,13 @@ public static class Tools
             Schema(("item", "string", "Item name or identifier, e.g. 'diving suit', 'harpoon gun', 'welding tool'", null, true))),
         new("refuel_reactor", "Bring a fuel rod to the reactor and load it (replaces a spent rod). Use when reactor fuel is low or the reactor is at 0%.",
             NoArgs()),
-        new("craft", "Gather the ingredients and make an item at a fabricator (medicine, ammo, tools...). Check what is possible with inspect(kind='recipe') first.",
-            Schema(("item", "string", "Item to make, name or identifier", null, true),
-                   ("amount", "integer", $"How many (1-{MaxCraftAmount}, default 1)", null, false))),
-        new("deconstruct", "Bring an item to the deconstructor and break it down into materials.",
-            Schema(("item", "string", "Item name or identifier (the nearest matching loose/stored item is used)", null, true))),
+        new("craft", "Gather the ingredients and make an item at a fabricator (medicine, ammo, tools...). Do NOT guess names: first inspect(kind='recipes') to see what this sub can make, then use the exact name or [id] from that list. If materials are missing, the result says which scrap gives them; salvage=true breaks that scrap down in the deconstructor first and then crafts.",
+            Schema(("item", "string", "Exact name or [id] from inspect(kind='recipes')", null, true),
+                   ("amount", "integer", $"How many (1-{MaxCraftAmount}, default 1)", null, false),
+                   ("salvage", "boolean", "true = deconstruct scrap aboard for missing materials first (never touches medicine, weapons, diving gear, fuel rods or equipped items)", null, false))),
+        new("deconstruct", "Bring an item to the deconstructor and break it down into materials (waits until it is done). inspect(kind='salvage', query=<material>) shows which items give a material.",
+            Schema(("item", "string", "Item name or [id] (the nearest matching loose/stored item is used); 'all' together with 'from' = everything in that container/room", null, true),
+                   ("from", "string", "Optional: a container (e.g. 'cabinet', 'шкаф') or a room id; only items there are taken", null, false))),
         new("treat", "Treat a wounded crew member (or yourself) with medicine. Without 'item' the cheapest treatment that is good enough is chosen, so precious medicine is not wasted.",
             Schema(("target", "string", "Crew member name, or 'me'", null, true),
                    ("item", "string", "Optional: a specific medical item to use, e.g. 'bandage'", null, false))),
@@ -130,9 +132,9 @@ public static class Tools
                    ("to", "string", "A container name (e.g. 'medical cabinet', 'locker'), a room id from 'rooms', or a crew member name", null, true))),
         new("keep_gear", "Lock or unlock your diving gear. While locked you never take the diving suit/mask off by yourself, even in dry rooms. Turn it on before or during combat and whenever the hull may be breached.",
             Schema(("on", "boolean", "true = keep it on, false = normal behaviour", null, true))),
-        new("inspect", "Look something up; the answer appears in lastActionResults next turn. kind: patient (injuries and suitable medicine for a crew member), items (where items are and how many), recipe (what an item needs at the fabricator and whether it is available).",
+        new("inspect", "Look something up; the answer appears in lastActionResults next turn. kind: patient (injuries and suitable medicine; no query = everyone hurt), items (where items are and how many), recipes (what the fabricators here can make, what can be made right now; query = optional filter like 'medical', 'ammo', or a material), recipe (one item: ingredients, what is missing and where to get it), salvage (query = a material: which items aboard break down into it; query = an item: what it breaks down into; no query = scrap aboard).",
             Schema(("kind", "string", "What to look up", InspectKinds.ToArray(), true),
-                   ("query", "string", "Crew member name (patient; empty or 'all' = everyone who is hurt) or item name (items, recipe)", null, false))),
+                   ("query", "string", "Crew member (patient), item (items, recipe, salvage), material (salvage), or filter (recipes); optional for patient, recipes, salvage", null, false))),
     };
 
     public static IReadOnlyList<ToolSpec> Filtered(ICollection<string> allowed) => For(allowed, aiControl: true);
@@ -171,7 +173,12 @@ public static class Tools
         {
             if (node is JsonValue v)
             {
-                if (v.TryGetValue<string>(out var s)) return Unquote(s.Trim());
+                if (v.TryGetValue<string>(out var s))
+                {
+                    var t = Unquote(s.Trim());
+                    // models write item=None / target=null for "no value"
+                    return t.Equals("none", StringComparison.OrdinalIgnoreCase) || t.Equals("null", StringComparison.OrdinalIgnoreCase) ? null : t;
+                }
                 return v.ToJsonString().Trim('"').Trim();
             }
             return node.ToJsonString();
@@ -258,10 +265,10 @@ public static class Tools
                     return Need(Str(a, "item"), "item", v =>
                     {
                         int amount = int.TryParse(Str(a, "amount"), out var n) ? n : 1;
-                        return game.Craft(agent.Id, v, Math.Clamp(amount, 1, MaxCraftAmount));
+                        return game.Craft(agent.Id, v, Math.Clamp(amount, 1, MaxCraftAmount), Bool(a, "salvage") == true);
                     });
                 case "deconstruct":
-                    return Need(Str(a, "item"), "item", v => game.Deconstruct(agent.Id, v));
+                    return Need(Str(a, "item"), "item", v => game.Deconstruct(agent.Id, v, Str(a, "from")));
                 case "treat":
                     return Need(Str(a, "target"), "target", v =>
                     {
@@ -291,7 +298,7 @@ public static class Tools
                     var kind = Str(a, "kind")?.ToLowerInvariant();
                     var query = Str(a, "query");
                     if (kind == null || !InspectKinds.Contains(kind)) return $"error: kind must be one of {string.Join(", ", InspectKinds)}";
-                    if (string.IsNullOrEmpty(query) && kind != "patient") return "error: missing 'query' (what to look up)";
+                    if (string.IsNullOrEmpty(query) && kind is "items" or "recipe") return "error: missing 'query' (what to look up)";
                     return Clip(game.Inspect(agent.Id, kind, query ?? ""), MaxInspectLength);
                 }
                 default:

@@ -17,6 +17,7 @@
     "maxNotes": 5,
     "syncOrdersToClients": true,
     "showBotMessagesInChat": true,
+    "maxChatEchoPerMinute": 6,
     "logFile": "llm_agents.log",
     "logPrompts": true,
     "speechChannel": "auto",

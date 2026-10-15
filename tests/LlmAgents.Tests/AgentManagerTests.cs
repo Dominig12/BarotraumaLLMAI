@@ -35,7 +35,7 @@ public class AgentManagerTests
                 DispatchPrompts.Enqueue(prompt);
                 return (HttpStatusCode.OK, Dispatcher(prompt));
             }
-            var obs = (JsonObject)JsonNode.Parse(msgs[^1]!["content"]!.GetValue<string>())!;
+            var obs = (JsonObject)JsonNode.Parse(Fixtures.Obs(msgs[^1]!["content"]!.GetValue<string>()))!;
             var bot = obs["name"]!.GetValue<string>();
             Seen.Enqueue((bot, obs, msgs));
             var f = ByBot.TryGetValue(bot, out var x) ? x : Default;
@@ -132,7 +132,9 @@ public class AgentManagerTests
 
         await Step(mgr); // both decide
         await Step(mgr); // Ann's message is delivered
-        for (int i = 0; i < 4; i++) await Step(mgr); // 2 s later Bob may call again; he has mail
+        for (int i = 0; i < 4; i++) await Step(mgr); // 2 s later: mail does not wake Bob at once (no "Roger!" ping-pong)
+        Assert.Single(llm.Seen, s => s.Bot == "Bob");
+        for (int i = 0; i < 8; i++) await Step(mgr); // by half the decision interval (5 s) he reads it
 
         var bobCalls = llm.Seen.Where(s => s.Bot == "Bob").ToList();
         Assert.Equal(2, bobCalls.Count);
@@ -236,7 +238,7 @@ public class AgentManagerTests
         var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
         await Step(mgr);
         var byHost = handler.Requests.ToDictionary(
-            r => JsonNode.Parse(r.Body["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>())!["name"]!.GetValue<string>(),
+            r => JsonNode.Parse(Fixtures.Obs(r.Body["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>()))!["name"]!.GetValue<string>(),
             r => new Uri(r.Url).Host);
         Assert.Equal("b.test", byHost["Ann"]);
         Assert.Equal("a.test", byHost["Bob"]);
@@ -272,7 +274,7 @@ public class AgentManagerTests
         var seen = new ConcurrentQueue<string>();
         var handler = new FakeHandler(async (_, body, ct) =>
         {
-            var obs = JsonNode.Parse(body["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>())!;
+            var obs = JsonNode.Parse(Fixtures.Obs(body["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>()))!;
             seen.Enqueue(obs["name"]!.GetValue<string>());
             await release.WaitAsync(ct);
             return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("wait", "{}")));
@@ -304,7 +306,7 @@ public class AgentManagerTests
         var inboxSeen = new ConcurrentQueue<string>();
         var handler = new FakeHandler(body =>
         {
-            var obs = JsonNode.Parse(body["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>())!;
+            var obs = JsonNode.Parse(Fixtures.Obs(body["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>()))!;
             if (obs["name"]!.GetValue<string>() == "Bob" && obs["inbox"] is JsonArray a)
                 foreach (var m in a) inboxSeen.Enqueue(m!.GetValue<string>());
             return down ? (HttpStatusCode.ServiceUnavailable, "") : (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("wait", "{}")));

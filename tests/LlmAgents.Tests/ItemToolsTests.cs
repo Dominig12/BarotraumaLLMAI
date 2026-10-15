@@ -78,7 +78,7 @@ public class TaskReportsAndAuthorityTests
         JsonNode? lastObs = null;
         var h = new FakeHandler(body =>
         {
-            var obs = JsonNode.Parse(body["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>())!;
+            var obs = JsonNode.Parse(Fixtures.Obs(body["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>()))!;
             if (obs["name"]!.GetValue<string>() == "Tyler Sexton") { calls++; lastObs = obs; }
             return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("wait", "{}")));
         });

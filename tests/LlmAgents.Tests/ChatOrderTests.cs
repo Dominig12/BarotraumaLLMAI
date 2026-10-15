@@ -40,7 +40,7 @@ public class ChatOrderTests
                 DispatchPrompts.Enqueue(content);
                 return (DispatchStatus, DispatchStatus == HttpStatusCode.OK ? Dispatch(content) : "down");
             }
-            var obs = JsonNode.Parse(content)!;
+            var obs = JsonNode.Parse(Fixtures.Obs(content))!;
             var orders = obs["playerOrders"]?.AsArray().Select(x => x!.GetValue<string>()).ToList() ?? new();
             Decisions.Enqueue((obs["name"]!.GetValue<string>(), orders, msgs[0]!["content"]!.GetValue<string>()));
             return (HttpStatusCode.OK, orders.Count > 0
@@ -312,7 +312,7 @@ public class FairSchedulingTests
         var counts = new ConcurrentDictionary<string, int>();
         var handler = new FakeHandler(async (_, body, ct) =>
         {
-            var obs = JsonNode.Parse(body["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>())!;
+            var obs = JsonNode.Parse(Fixtures.Obs(body["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>()))!;
             counts.AddOrUpdate(obs["name"]!.GetValue<string>(), 1, (_, v) => v + 1);
             var end = clock.Now + 3;
             while (clock.Now < end) await Task.Delay(1, ct);

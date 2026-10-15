@@ -51,8 +51,10 @@ public interface IGameApi
     // ---- items and machinery: start a multi-step task, completion comes later through DrainReports
     string Equip(int botId, string item);
     string RefuelReactor(int botId);
-    string Craft(int botId, string item, int amount);
-    string Deconstruct(int botId, string item);
+    /// <summary>salvage = deconstruct scrap aboard for missing ingredients first.</summary>
+    string Craft(int botId, string item, int amount, bool salvage = false);
+    /// <summary>from = a container or room: deconstruct the matching items in it (item "all" = everything there).</summary>
+    string Deconstruct(int botId, string item, string? from = null);
     /// <summary>item null = choose the cheapest treatment that is good enough.</summary>
     string Treat(int botId, string target, string? item);
 
@@ -65,7 +67,7 @@ public interface IGameApi
     /// <summary>While on, the bot never takes its diving gear off by itself (except when its suit runs out of air).</summary>
     string KeepGear(int botId, bool on);
 
-    /// <summary>Immediate lookup. kind: patient | items | recipe.</summary>
+    /// <summary>Immediate lookup. kind: patient | items | recipe | recipes | salvage.</summary>
     string Inspect(int botId, string kind, string query);
 
     /// <summary>Task results and other events since the last call.</summary>

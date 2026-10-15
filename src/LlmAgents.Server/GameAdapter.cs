@@ -646,24 +646,92 @@ public sealed class GameAdapter : IGameApi
         return StartTask(c, new RefuelReactorTask(c, ai, reactor, container, spare));
     }
 
-    public string Craft(int botId, string query, int amount)
+    public string Craft(int botId, string query, int amount, bool salvage = false)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
-        var (fabricator, recipe, error) = FindRecipe(c, query);
+        var (fabricator, recipe, error) = Crafting.Find(c, query);
         if (error != null) return error;
-        var missing = MissingIngredients(c, fabricator!, recipe!);
-        if (missing.Count > 0) return $"error: cannot make {recipe!.DisplayName.Value}: missing {string.Join(", ", missing)}";
-        return StartTask(c, new CraftTask(c, ai, fabricator!, recipe!, amount));
+        var stock = Crafting.Stock(c, fabricator);
+        var missing = Crafting.Missing(recipe!, stock, amount);
+        if (missing.Count == 0) return StartTask(c, new CraftTask(c, ai, fabricator!, recipe!, amount));
+
+        var missingText = string.Join(", ", missing.Select(m => $"{m.Req.FirstMatchingPrefab?.Name.Value ?? "?"} x{m.Missing}"));
+        var (plan, problem) = Crafting.SalvagePlan(c, recipe!, stock, amount);
+        if (!salvage)
+            return $"error: cannot make {recipe!.DisplayName.Value} x{amount}: missing {missingText}. " +
+                   (plan != null
+                       ? $"It can be salvaged: deconstruct {string.Join(", ", plan.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))} — call craft again with salvage=true to do it all."
+                       : $"No scrap aboard gives it ({problem}). inspect(kind='recipe') shows other ways.");
+        if (plan == null) return $"error: cannot make {recipe!.DisplayName.Value}: missing {missingText}, and salvaging is not enough: {problem}";
+        if (plan.Count == 0) return StartTask(c, new CraftTask(c, ai, fabricator!, recipe!, amount));
+        var f = fabricator!; var r = recipe!;
+        return StartTask(c, new SalvageAndCraftTask(c, ai, plan, () => new CraftTask(c, ai, f, r, amount), $"{r.DisplayName.Value} x{amount}")) +
+               $"; will first deconstruct {string.Join(", ", plan.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))}";
     }
 
-    public string Deconstruct(int botId, string query)
+    public string Deconstruct(int botId, string query, string? from = null)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
-        bool hasDeconstructor = Item.ItemList.Any(i => i.Submarine == c.Submarine && i.GetComponent<Deconstructor>() != null);
-        if (!hasDeconstructor) return "error: no deconstructor on this submarine";
-        var item = ItemQueries.Find(c, query, i => i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i)).FirstOrDefault();
-        if (item == null) return $"error: no '{query}' that can be deconstructed";
+        if (!Crafting.HasDeconstructor(c)) return "error: no deconstructor on this submarine";
+        bool all = query.Trim().ToLowerInvariant() is "all" or "everything" or "*" or "все" or "всё" or "everything in it";
+
+        if (!string.IsNullOrWhiteSpace(from))
+        {
+            var (places, where) = ContainersAt(c, from!);
+            if (places.Count == 0) return $"error: no container or room '{from}'; use a room id from 'rooms' or a container name (cabinet, locker, crate...)";
+            var items = places.SelectMany(ic => ic.Inventory.AllItems)
+                .Where(i => i.Prefab.AllowDeconstruct && i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i))
+                .Where(i => all || ItemQueries.MatchScore(i.Prefab, query) > 0)
+                .Take(MaxDeconstructBatch).ToList();
+            if (items.Count == 0) return $"error: nothing {(all ? "" : $"matching '{query}' ")}that can be deconstructed in {where}";
+            return StartTask(c, new DeconstructManyTask(c, ai, items, where)) +
+                   $"; {items.Count} item(s): {string.Join(", ", items.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))}";
+        }
+
+        if (all) return "error: 'all' needs 'from' (a container or room), so nothing important is broken down by accident";
+        var item = ItemQueries.Find(c, query, i => i.Prefab.DeconstructItems.Any() && i.Prefab.AllowDeconstruct && !c.HasEquippedItem(i)).FirstOrDefault();
+        if (item == null)
+        {
+            // maybe they named the material they want
+            var hint = Crafting.Salvage(c, query);
+            return $"error: no '{query}' that can be deconstructed. {hint}";
+        }
         return StartTask(c, new DeconstructTask(c, ai, item));
+    }
+
+    const int MaxDeconstructBatch = 12;
+
+    /// <summary>Storage containers by name or room ("cabinet", "шкаф", "Электрика [h140]", "шкаф в Электрика [h140]").</summary>
+    (List<ItemContainer> Containers, string Where) ContainersAt(Character c, string from)
+    {
+        var storages = Item.ItemList
+            .Where(i => i.Submarine == c.Submarine && !i.Removed && i.GetRootInventoryOwner() is not Character)
+            .Select(i => (item: i, ic: i.GetComponent<ItemContainer>()))
+            .Where(t => t.ic != null && t.item.GetComponent<Fabricator>() == null && t.item.GetComponent<Deconstructor>() == null
+                        && t.item.GetComponent<Reactor>() == null && t.item.GetComponent<Turret>() == null)
+            .ToList();
+
+        var hull = from.Contains("[h") ? ResolveRoom(from) : ResolveRoom(from.Trim());
+        // "<container> in/в <room>"
+        var named = storages.Where(t => ItemQueries.MatchScore(t.item.Prefab, from) > 0).ToList();
+        if (hull == null)
+        {
+            var parts = from.Split(new[] { " in ", " в ", " из ", " from " }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 2)
+            {
+                hull = ResolveRoom(parts[1].Trim()) ?? Hull.HullList.FirstOrDefault(h => h.Submarine == c.Submarine && RoomId(h).Contains(parts[1].Trim(), StringComparison.OrdinalIgnoreCase));
+                named = storages.Where(t => ItemQueries.MatchScore(t.item.Prefab, parts[0]) > 0).ToList();
+            }
+        }
+        if (hull != null)
+        {
+            var inRoom = storages.Where(t => t.item.CurrentHull == hull).ToList();
+            var both = inRoom.Intersect(named).ToList();
+            return ((both.Count > 0 ? both : inRoom).Select(t => t.ic!).ToList(), RoomId(hull));
+        }
+        var nearest = named.OrderBy(t => Vector2.DistanceSquared(t.item.WorldPosition, c.WorldPosition)).Take(1).ToList();
+        return (nearest.Select(t => t.ic!).ToList(),
+                nearest.Count > 0 ? $"{nearest[0].item.Name} in {(nearest[0].item.CurrentHull != null ? RoomId(nearest[0].item.CurrentHull) : "?")}" : from);
     }
 
     public string Treat(int botId, string target, string? itemQuery)
@@ -787,58 +855,16 @@ public sealed class GameAdapter : IGameApi
             }
             case "recipe":
             {
-                var (fabricator, recipe, error) = FindRecipe(c, query);
-                if (error != null) return error;
-                var parts = recipe!.RequiredItems.Select(r =>
-                {
-                    int have = ItemQueries.Available(c).Count(r.MatchesItem);
-                    return $"{r.FirstMatchingPrefab?.Name.Value ?? "?"} x{r.Amount} (available {have})";
-                });
-                var missing = MissingIngredients(c, fabricator!, recipe);
-                var skills = recipe.RequiredSkills.Length > 0 ? "; skills: " + string.Join(", ", recipe.RequiredSkills.Select(s => $"{s.Identifier} {s.Level:0}")) : "";
-                return $"{ItemQueries.Label(recipe.TargetItem)} at {fabricator!.Item.Name}: needs {string.Join(", ", parts)}{skills}; time {recipe.RequiredTime:0}s. " +
-                       (missing.Count == 0 ? "All ingredients available." : "Missing: " + string.Join(", ", missing));
+                var (fabricator, recipe, error) = Crafting.Find(c, query);
+                return error ?? Crafting.RecipeDetails(c, fabricator!, recipe!);
             }
+            case "recipes":
+                return Crafting.RecipeList(c, query);
+            case "salvage":
+                return Crafting.Salvage(c, query);
             default:
                 return $"error: unknown kind '{kind}'";
         }
-    }
-
-    static (Fabricator? Fabricator, FabricationRecipe? Recipe, string? Error) FindRecipe(Character c, string query)
-    {
-        var fabricators = Item.ItemList
-            .Where(i => i.Submarine == c.Submarine && !i.Removed)
-            .Select(i => i.GetComponent<Fabricator>())
-            .Where(f => f != null)
-            .OrderBy(f => Vector2.DistanceSquared(f!.Item.WorldPosition, c.WorldPosition))
-            .ToList();
-        if (fabricators.Count == 0) return (null, null, "error: no fabricator on this submarine");
-
-        var best = fabricators
-            .SelectMany(f => f!.fabricationRecipes.Values.Select(r => (f, r, score: ItemQueries.MatchScore(r.TargetItem, query))))
-            .Where(t => t.score > 0)
-            .OrderByDescending(t => t.score)
-            .FirstOrDefault();
-        if (best.r == null)
-        {
-            var similar = fabricators.SelectMany(f => f!.fabricationRecipes.Values)
-                .Where(r => r.TargetItem.Name.Value.Contains(query.Split(' ')[0], StringComparison.OrdinalIgnoreCase))
-                .Select(r => r.TargetItem.Name.Value).Distinct().Take(5).ToList();
-            return (null, null, $"error: no fabricator recipe for '{query}'" + (similar.Count > 0 ? $"; similar: {string.Join(", ", similar)}" : ""));
-        }
-        return (best.f, best.r, null);
-    }
-
-    static List<string> MissingIngredients(Character c, Fabricator fabricator, FabricationRecipe recipe)
-    {
-        var missing = new List<string>();
-        var available = ItemQueries.Available(c).Concat(fabricator.InputContainer.Inventory.AllItems).Distinct().ToList();
-        foreach (var r in recipe.RequiredItems)
-        {
-            int have = available.Count(r.MatchesItem);
-            if (have < r.Amount) missing.Add($"{r.FirstMatchingPrefab?.Name.Value ?? "?"} ({have}/{r.Amount})");
-        }
-        return missing;
     }
 
     // ------------------------------------------------------------- chat input
@@ -868,7 +894,8 @@ public sealed class GameAdapter : IGameApi
             .Select(b => (int)b.ID)
             .ToList();
         var job = speaker.Info?.Job?.Name?.Value;
-        return new ChatCommand(speaker.Name, string.IsNullOrEmpty(job) ? null : job, text, listeners, radio);
+        return new ChatCommand(speaker.Name, string.IsNullOrEmpty(job) ? null : job, text, listeners, radio,
+            speaker.CurrentHull != null ? RoomId(speaker.CurrentHull) : null);
     }
 
     // --------------------------------------------------------------- helpers

@@ -110,7 +110,7 @@ public sealed class MemoryAndControlTests
             var tools = body["tools"]?.AsArray().Select(t => t!["function"]!["name"]!.GetValue<string>()).ToArray() ?? Array.Empty<string>();
             Requests.Enqueue((system, user, tools));
             if (system.Contains("The round just ended")) return (HttpStatusCode.OK, Summary());
-            var name = JsonNode.Parse(user)!["name"]!.GetValue<string>();
+            var name = JsonNode.Parse(Fixtures.Obs(user))!["name"]!.GetValue<string>();
             return (HttpStatusCode.OK, Reply(name));
         });
     }
@@ -158,7 +158,7 @@ public sealed class MemoryAndControlTests
         clock.Advance(20);
         while (llm.Requests.TryDequeue(out _)) { }
         await Step(mgr);
-        var obs = JsonNode.Parse(llm.Requests.First(r => r.User.Contains("\"name\":\"Ann\"")).User)!;
+        var obs = JsonNode.Parse(Fixtures.Obs(llm.Requests.First(r => r.User.Contains("\"name\":\"Ann\"")).User))!;
         var mem = obs["memory"]!;
         Assert.Equal("pump 2 is broken", mem["facts"]![0]!.GetValue<string>());
         Assert.Equal("Bob: trust - fixed my suit", mem["relationships"]![0]!.GetValue<string>());

@@ -140,6 +140,8 @@ public sealed class GlobalSettings
     public bool SyncOrdersToClients { get; set; } = true;
     /// <summary>Private bot-to-bot messages (message_crew, order_crew) are also spoken in the game chat, so players hear them.</summary>
     public bool ShowBotMessagesInChat { get; set; } = true;
+    /// <summary>At most this many bot-to-bot messages per minute are spoken in the chat (crew-wide); the rest are only delivered. 0 = no limit.</summary>
+    public int MaxChatEchoPerMinute { get; set; } = 6;
     /// <summary>
     /// Where bots speak: "auto" = radio if the bot wears a working headset, otherwise out loud (like vanilla bots);
     /// "radio" = same as auto (radio is always preferred); "local" = always out loud, nearby only.

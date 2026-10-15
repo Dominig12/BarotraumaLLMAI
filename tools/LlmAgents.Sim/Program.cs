@@ -305,8 +305,8 @@ sealed class SimWorld : IGameApi
     readonly HashSet<int> gearOn = new();
     public string Equip(int botId, string item) { if (item.Contains("suit")) gearOn.Add(botId); Report(botId, $"task 'equip {item}' ok: equipped"); return Do(botId, $"equip {item}"); }
     public string RefuelReactor(int botId) { Report(botId, "task 'refuel reactor' ok: fuel rod loaded"); return Do(botId, "refuel reactor"); }
-    public string Craft(int botId, string item, int amount) { Report(botId, $"task 'craft {item}' ok: made {amount}"); return Do(botId, $"craft {item} x{amount}"); }
-    public string Deconstruct(int botId, string item) { Report(botId, $"task 'deconstruct {item}' ok"); return Do(botId, $"deconstruct {item}"); }
+    public string Craft(int botId, string item, int amount, bool salvage = false) { Report(botId, $"task 'craft {item}' ok: made {amount}"); return Do(botId, $"craft {item} x{amount}"); }
+    public string Deconstruct(int botId, string item, string? from = null) { Report(botId, $"task 'deconstruct {item}' ok"); return Do(botId, $"deconstruct {item}"); }
     public string Treat(int botId, string target, string? item)
     {
         var p = bots.FirstOrDefault(b => b.Name.Contains(target, StringComparison.OrdinalIgnoreCase));

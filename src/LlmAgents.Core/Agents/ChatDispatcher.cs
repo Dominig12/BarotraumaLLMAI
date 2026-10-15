@@ -8,7 +8,7 @@ using LlmAgents.Llm;
 namespace LlmAgents.Agents;
 
 /// <summary>A chat message from a human player, with the bots that could actually hear it.</summary>
-public sealed record ChatCommand(string SenderName, string? SenderJob, string Text, IReadOnlyList<int> ListenerIds, bool ViaRadio);
+public sealed record ChatCommand(string SenderName, string? SenderJob, string Text, IReadOnlyList<int> ListenerIds, bool ViaRadio, string? SenderRoom = null);
 
 /// <summary>One bot as the dispatcher sees it.</summary>
 public sealed record RosterEntry(int Id, string Name, string Job, string? Room, string CurrentOrder);
@@ -49,6 +49,10 @@ Rules:
   Jobs: captain = капитан; engineer = инженер; mechanic = механик; securityofficer = охрана/офицер безопасности; medicaldoctor = медик/врач/доктор; assistant = ассистент/помощник.
 - Singular job ('mechanic, fix the pump' / 'механик, почини') when several share that job -> pick the single most suitable one (closest to the task, or idle).
 - 'everyone', 'all', 'crew', 'все', 'экипаж', 'всем' -> everybody in the roster.
+- A plural command with no addressee (Russian verbs ending in -те: 'разберите', 'идите', 'несите'; 'guys', 'ребята', 'все за мной')
+  -> everybody, or everybody whose job fits the task.
+- The sender is a human player and is never in the roster. 'me', 'мне', 'ко мне', 'за мной' mean the sender.
+- A greeting or small talk to everyone ('привет всем', 'hi all') -> only ONE crew member answers (the captain if present).
 - 'someone' / 'кто-нибудь' or an order with no addressee -> the single most suitable crew member for the task (right job, nearby, not busy).
 - Plain chatter, jokes, or messages clearly for other humans -> empty recipients.
 - Only use names that are in the roster.";
@@ -131,7 +135,10 @@ Rules:
         var others = recipients.Where(r => r.Id != me.Id).Select(r => r.Name).ToList();
         var who = cmd.SenderJob != null ? $"{cmd.SenderName} ({cmd.SenderJob})" : cmd.SenderName;
         var also = others.Count == 0 ? "" : $" [also sent to: {string.Join(", ", others)}]";
-        return $"{who}{(cmd.ViaRadio ? " on radio" : "")}: \"{cmd.Text}\"{also}";
+        var where = cmd.SenderRoom != null ? $", in {cmd.SenderRoom}" : "";
+        var hint = OrderHints.Suggest(cmd.Text, cmd.SenderName, cmd.SenderRoom);
+        return $"{who}{(cmd.ViaRadio ? " on radio" : "")}{where}: \"{cmd.Text}\"{also} ('me' = {cmd.SenderName})" +
+               (hint != null ? $" Hint: probably {hint}." : "");
     }
 }
 

@@ -8,6 +8,10 @@ namespace LlmAgents.Agents;
 /// <summary>Plain, engine-independent snapshot of what one bot knows right now. Serialized to JSON for the LLM.</summary>
 public sealed class Observation
 {
+    /// <summary>Orders from human players routed to this bot (highest priority). First in the JSON on purpose:
+    /// small models pay most attention to the start.</summary>
+    [JsonPropertyOrder(-1)]
+    public List<string> PlayerOrders { get; set; } = new();
     public string Name { get; set; } = "";
     public string Job { get; set; } = "";
     public int HealthPercent { get; set; } = 100;
@@ -36,8 +40,6 @@ public sealed class Observation
     public List<string> Leaks { get; set; } = new();
 
     // Filled in by the agent layer, not by the game adapter:
-    /// <summary>Orders from human players routed to this bot (highest priority).</summary>
-    public List<string> PlayerOrders { get; set; } = new();
     public List<string> Inbox { get; set; } = new();
     public List<string> Notes { get; set; } = new();
     public List<string> LastActionResults { get; set; } = new();

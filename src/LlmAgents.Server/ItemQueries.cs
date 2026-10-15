@@ -25,9 +25,10 @@ internal static class ItemQueries
         if (q.Length == 0) return 0;
         var id = Norm(p.Identifier.Value);
         var name = Norm(p.Name.Value);
-        if (id == q || name == q) return 3;
-        if (id.Contains(q) || name.Contains(q)) return 2;
-        if (q.Length >= 4 && (q.Contains(id) || q.Contains(name))) return 1;
+        var en = Crafting.EnglishName(p) is { } e ? Norm(e) : "";
+        if (id == q || name == q || en == q) return 3;
+        if (id.Contains(q) || name.Contains(q) || (en.Length > 0 && en.Contains(q))) return 2;
+        if (q.Length >= 4 && (q.Contains(id) || q.Contains(name) || (en.Length > 0 && q.Contains(en)))) return 1;
         if (p.Tags.Any(t => t.Value.Equals(query.Trim(), StringComparison.OrdinalIgnoreCase))) return 1;
         return 0;
     }

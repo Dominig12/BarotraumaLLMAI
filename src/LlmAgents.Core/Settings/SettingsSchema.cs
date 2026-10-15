@@ -77,6 +77,8 @@ public static class SettingsSchema
         Add(F(General, "Канал речи", FieldType.Enum, V(g.SpeechChannel), "global", "speechChannel"),
             options: new() { "auto", "radio", "local" }, labels: new() { "Авто (радио при гарнитуре)", "Радио", "Только вслух" });
         Add(F(General, "Фразы ботов друг другу слышны игрокам", FieldType.Bool, V(g.ShowBotMessagesInChat), "global", "showBotMessagesInChat"));
+        Add(F(General, "Фраз ботов друг другу в чате в минуту", FieldType.Int, V(g.MaxChatEchoPerMinute), "global", "maxChatEchoPerMinute"),
+            "Сколько сообщений между ботами в минуту (на весь экипаж) произносится вслух; остальные только доставляются. 0 = без ограничения.", 0, 60);
         Add(F(General, "Показывать приказы ботов клиентам", FieldType.Bool, V(g.SyncOrdersToClients), "global", "syncOrdersToClients"));
         Add(F(General, "Не снимать костюм при опасности", FieldType.Bool, V(g.KeepDivingGearInDanger), "global", "keepDivingGearInDanger"));
         Add(F(General, "Радиус опасности монстров, м", FieldType.Float, V(g.DangerMonsterRadiusMeters), "global", "dangerMonsterRadiusMeters"), min: 0, max: 500);

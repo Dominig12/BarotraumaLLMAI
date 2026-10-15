@@ -167,7 +167,10 @@ class Handler(BaseHTTPRequestHandler):
             calls = [{"name": "route_message", "arguments": {"recipients": route(last_user["content"]), "reason": "mock"}}]
         else:
             try:
-                calls = decide(json.loads(last_user["content"]))
+                content = last_user["content"]
+                if "Observation:\n" in content:  # an order header comes first
+                    content = content.split("Observation:\n", 1)[1]
+                calls = decide(json.loads(content))
             except Exception:
                 calls = [{"name": "wait", "arguments": {}}]
         if prompt_mode:

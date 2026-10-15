@@ -72,8 +72,8 @@ public sealed class FakeGame : IGameApi
     public void BeginCommand(int botId, bool playerAuthority) => Authority[botId] = playerAuthority;
     public string Equip(int botId, string item) => Act(botId, $"equip {item}", "ok, started: equip " + item);
     public string RefuelReactor(int botId) => Act(botId, "refuel", "ok, started: refuel reactor");
-    public string Craft(int botId, string item, int amount) => Act(botId, $"craft {item} x{amount}", "ok, started: craft " + item);
-    public string Deconstruct(int botId, string item) => Act(botId, $"deconstruct {item}", "ok, started");
+    public string Craft(int botId, string item, int amount, bool salvage = false) => Act(botId, $"craft {item} x{amount}{(salvage ? " salvage" : "")}", "ok, started: craft " + item);
+    public string Deconstruct(int botId, string item, string? from = null) => Act(botId, $"deconstruct {item}{(from != null ? " from " + from : "")}", "ok, started");
     public string Treat(int botId, string target, string? item) => Act(botId, $"treat {target}{(item != null ? " with " + item : "")}", "ok, started");
     public string Unequip(int botId, string item) => Act(botId, $"unequip {item}");
     public string Drop(int botId, string item) => Act(botId, $"drop {item}");
@@ -124,6 +124,14 @@ public sealed class FakeHandler : HttpMessageHandler
 
 public static class Fixtures
 {
+    /// <summary>The observation JSON of a bot's user message (an order header may come first).</summary>
+    public static string Obs(string user)
+    {
+        const string marker = "Observation:\n";
+        int i = user.IndexOf(marker, System.StringComparison.Ordinal);
+        return i >= 0 ? user.Substring(i + marker.Length) : user;
+    }
+
     public static string OpenAiToolResponse(params (string Name, string ArgsJson)[] calls)
     {
         var tc = new JsonArray();
