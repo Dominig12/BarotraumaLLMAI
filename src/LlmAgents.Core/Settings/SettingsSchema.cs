@@ -59,55 +59,67 @@ public static class SettingsSchema
 
         var g = s.Global;
         // ---------------------------------------------------------------- general
-        Add(F(General, "Мод включён", FieldType.Bool, V(s.Enabled), "enabled"), "Выключено: все боты на ванильном ИИ.");
+        const string Think = "Когда боты думают", Plans = "Планы и цели", Speech = "Речь и поведение", Tech = "Техническое";
+        Add(F(General, "Мод включён", FieldType.Bool, V(s.Enabled), "enabled"), "Выключено: все боты на ванильном ИИ.", group: Think);
         Add(F(General, "Самостоятельность ботов", FieldType.Enum, V(s.Bots.Autonomy), "bots", "autonomy"),
-            "Всегда: все боты думают сами. По приказу: сами думают только боты с «Полным контролем ИИ», остальные — по приказам и сообщениям.",
-            options: new() { "always", "order" }, labels: new() { "Всегда", "По приказу" });
-        Add(F(General, "Язык речи ботов", FieldType.String, V(s.Bots.SpeechLanguage), "bots", "speechLanguage"),
-            "Например Russian или English. Пусто = на языке игроков.");
-        Add(F(General, "Черты характера из игры", FieldType.Bool, V(s.Bots.UseGamePersonality), "bots", "useGamePersonality"),
-            "Если у бота нет характера из вкладки «Экипаж», учитывать его черту из игры (вспыльчивый, ленивый...).");
-        Add(F(General, "Плановое решение, с", FieldType.Float, V(g.DecisionIntervalSeconds), "global", "decisionIntervalSeconds"), min: 2, max: 120);
+            "По событиям: модель спрашивают только когда что-то случилось — приказ, новая опасность, задача выполнена или провалилась, " +
+            "сообщение, опасность миновала. Между этим работает ванильный ИИ. Всегда: то же плюс редкая плановая проверка. " +
+            "По приказу: только приказы и сообщения. Боты с «Полным контролем ИИ» всегда думают и сами.",
+            options: new() { "events", "always", "order" }, labels: new() { "По событиям (экономно)", "Всегда", "Только по приказу" }, group: Think);
+        Add(F(General, "Осмотреться в начале раунда", FieldType.Bool, V(s.Bots.ThinkAtRoundStart), "bots", "thinkAtRoundStart"),
+            "Один запрос на бота в начале раунда (по очереди).", group: Think);
+        Add(F(General, "Отвечать на приказы из меню команд", FieldType.Bool, V(s.Bots.ReactToMenuOrders), "bots", "reactToMenuOrders"),
+            "Приказ из меню команд всегда выполняется как в ванильной игре и отменяет план бота. Включено: модель ещё и узнаёт о нём (1 запрос).", group: Think);
+        Add(F(General, "Плановая проверка (режим «Всегда»), с", FieldType.Float, V(g.DecisionIntervalSeconds), "global", "decisionIntervalSeconds"),
+            "Через сколько секунд без событий бот думает сам.", 5, 600, group: Think);
+        Add(F(General, "Плановая проверка при полном контроле, с", FieldType.Float, V(s.Bots.ControlDecisionIntervalSeconds), "bots", "controlDecisionIntervalSeconds"),
+            min: 5, max: 600, group: Think);
+        Add(F(General, "Реже проверять, если ничего не меняется", FieldType.Bool, V(g.IdleBackoff), "global", "idleBackoff"),
+            "Плановые проверки, которые ничего не изменили, идут всё реже (×2, ×4...) до предела ниже. Любое событие возвращает обычный темп.", group: Think);
+        Add(F(General, "Предел паузы без дела, с", FieldType.Float, V(g.MaxIdleIntervalSeconds), "global", "maxIdleIntervalSeconds"), min: 5, max: 1800, group: Think);
         Add(F(General, "Не чаще раза в, с", FieldType.Float, V(g.MinSecondsBetweenCallsPerBot), "global", "minSecondsBetweenCallsPerBot"),
-            "Минимальная пауза между решениями одного бота, даже при тревоге.", 0, 60);
-        Add(F(General, "Решение при полном контроле, с", FieldType.Float, V(s.Bots.ControlDecisionIntervalSeconds), "bots", "controlDecisionIntervalSeconds"), min: 2, max: 120);
+            "Минимальная пауза между решениями одного бота (приказ игрока ждёт не больше 1 с).", 0, 60, group: Think);
+        Add(F(General, "Читать сообщения экипажа через, с", FieldType.Float, V(g.MailDelaySeconds), "global", "mailDelaySeconds"),
+            "Несколько сообщений подряд читаются одним запросом.", 0, 60, group: Think);
+        Add(F(General, "Проверка обстановки, с", FieldType.Float, V(g.UrgencyCheckSeconds), "global", "urgencyCheckSeconds"),
+            "Как часто мод смотрит, не появилось ли новой опасности (это без запросов к модели).", 0.5, 10, group: Think);
+
         Add(F(General, "Действий за решение", FieldType.Int, V(g.MaxActionsPerDecision), "global", "maxActionsPerDecision"),
-            "Сколько шагов может быть в одном ответе модели (длина плана).", 1, 12);
+            "Сколько шагов может быть в одном ответе модели (длина плана).", 1, 12, group: Plans);
         Add(F(General, "Выполнять действия по очереди (план)", FieldType.Bool, V(g.SequentialActions), "global", "sequentialActions"),
-            "Ответ модели — план: задача (надеть, скрафтить, разобрать...) или переход в отсек завершается до начала следующего шага, " +
-            "и бота не спрашивают заново, пока план не выполнен, шаг не провалился, игрок не отдал приказ или не случилось что-то новое и срочное. " +
-            "Выключено: все действия ответа выполняются сразу (следующая задача отменяет предыдущую).");
-        Add(F(General, "Реже думать, когда нечего делать", FieldType.Bool, V(g.IdleBackoff), "global", "idleBackoff"),
-            "Если плановые решения бота ничего не меняют («жду», «уже делаю»), следующие идут всё реже (×2, ×4...) до предела ниже. " +
-            "Приказ, сообщение, тревога или результат задачи сразу возвращают обычный темп. Экономит запросы и убирает болтовню «жду указаний».");
-        Add(F(General, "Ждать у игрока после «ко мне», с", FieldType.Float, V(g.ComeToWaitSeconds), "global", "comeToWaitSeconds"),
-            "Сколько бот стоит рядом с позвавшим (и идёт за ним, если тот уходит), прежде чем приказ «ко мне» считается выполненным.", 5, 600);
-        Add(F(General, "Цель забывается через, мин", FieldType.Float, V(g.GoalTimeoutMinutes), "global", "goalTimeoutMinutes"),
-            "Старая цель снимается, чтобы давно выполненный приказ не держал бота весь раунд (бот может поставить её снова). 0 = никогда.", 0, 120);
-        Add(F(General, "Предел паузы без дела, с", FieldType.Float, V(g.MaxIdleIntervalSeconds), "global", "maxIdleIntervalSeconds"), min: 5, max: 600);
-        Add(F(General, "Ждать разборщика приказов, с", FieldType.Float, V(s.Chat.DispatchWaitSeconds), "chat", "dispatchWaitSeconds"),
-            "Если для разбора приказа из чата нет свободного запроса к модели так долго, приказ получают боты по именам в тексте (или все, кто слышал), а не теряется.", 1, 60);
+            "Ответ модели — план: задача (надеть, скрафтить, разобрать...) или переход в отсек завершается до начала следующего шага. " +
+            "План прерывают только приказы и новая опасность. Выключено: все действия ответа выполняются сразу (следующая задача отменяет предыдущую).", group: Plans);
         Add(F(General, "Пересмотр плана не реже, с", FieldType.Float, V(g.MaxPlanSeconds), "global", "maxPlanSeconds"),
-            "Если план выполняется дольше, бот думает снова (и может продолжить план).", 20, 1200);
+            "Если план выполняется дольше, бот думает снова (и может продолжить план).", 20, 1200, group: Plans);
         Add(F(General, "Ожидание прихода в отсек, с", FieldType.Float, V(g.PlanStepTimeoutSeconds), "global", "planStepTimeoutSeconds"),
-            "Шаг go_to_room, который не дошёл за это время, останавливает план.", 10, 600);
-        Add(F(General, "Сообщений боту в минуту", FieldType.Int, V(g.MaxMessagesPerMinute), "global", "maxMessagesPerMinute"),
-            "Ограничение message_crew/order_crew, чтобы боты не болтали бесконечно. 0 = без ограничения.", 0, 30);
+            "Шаг go_to_room, который не дошёл за это время, останавливает план.", 10, 600, group: Plans);
+        Add(F(General, "Ждать у игрока после «ко мне», с", FieldType.Float, V(g.ComeToWaitSeconds), "global", "comeToWaitSeconds"),
+            "Сколько бот стоит рядом с позвавшим (и идёт за ним, если тот уходит), прежде чем приказ «ко мне» считается выполненным.", 5, 600, group: Plans);
+        Add(F(General, "Цель забывается через, мин", FieldType.Float, V(g.GoalTimeoutMinutes), "global", "goalTimeoutMinutes"),
+            "Старая цель снимается, чтобы давно выполненный приказ не держал бота весь раунд (бот может поставить её снова). 0 = никогда.", 0, 120, group: Plans);
         Add(F(General, "Ходов истории", FieldType.Int, V(g.HistoryTurns), "global", "historyTurns"),
-            "Сколько прошлых ходов (кратко: что было и что бот сделал) модель видит в каждом запросе. Больше = лучше помнит, но длиннее запрос.", 0, 40);
-        Add(F(General, "Заметок на раунд", FieldType.Int, V(g.MaxNotes), "global", "maxNotes"), min: 1, max: 20);
+            "Сколько прошлых ходов (кратко: почему думал, что было и что сделал, с давностью) модель видит в каждом запросе.", 0, 40, group: Plans);
+        Add(F(General, "Заметок на раунд", FieldType.Int, V(g.MaxNotes), "global", "maxNotes"), min: 1, max: 20, group: Plans);
+
+        Add(F(General, "Язык речи ботов", FieldType.String, V(s.Bots.SpeechLanguage), "bots", "speechLanguage"),
+            "Например Russian или English. Пусто = на языке игроков.", group: Speech);
+        Add(F(General, "Черты характера из игры", FieldType.Bool, V(s.Bots.UseGamePersonality), "bots", "useGamePersonality"),
+            "Если у бота нет характера из вкладки «Характеры», учитывать его черту из игры (вспыльчивый, ленивый...).", group: Speech);
         Add(F(General, "Канал речи", FieldType.Enum, V(g.SpeechChannel), "global", "speechChannel"),
-            options: new() { "auto", "radio", "local" }, labels: new() { "Авто (радио при гарнитуре)", "Радио", "Только вслух" });
-        Add(F(General, "Фразы ботов друг другу слышны игрокам", FieldType.Bool, V(g.ShowBotMessagesInChat), "global", "showBotMessagesInChat"));
+            options: new() { "auto", "radio", "local" }, labels: new() { "Авто (радио при гарнитуре)", "Радио", "Только вслух" }, group: Speech);
+        Add(F(General, "Сообщений боту в минуту", FieldType.Int, V(g.MaxMessagesPerMinute), "global", "maxMessagesPerMinute"),
+            "Ограничение message_crew/order_crew, чтобы боты не болтали бесконечно. 0 = без ограничения.", 0, 30, group: Speech);
+        Add(F(General, "Фразы ботов друг другу слышны игрокам", FieldType.Bool, V(g.ShowBotMessagesInChat), "global", "showBotMessagesInChat"), group: Speech);
         Add(F(General, "Фраз ботов друг другу в чате в минуту", FieldType.Int, V(g.MaxChatEchoPerMinute), "global", "maxChatEchoPerMinute"),
-            "Сколько сообщений между ботами в минуту (на весь экипаж) произносится вслух; остальные только доставляются. 0 = без ограничения.", 0, 60);
-        Add(F(General, "Показывать приказы ботов клиентам", FieldType.Bool, V(g.SyncOrdersToClients), "global", "syncOrdersToClients"));
-        Add(F(General, "Не снимать костюм при опасности", FieldType.Bool, V(g.KeepDivingGearInDanger), "global", "keepDivingGearInDanger"));
-        Add(F(General, "Радиус опасности монстров, м", FieldType.Float, V(g.DangerMonsterRadiusMeters), "global", "dangerMonsterRadiusMeters"), min: 0, max: 500);
+            "Сколько сообщений между ботами в минуту (на весь экипаж) произносится вслух; остальные только доставляются. 0 = без ограничения.", 0, 60, group: Speech);
+        Add(F(General, "Не снимать костюм при опасности", FieldType.Bool, V(g.KeepDivingGearInDanger), "global", "keepDivingGearInDanger"), group: Speech);
+        Add(F(General, "Радиус опасности монстров, м", FieldType.Float, V(g.DangerMonsterRadiusMeters), "global", "dangerMonsterRadiusMeters"), min: 0, max: 500, group: Speech);
+
+        Add(F(General, "Показывать приказы ботов клиентам", FieldType.Bool, V(g.SyncOrdersToClients), "global", "syncOrdersToClients"), group: Tech);
         Add(F(General, "Сжатое наблюдение", FieldType.Bool, V(g.CompactObservation), "global", "compactObservation"),
-            "Короче запрос к модели: без пустых полей, экипаж одной строкой на человека. Быстрее и понятнее маленьким моделям.");
-        Add(F(General, "Писать запросы в лог", FieldType.Bool, V(g.LogPrompts), "global", "logPrompts"));
-        Add(F(General, "Писать сырые ответы в лог", FieldType.Bool, V(g.LogRawReplies), "global", "logRawReplies"));
+            "Короче запрос к модели: без пустых полей, экипаж одной строкой на человека. Быстрее и понятнее маленьким моделям.", group: Tech);
+        Add(F(General, "Писать запросы в лог", FieldType.Bool, V(g.LogPrompts), "global", "logPrompts"), group: Tech);
+        Add(F(General, "Писать сырые ответы в лог", FieldType.Bool, V(g.LogRawReplies), "global", "logRawReplies"), group: Tech);
 
         // ---------------------------------------------------------------- limits
         Add(F(Limits, "Одновременных запросов", FieldType.Int, V(g.MaxConcurrentRequests), "global", "maxConcurrentRequests"), min: 1, max: 32);
@@ -210,6 +222,13 @@ public static class SettingsSchema
         Add(F(ChatAndMemory, "Модель-диспетчер", FieldType.Enum, V(c.Provider), "chat", "provider"), options: optionalProviders, labels: optionalProviderLabels, group: "Чат");
         Add(F(ChatAndMemory, "Зрители командуют ботами", FieldType.Bool, V(c.AllowSpectators), "chat", "allowSpectators"), group: "Чат");
         Add(F(ChatAndMemory, "Услышал один бот → без диспетчера", FieldType.Bool, V(c.DirectIfSingleListener), "chat", "directIfSingleListener"), group: "Чат");
+        Add(F(ChatAndMemory, "Понятные приказы без диспетчера", FieldType.Bool, V(c.RuleRouting), "chat", "ruleRouting"),
+            "Имя бота, «все»/«экипаж», профессия («механики»), общий приказ («наденьте костюмы», «все ко мне») распределяются сразу, без запроса к модели. " +
+            "Диспетчер нужен только неясным сообщениям.", group: "Чат");
+        Add(F(ChatAndMemory, "Подтверждать игроку", FieldType.Bool, V(c.ConfirmToSender), "chat", "confirmToSender"),
+            "Личное сообщение отправителю: кто получил приказ, что его никто не услышал или что модель не смогла его выполнить.", group: "Чат");
+        Add(F(ChatAndMemory, "Ждать диспетчера, с", FieldType.Float, V(c.DispatchWaitSeconds), "chat", "dispatchWaitSeconds"),
+            "Если для диспетчера нет свободного запроса так долго, приказ получают боты по именам в тексте (или все, кто слышал).", 1, 60, group: "Чат");
         var m = s.Memory;
         Add(F(ChatAndMemory, "Долговременная память", FieldType.Bool, V(m.Enabled), "memory", "enabled"), group: "Память");
         Add(F(ChatAndMemory, "Итог раунда через LLM", FieldType.Bool, V(m.RoundSummary), "memory", "roundSummary"), group: "Память");
@@ -232,7 +251,13 @@ public static class SettingsSchema
         string mod = $"Мод {st.Version}";
         Info(mod, "Состояние", st.Enabled ? "включён" : "ВЫКЛЮЧЕН");
         foreach (var f in st.Features) Info(mod, f.Name, f.Ok ? "работает" : "НЕ РАБОТАЕТ" + (f.Note != null ? ": " + f.Note : ""));
-        Info(mod, "Запросов сегодня", st.RequestsToday + (st.DailyBudget > 0 ? $" из {st.DailyBudget}" : ""));
+        Info(mod, "Запросов", $"за минуту: {st.RequestsLastMinute}; сегодня: {st.RequestsToday}" + (st.DailyBudget > 0 ? $" из {st.DailyBudget}" : ""));
+        Info(mod, "Когда боты думают", st.Autonomy switch
+        {
+            "always" => "по событиям + редкая плановая проверка",
+            "order" => "только по приказам и сообщениям",
+            _ => "по событиям (приказ, опасность, итог задачи, сообщение)",
+        });
         if (st.MemoryScope != null) Info(mod, "Память", st.MemoryScope);
         foreach (var p in st.Providers)
             Info("Модели", p.Name, $"{p.Model}: ответов {p.Ok}, ошибок {p.Errors}, в среднем {p.AvgSeconds:0.0} с, сейчас {p.Active}" +
@@ -242,10 +267,13 @@ public static class SettingsSchema
         {
             string grp = $"{b.Name} — {b.Job}" + (b.AiControl ? ", ПОЛНЫЙ КОНТРОЛЬ" : "") + (b.HasPersona ? ", с характером" : "");
             Info(grp, "Приказы", b.Orders);
+            if (b.Doing != null) Info(grp, "Сейчас делает", b.Doing, "Что ванильный ИИ бота делает прямо сейчас.");
             if (b.Task != null) Info(grp, "Задача", b.Task);
             if (b.Goal != null) Info(grp, "Цель", b.Goal);
             if (b.Plan != null) Info(grp, "План", b.Plan);
             Info(grp, "Последнее решение", (b.Thinking ? "думает сейчас; " : "") + $"{Agents.ModStatus.Ago(b.SecondsSinceDecision)}: {b.LastDecision ?? "—"}");
+            if (b.Why != null) Info(grp, "Почему думал", b.Why);
+            if (b.Waiting != null) Info(grp, "Ждут обработки", b.Waiting);
             Info(grp, "Модель", $"{b.Provider}, решений: {b.Decisions}");
             if (b.RecentErrors.Count > 0) Info(grp, "Ошибки", string.Join(" | ", b.RecentErrors));
             AddDisableToggle(list, b.Name, grp, false);

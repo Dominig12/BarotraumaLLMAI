@@ -139,12 +139,13 @@ public sealed class LlmRouter : IDisposable
     }
 
     /// <summary>Non-blocking: reserves a slot on the preferred provider, or on the fallback if the preferred one is full.</summary>
-    public bool TryReserve(string preferred, out Reservation? reservation, out string reason)
+    /// <param name="priority">false = routine work (not a player's order): part of the limits stays free for orders.</param>
+    public bool TryReserve(string preferred, out Reservation? reservation, out string reason, bool priority = true)
     {
         reason = "no provider";
         foreach (var name in Order(preferred))
         {
-            if (TryReserveExact(name, out reservation, out reason)) return true;
+            if (TryReserveExact(name, out reservation, out reason, priority)) return true;
             if (reason.StartsWith("global:", StringComparison.Ordinal)) return false; // nothing else can succeed
         }
         reservation = null;
@@ -158,7 +159,7 @@ public sealed class LlmRouter : IDisposable
         lock (e) return Math.Max(0, (e.PausedUntil - utcNow()).TotalSeconds);
     }
 
-    bool TryReserveExact(string name, out Reservation? reservation, out string reason)
+    bool TryReserveExact(string name, out Reservation? reservation, out string reason, bool priority = true)
     {
         reservation = null;
         var e = providers[name];
@@ -168,9 +169,9 @@ public sealed class LlmRouter : IDisposable
             if (left > 0) { reason = $"{name}: paused {left:0}s after errors ({e.LastError})"; return false; }
         }
         // Provider gate first, so a provider that is full does not burn global quota.
-        var lease = e.Gate.TryEnter(out var why);
+        var lease = e.Gate.TryEnter(out var why, priority);
         if (lease == null) { reason = $"{name}: {why}"; return false; }
-        var globalLease = globalGate.TryEnter(out var gwhy);
+        var globalLease = globalGate.TryEnter(out var gwhy, priority);
         if (globalLease == null)
         {
             lease.Dispose();

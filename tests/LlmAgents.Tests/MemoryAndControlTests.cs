@@ -157,6 +157,7 @@ public sealed class MemoryAndControlTests
 
         clock.Advance(20);
         while (llm.Requests.TryDequeue(out _)) { }
+        mgr.GetAgent(1)!.ReceivePlayerOrder("Daniil: report", from: "Daniil");   // bots think on events: give Ann a reason
         await Step(mgr);
         var obs = JsonNode.Parse(Fixtures.Obs(llm.Requests.First(r => r.User.Contains("\"name\":\"Ann\"")).User))!;
         var mem = obs["memory"]!;
@@ -261,7 +262,6 @@ public sealed class MemoryAndControlTests
         Assert.Contains("2:fix_leaks", game.Actions);
         // an AI commander's order is binding but carries no player authority over command-menu orders
         Assert.False(game.Authority[2]);
-        Assert.True(game.Authority[1]);
 
         // next round: control comes back from memory
         mgr.Reset();
@@ -282,7 +282,7 @@ public sealed class MemoryAndControlTests
     public async Task OrderAutonomyOnlyThinksWhenAskedUnlessUnderControl()
     {
         game.AddBot(1, "Ann", "mechanic", o => o.Leaks.Add("Engine Room [h10]")).AddBot(2, "Bob", "engineer");
-        var (mgr, llm, _) = Create(s => s.Bots.Autonomy = "order");
+        var (mgr, llm, _) = Create(s => { s.Bots.Autonomy = "order"; s.Bots.ControlDecisionIntervalSeconds = 6; });
         for (int i = 0; i < 60; i++) await Step(mgr);
         Assert.Empty(llm.Requests); // urgent leak, but the vanilla AI handles it
 

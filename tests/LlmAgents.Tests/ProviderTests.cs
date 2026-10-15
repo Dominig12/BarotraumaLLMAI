@@ -82,7 +82,7 @@ public class ProviderTests
     {
         var cfg = new ProviderConfig { Name = "c", Model = "claude" };
         var body = AnthropicProvider.BuildBody(cfg, Request());
-        Assert.Equal("sys", body["system"]!.GetValue<string>());
+        Assert.Equal("sys", body["system"]![0]!["text"]!.GetValue<string>());
         Assert.Equal(3, body["messages"]!.AsArray().Count);
         Assert.NotNull(body["tools"]![0]!["input_schema"]);
 

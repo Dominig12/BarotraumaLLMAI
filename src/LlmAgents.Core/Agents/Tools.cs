@@ -85,7 +85,8 @@ public static class Tools
         new("operate", "Take a station and operate it.",
             OrderArgs(("role", "string", "Station to operate", OperateRoles.ToArray(), true),
                    ("option", "string", "Optional mode: reactor 'powerup'|'shutdown'; pumps 'pumpout'|'pumpin'", null, false))),
-        new("wait", "Stay where you are.", OrderArgs()),
+        new("wait", "An order to stop and stay where you are (until another order). Not for 'nothing to do': use carry_on for that.", OrderArgs()),
+        new("carry_on", "Change nothing: keep doing what you are doing (your orders and tasks go on). Use when nothing needs to change.", NoArgs()),
         new("set_order_priority", "Reorder your current orders ('currentOrder' shows them as name [pN]). 3 = most important. 0 = drop that order.",
             Schema(("order", "string", "The order as shown in currentOrder (e.g. 'fixleaks', 'operatereactor') or the tool name (e.g. 'fix_leaks', 'reactor')", null, true),
                    ("priority", "integer", "0-3", null, true))),
@@ -229,6 +230,8 @@ public static class Tools
                     agent.SetGoal(Str(a, "goal"), mgr.Now);
                     return "ok, goal: " + agent.Goal;
                 }
+                case "carry_on":
+                    return "ok";
                 case "keep_plan":
                     return agent.Busy ? "ok, continuing the plan" : "ok (no plan left)";
                 case "say":

@@ -86,12 +86,20 @@ public class TaskReportsAndAuthorityTests
         mgr.Update(); await mgr.WhenIdle();
         Assert.Equal(1, calls);
 
-        clock.Advance(3);                                     // > min gap, < decision interval
+        clock.Advance(3);                                     // > min gap
         game.PendingReports.Add(new GameReport(1, "task 'treat Mose' ok: used Bandage x2"));
-        mgr.Update(); await mgr.WhenIdle();                   // report delivered, bot woken
+        mgr.Update(); await mgr.WhenIdle();                   // a success outside of a plan: noted, nobody needs to think
+        clock.Advance(0.5); mgr.Update(); await mgr.WhenIdle();
+        Assert.Equal(1, calls);
+
+        clock.Advance(3);
+        game.PendingReports.Add(new GameReport(1, "task 'treat Mose' failed: no bandages left"));
+        mgr.Update(); await mgr.WhenIdle();                   // a failure wakes the bot
         clock.Advance(0.5); mgr.Update(); await mgr.WhenIdle();
         Assert.Equal(2, calls);
-        Assert.Contains(lastObs!["lastActionResults"]!.AsArray(), x => x!.GetValue<string>().Contains("used Bandage x2"));
+        var results = lastObs!["lastActionResults"]!.AsArray().Select(x => x!.GetValue<string>()).ToList();
+        Assert.Contains(results, x => x.Contains("used Bandage x2"));
+        Assert.Contains(results, x => x.Contains("no bandages left"));
     }
 
     [Fact]

@@ -107,27 +107,10 @@ Rules:
     static bool IsEveryone(string s) => Everyone.Any(e => s.Equals(e, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// Used when the dispatcher LLM is unavailable: names mentioned in the text, else everyone who heard it
-    /// (each recipient's own LLM is told to ignore orders that are not for it).
+    /// Used when the dispatcher LLM is unavailable: names mentioned in the text; an order for everybody to all who
+    /// heard it; a one-person job to the most suitable bot (see <see cref="ChatRouter.Fallback"/>).
     /// </summary>
-    public static List<RosterEntry> Fallback(ChatCommand cmd, IReadOnlyList<RosterEntry> roster)
-    {
-        // Players often type names in Cyrillic while bots have Latin names (or the other way round),
-        // and Russian declines names ("Анну", "Олегу"): compare transliterated word stems.
-        var words = Words(Translit.ToLatin(cmd.Text)).ToList();
-        var byName = roster.Where(r => Words(Translit.ToLatin(r.Name)).Where(p => p.Length >= 3)
-            .Any(part => words.Any(w => Stem(w) == Stem(part)))).ToList();
-        return byName.Count > 0 ? byName : roster.ToList();
-    }
-
-    static IEnumerable<string> Words(string s) =>
-        s.ToLowerInvariant().Split(new[] { ' ', ',', '.', '!', '?', ':', ';', '-', '"', '\'' }, StringSplitOptions.RemoveEmptyEntries);
-
-    static string Stem(string w)
-    {
-        w = w.Replace("y", "i").Replace("j", "i").Replace("h", "").Replace("w", "v");
-        return w.Length > 4 ? w.Substring(0, 4) : w; // "Олегу"/"Oleg" -> "oleg"
-    }
+    public static List<RosterEntry> Fallback(ChatCommand cmd, IReadOnlyList<RosterEntry> roster) => ChatRouter.Fallback(cmd, roster);
 
     /// <summary>Text the recipient bot sees in 'playerOrders'.</summary>
     public static string FormatOrder(ChatCommand cmd, IReadOnlyList<RosterEntry> recipients, RosterEntry me)

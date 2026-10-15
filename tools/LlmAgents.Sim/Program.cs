@@ -18,6 +18,8 @@ using LlmAgents.Llm;
 // and player chat orders at t=14s ("Механики, откачайте воду насосами"), t=28s ("Анна, иди в медотсек"),
 // t=33s ("Всем надеть водолазные костюмы, идёт бой"), t=40s ("Анна, вылечи Макса, только бинтами"), t=44s ("Ольга, перезаряди реактор"),
 // t=47s ("Механики, приоритет: сначала тушить пожар, потом течи") and at t=50s the player gives Ivan the "Full AI control" order.
+// Also: t=5s "Все ко мне" (come_to), t=55s a command-menu order for Oleg (fix leaks), t=58s "Скрафтите гарпун" (one crafter).
+// Bots think only on events (autonomy "events"): watch "why" in the log and the request count at the end.
 // At the end every bot writes a round summary into its long-term memory (sim_memory/sim.json by default).
 // Characters come from sim_memory/personas.json (created with a few examples). Console lines starting with "!llm"
 // are settings commands, exactly like in the game chat (e.g. "!llm persona Max preset grumpy", "!llm set maxNotes 3").
@@ -26,7 +28,7 @@ using LlmAgents.Llm;
 // ---------------------------------------------------------------------------------------------
 
 string configPath = Path.Combine("Content", "llm_config.json");
-double seconds = 60, speed = 1;
+double seconds = 70, speed = 1;
 string? forceProvider = null;
 string memoryDir = "sim_memory";
 bool quiet = false, scriptedChat = true;
@@ -101,12 +103,14 @@ new Thread(() => { string? line; while ((line = Console.ReadLine()) != null) typ
 var script = new List<(double At, string Text)>();
 if (scriptedChat)
 {
+    script.Add((5, "Все ко мне"));
     script.Add((14, "Механики, откачайте воду насосами"));
     script.Add((28, "Анна, иди в медотсек"));
     script.Add((33, "Всем надеть водолазные костюмы, идёт бой"));
     script.Add((40, "Анна, вылечи Макса, только бинтами"));
     script.Add((44, "Ольга, перезаряди реактор"));
     script.Add((47, "Механики, приоритет: сначала тушить пожар, потом течи"));
+    script.Add((58, "Скрафтите гарпун"));
 
 }
 
@@ -118,11 +122,13 @@ void SendChat(string text)
 }
 
 var wall = Stopwatch.StartNew();
+bool menuGiven = false;
 while (SimClock.Now < seconds)
 {
     SimClock.Now = wall.Elapsed.TotalSeconds * speed;
     world.Tick(SimClock.Now);
     while (script.Count > 0 && script[0].At <= SimClock.Now) { SendChat(script[0].Text); script.RemoveAt(0); }
+    if (scriptedChat && SimClock.Now >= 55 && !menuGiven) { menuGiven = true; world.GiveMenuOrder(5, "Daniil", "fixleaks"); }
     if (scriptedChat && SimClock.Now >= 50 && world.GiveControlOnce(1, "Daniil"))
         lock (Console.Out) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"[{SimClock.Now,6:0.0}s] Daniil gives Ivan Petrov the order: Full AI control"); Console.ResetColor(); }
     while (typed.TryDequeue(out var line))
@@ -149,7 +155,9 @@ Console.WriteLine();
 Console.WriteLine("=== Summary ===");
 Console.WriteLine($"Actions taken: {world.ActionLog.Count}");
 foreach (var a in world.ActionLog) Console.WriteLine("  " + a);
-Console.WriteLine("Decisions per bot: " + string.Join(", ", mgr.Agents.Select(a => $"{a.Name}={a.Notes().Count(n => n.StartsWith("Player order"))} orders")));
+Console.WriteLine("Decisions per bot: " + string.Join(", ", mgr.Agents.Select(a => $"{a.Name}={a.Decisions} (orders {a.PastOrders.Count})")));
+Console.WriteLine($"Requests in the last minute: {mgr.RequestsLastMinute}");
+Console.WriteLine("Notes to the player: " + string.Join(" | ", world.Notices));
 Console.WriteLine($"Memory ({memory.FilePath}):");
 foreach (var b in memory.Read(d => d.Bots.Values.ToList()))
     Console.WriteLine($"  {b.Name}: rounds={b.Rounds}, control={b.AiControl}, facts={b.Facts.Count}, relationships={b.Relationships.Count}; last: {b.Journal.LastOrDefault()}");
@@ -264,6 +272,32 @@ sealed class SimWorld : IGameApi
     public string GoToRoom(int botId, string roomId, int priority = Tools.TopPriority) =>
         rooms.Contains(roomId) ? Order(botId, "wait", priority, roomId) : $"error: unknown room '{roomId}'";
 
+    public string ComeTo(int botId, string targetName)
+    {
+        var target = bots.FirstOrDefault(b => b.Name.Contains(targetName, StringComparison.OrdinalIgnoreCase));
+        var room = target?.Room ?? "Command Room [h1]"; // the player stands in the command room
+        B(botId).Room = room;
+        Report(botId, $"task 'come to {targetName}' ok: you came to {targetName} and stayed. This order is DONE", 6);
+        return Do(botId, $"come to {targetName}") + ", started: come to " + targetName;
+    }
+
+    public readonly List<string> Notices = new();
+    public void NotifyPlayer(string playerName, string text)
+    {
+        Notices.Add($"{playerName}: {text}");
+        lock (Console.Out) { Console.ForegroundColor = ConsoleColor.DarkGray; Console.WriteLine($"[{SimClock.Now,6:0.0}s] (to {playerName}) {text}"); Console.ResetColor(); }
+    }
+
+    readonly List<MenuOrder> menuOrders = new();
+    public void GiveMenuOrder(int botId, string by, string order)
+    {
+        var b = B(botId);
+        b.Add(order, Tools.TopPriority);
+        menuOrders.Add(new MenuOrder(botId, by, order));
+        lock (Console.Out) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"[{SimClock.Now,6:0.0}s] {by} gives {b.Name} through the command menu: {order}"); Console.ResetColor(); }
+    }
+    public IReadOnlyList<MenuOrder> DrainMenuOrders() { var r = menuOrders.ToList(); menuOrders.Clear(); return r; }
+
     public string Follow(int botId, string targetName, int priority = Tools.TopPriority)
     {
         var t = bots.FirstOrDefault(b => b.Name.Contains(targetName, StringComparison.OrdinalIgnoreCase));
@@ -301,24 +335,26 @@ sealed class SimWorld : IGameApi
     public void SetAiControl(int botId, bool on) { if (on) controlled.Add(botId); else controlled.Remove(botId); }
     public IReadOnlyList<ControlEvent> DrainControlEvents() { var r = controlEvents.ToList(); controlEvents.Clear(); return r; }
 
-    readonly List<GameReport> reports = new();
+    readonly List<(double Due, GameReport Report)> reports = new();
     public void BeginCommand(int botId, bool playerAuthority) { }
     readonly HashSet<int> gearOn = new();
-    public string Equip(int botId, string item) { if (item.Contains("suit")) gearOn.Add(botId); Report(botId, $"task 'equip {item}' ok: equipped"); return Do(botId, $"equip {item}"); }
-    public string RefuelReactor(int botId) { Report(botId, "task 'refuel reactor' ok: fuel rod loaded"); return Do(botId, "refuel reactor"); }
-    public string Craft(int botId, string item, int amount, bool salvage = false) { Report(botId, $"task 'craft {item}' ok: made {amount}"); return Do(botId, $"craft {item} x{amount}"); }
-    public string Deconstruct(int botId, string item, string? from = null) { Report(botId, $"task 'deconstruct {item}' ok"); return Do(botId, $"deconstruct {item}"); }
+    static string Started(string what) => $"ok, started: {what} (result will be reported)";
+    public string Equip(int botId, string item) { if (item.Contains("suit")) gearOn.Add(botId); Report(botId, $"task 'equip {item}' ok: equipped", 2); Do(botId, $"equip {item}"); return Started("equip " + item); }
+    public string RefuelReactor(int botId) { Report(botId, "task 'refuel reactor' ok: fuel rod loaded", 5); Do(botId, "refuel reactor"); return Started("refuel reactor"); }
+    public string Craft(int botId, string item, int amount, bool salvage = false) { Report(botId, $"task 'craft {item}' ok: made {amount}", 8); Do(botId, $"craft {item} x{amount}"); return Started("craft " + item); }
+    public string Deconstruct(int botId, string item, string? from = null) { Report(botId, $"task 'deconstruct {item}' ok", 6); Do(botId, $"deconstruct {item}"); return Started("deconstruct " + item); }
     public string Treat(int botId, string target, string? item)
     {
         var p = bots.FirstOrDefault(b => b.Name.Contains(target, StringComparison.OrdinalIgnoreCase));
         if (p == null) return $"error: no crew member '{target}'";
         p.Health = Math.Min(100, p.Health + 40);
-        Report(botId, $"task 'treat {p.Name}' ok: used {item ?? "Bandage"} x1, health {p.Health}%");
-        return Do(botId, $"treat {p.Name} with {item ?? "cheapest"}");
+        Report(botId, $"task 'treat {p.Name}' ok: used {item ?? "Bandage"} x1, health {p.Health}%", 4);
+        Do(botId, $"treat {p.Name} with {item ?? "cheapest"}");
+        return Started("treat " + p.Name);
     }
     public string Unequip(int botId, string item) => Do(botId, $"unequip {item}");
     public string Drop(int botId, string item) => Do(botId, $"drop {item}");
-    public string MoveItem(int botId, string item, string to) { Report(botId, $"task 'move {item}' ok: delivered to {to}"); return Do(botId, $"move {item} -> {to}"); }
+    public string MoveItem(int botId, string item, string to) { Report(botId, $"task 'move {item}' ok: delivered to {to}", 5); Do(botId, $"move {item} -> {to}"); return Started("move " + item); }
     public string KeepGear(int botId, bool on) => Do(botId, on ? "keep gear ON" : "keep gear off");
     public string Inspect(int botId, string kind, string query) => kind switch
     {
@@ -326,8 +362,13 @@ sealed class SimWorld : IGameApi
         "recipe" => $"{query}: needs Steel Bar x1 (available 4). All ingredients available.",
         _ => $"{query}: 2 in Cabinet in Medbay [h4]",
     };
-    void Report(int botId, string text) => reports.Add(new GameReport(botId, text));
-    public IReadOnlyList<GameReport> DrainReports() { var r = reports.ToList(); reports.Clear(); return r; }
+    void Report(int botId, string text, double after) => reports.Add((SimClock.Now + after, new GameReport(botId, text)));
+    public IReadOnlyList<GameReport> DrainReports()
+    {
+        var due = reports.Where(r => r.Due <= SimClock.Now).ToList();
+        reports.RemoveAll(r => r.Due <= SimClock.Now);
+        return due.Select(r => r.Report).ToList();
+    }
 
     public void Speak(int botId, string text)
     {

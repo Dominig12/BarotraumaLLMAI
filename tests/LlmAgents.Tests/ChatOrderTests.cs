@@ -74,7 +74,7 @@ public class ChatOrderTests
     [Fact]
     public async Task DispatcherPicksRecipientAndOnlyTheyGetTheOrder()
     {
-        var (mgr, llm) = Create();
+        var (mgr, llm) = Create("\"chat\": { \"ruleRouting\": false },");   // the dispatcher decides even clear cases
         llm.Dispatch = _ => Fixtures.OpenAiToolResponse((ChatDispatcher.ToolName, "{\"recipients\":[\"Anna Kuznetsova\"],\"reason\":\"named\"}"));
         await Run(mgr, 1);                         // initial decisions done
         mgr.SubmitChat(Chat("Анна, заделай течь в балласте"));
@@ -131,7 +131,7 @@ public class ChatOrderTests
         await Run(mgr, 1);
         mgr.SubmitChat(Chat("Макс, держи реактор"));
         await Run(mgr, 2);
-        Assert.Contains(mgr.GetAgent(2)!.Notes(), n => n.StartsWith("Player order:") && n.Contains("держи реактор"));
+        Assert.Contains(mgr.GetAgent(2)!.PastOrders, o => o.Text.Contains("держи реактор"));
     }
 
     [Fact]
@@ -209,17 +209,18 @@ public class ChatOrderTests
     }
 
     [Fact]
-    public async Task UndispatchableChatExpires()
+    public async Task UndispatchableChatFallsBackInsteadOfBeingLost()
     {
         var providers = @"[ { ""name"": ""a"", ""type"": ""openai"", ""baseUrl"": ""http://a.test/v1"", ""model"": ""m"", ""requestsPerMinute"": 4, ""maxConcurrent"": 10 } ]";
         var settings = ModSettings.Parse(Fixtures.Config(providersOverride: providers).Replace("\"fallbackProvider\": \"b\"", "\"fallbackProvider\": \"\""));
         var llm = new Llm();
         var mgr = new AgentManager(settings, game, new LlmRouter(settings, llm.Handler(), clock.Utc), clock.Get);
-        mgr.Update(); await mgr.WhenIdle();       // 4 bots use the whole per-minute budget
+        await Run(mgr, 5);                         // 4 bots look around at round start: the whole per-minute budget
         mgr.SubmitChat(Chat("hello crew"));
-        await Run(mgr, 35);                        // > chat.maxAgeSeconds (30) and still within the minute
+        await Run(mgr, 10);                        // no slot for the dispatcher: after dispatchWaitSeconds the message goes to everyone
         Assert.Equal(0, mgr.PendingChatCount);
         Assert.Empty(llm.DispatchPrompts);
+        Assert.All(new[] { 1, 2, 3, 4 }, id => Assert.True(mgr.GetAgent(id)!.HasPlayerOrder));
     }
 
     [Fact]
@@ -273,7 +274,9 @@ public class ChatDispatcherTests
     }
 
     [Theory]
-    [InlineData("Максим, к реактору", "")]                 // 'Максим' must not match 'Max'... stems differ (maks vs max)
+    [InlineData("Максим, к реактору", "Max Volkov")]       // 'Максим' is not 'Max' (maxim vs max): no name, so the reactor job goes to
+                                                           // the most suitable bot (no engineer here: a mechanic), not to everyone
+    [InlineData("всем стоять", "")]                        // everybody
     [InlineData("Олег, проверь насосы", "Oleg Sidorov")]
     [InlineData("Олегу передай: насосы", "Oleg Sidorov")]
     [InlineData("Иван и Олег, за мной", "Ivan Petrov,Oleg Sidorov")]
@@ -309,6 +312,8 @@ public class FairSchedulingTests
         for (int i = 1; i <= 6; i++) game.AddBot(i, $"Bot{i}", i <= 2 ? "mechanic" : "assistant");
         var providers = @"[ { ""name"": ""a"", ""type"": ""openai"", ""baseUrl"": ""http://a.test/v1"", ""model"": ""m"", ""maxConcurrent"": 1 } ]";
         var settings = ModSettings.Parse(Fixtures.Config(providersOverride: providers).Replace("\"fallbackProvider\": \"b\"", "\"fallbackProvider\": \"\""));
+        settings.Bots.Autonomy = "always";   // every bot wants to think every 10 s (heartbeat)
+        settings.Global.IdleBackoff = false;
         var counts = new ConcurrentDictionary<string, int>();
         var handler = new FakeHandler(async (_, body, ct) =>
         {

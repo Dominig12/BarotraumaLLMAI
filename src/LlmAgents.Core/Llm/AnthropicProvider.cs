@@ -38,7 +38,16 @@ public sealed class AnthropicProvider : ILlmProvider
             ["model"] = cfg.Model,
             ["max_tokens"] = req.MaxOutputTokens,
             ["temperature"] = req.Temperature,
-            ["system"] = promptMode ? ToolPrompt.Build(req.System, req.Tools) : req.System,
+            // the system prompt and the tools are the same for every turn of a bot: cached by the API (cheaper, faster)
+            ["system"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["type"] = "text",
+                    ["text"] = promptMode ? ToolPrompt.Build(req.System, req.Tools) : req.System,
+                    ["cache_control"] = new JsonObject { ["type"] = "ephemeral" },
+                },
+            },
             ["messages"] = messages,
         };
 
@@ -54,6 +63,7 @@ public sealed class AnthropicProvider : ILlmProvider
                     ["input_schema"] = t.Parameters.DeepClone(),
                 });
             }
+            if (tools.Count > 0 && tools[^1] is JsonObject lastTool) lastTool["cache_control"] = new JsonObject { ["type"] = "ephemeral" };
             body["tools"] = tools;
         }
         JsonUtil.Merge(body, cfg.ExtraBody);

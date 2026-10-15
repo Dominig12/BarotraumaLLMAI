@@ -11,6 +11,11 @@ public sealed record GameReport(int BotId, string Text);
 /// <summary>A player gave (Granted) or took back full AI control of a bot through the mod's command-menu order.</summary>
 public sealed record ControlEvent(int BotId, bool Granted, string By);
 
+/// <summary>A human player gave a bot an order through the command menu (or dismissed its orders).
+/// The game has already applied it and cancelled the bot's running task.
+/// PriorityOnly: the player only moved one of the bot's orders up or down.</summary>
+public sealed record MenuOrder(int BotId, string By, string Order, bool Dismissal = false, bool PriorityOnly = false);
+
 /// <summary>
 /// Everything the agent layer needs from the game. The only real implementation is
 /// LlmAgents.Server/GameAdapter.cs; tests use a fake. All methods are called on the game thread.
@@ -80,4 +85,11 @@ public interface IGameApi
 
     /// <summary>Control orders given by players through the command menu since the last call.</summary>
     IReadOnlyList<ControlEvent> DrainControlEvents();
+
+    /// <summary>Ordinary orders players gave bots through the command menu since the last call.</summary>
+    IReadOnlyList<MenuOrder> DrainMenuOrders();
+
+    /// <summary>A private server message to a human player (feedback: who took an order, a model failed...).
+    /// Does nothing if no such player is connected.</summary>
+    void NotifyPlayer(string playerName, string text);
 }

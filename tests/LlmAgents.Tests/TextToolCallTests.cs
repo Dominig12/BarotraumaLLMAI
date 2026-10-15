@@ -170,7 +170,7 @@ public class ProviderHealthAndModesTests
 
         var anth = AnthropicProvider.BuildBody(cfg, req);
         Assert.Null(anth["tools"]);
-        Assert.Contains("fix_leaks", anth["system"]!.GetValue<string>());
+        Assert.Contains("fix_leaks", anth["system"]![0]!["text"]!.GetValue<string>());
 
         var native = OpenAiCompatibleProvider.BuildBody(new ProviderConfig { Name = "y", Model = "m" }, req);
         Assert.NotNull(native["tools"]);

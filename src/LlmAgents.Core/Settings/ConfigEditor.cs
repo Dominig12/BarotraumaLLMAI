@@ -134,6 +134,76 @@ public sealed class ConfigEditor
         }
     }
 
+    /// <summary>Old default values replaced by better ones in configVersion 2 (event-driven bots, longer plans).
+    /// Only values still equal to the old default are changed: anything a user set stays.</summary>
+    static readonly (string Path, JsonNode Old, JsonNode New)[] DefaultsV2 =
+    {
+        ("global.decisionIntervalSeconds", 10, 60),
+        ("global.minSecondsBetweenCallsPerBot", 4, 3),
+        ("global.maxActionsPerDecision", 3, 6),
+        ("global.historyTurns", 6, 10),
+        ("global.maxIdleIntervalSeconds", 60, 300),
+        ("bots.autonomy", "always", "events"),
+        ("bots.controlDecisionIntervalSeconds", 6, 20),
+        ("providers.*.maxOutputTokens", 300, 800),
+    };
+
+    /// <summary>
+    /// Upgrades a config written by an older version: values that are still the old defaults get the new defaults
+    /// (a value the user changed is kept), then configVersion is set to the current one. Run before
+    /// <see cref="AddMissingDefaults"/>. Returns what changed ("bots.autonomy: always -> events"); nothing on error.
+    /// </summary>
+    public List<string> MigrateDefaults()
+    {
+        var changed = new List<string>();
+        var versionKey = root.Select(kv => kv.Key).FirstOrDefault(k => Is(k, "configVersion"));
+        int version = versionKey != null && root[versionKey] is JsonValue v && v.TryGetValue<int>(out var n) ? n : 1;
+        if (version >= ModSettings.CurrentConfigVersion) return changed;
+
+        var copy = (JsonObject)JsonNode.Parse(root.ToJsonString(), NodeOptions)!;
+        foreach (var (path, old, @new) in DefaultsV2)
+        {
+            var parts = path.Split('.');
+            IEnumerable<(JsonObject Obj, string Label)> owners;
+            if (parts[0] == "providers")
+                owners = (copy[Prop(copy, "providers")] as JsonArray)?.OfType<JsonObject>()
+                    .Select(p => (p, $"providers.{(string?)p["name"] ?? "?"}")) ?? Enumerable.Empty<(JsonObject, string)>();
+            else
+                owners = copy[Prop(copy, parts[0])] is JsonObject o ? new[] { (o, parts[0]) } : Array.Empty<(JsonObject, string)>();
+            foreach (var (obj, label) in owners)
+            {
+                var key = Prop(obj, parts[^1]);
+                if (!obj.ContainsKey(key) || !SameValue(obj[key], old)) continue;
+                obj[key] = @new.DeepClone();
+                changed.Add($"{label}.{parts[^1]}: {old.ToJsonString()} -> {@new.ToJsonString()}");
+            }
+        }
+        copy[versionKey ?? "configVersion"] = ModSettings.CurrentConfigVersion;
+        try
+        {
+            Settings = ModSettings.Parse(copy.ToJsonString());
+            root = copy;
+            changed.Add($"configVersion: {version} -> {ModSettings.CurrentConfigVersion}");
+            return changed;
+        }
+        catch (Exception e)
+        {
+            Log.Warn("could not upgrade old default settings: " + e.Message);
+            return new List<string>();
+        }
+    }
+
+    static bool SameValue(JsonNode? a, JsonNode b)
+    {
+        if (a is not JsonValue va || b is not JsonValue vb) return false;
+        // values from the file and from code are stored differently: compare their JSON text
+        static double? Num(JsonValue v) => double.TryParse(v.ToJsonString(), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : null;
+        if (Num(va) is double da && Num(vb) is double db) return Math.Abs(da - db) < 1e-9;
+        if (va.TryGetValue<string>(out var sa) && vb.TryGetValue<string>(out var sb)) return Is(sa.Trim(), sb);
+        return false;
+    }
+
     static void Merge(JsonObject target, JsonObject defaults, string prefix, List<string> added)
     {
         foreach (var (key, value) in defaults.ToList())

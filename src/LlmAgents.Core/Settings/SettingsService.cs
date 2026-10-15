@@ -406,6 +406,7 @@ public sealed class SettingsService
                 if (match == null && f.OptionLabels != null)
                 {
                     int i = f.OptionLabels.FindIndex(l => l.Equals(raw, StringComparison.OrdinalIgnoreCase));
+                    if (i < 0 && raw.Length >= 3) i = f.OptionLabels.FindIndex(l => l.Contains(raw, StringComparison.OrdinalIgnoreCase));
                     if (i >= 0 && i < options.Count) match = options[i];
                 }
                 return match == null ? (null, "Варианты: " + string.Join(", ", options.Select(o => o.Length == 0 ? "-" : o))) : (JsonValue.Create(match), null);

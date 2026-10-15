@@ -13,6 +13,10 @@ namespace LlmAgents;
 ///
 /// Giving the order to a bot that is not under AI control grants control; giving it again takes control back.
 /// Dismissing all of a bot's orders ("dismiss") also takes control back.
+///
+/// The same patch also reports every other order a human player gives a bot through the command menu
+/// (<see cref="MenuHandler"/>), so the mod can cancel the bot's own plan and task: the player's order always wins.
+/// Orders the mod itself issues are not reported (<see cref="Internal"/>).
 /// </summary>
 internal static class ControlOrder
 {
@@ -20,6 +24,12 @@ internal static class ControlOrder
 
     /// <summary>(bot, order giver, kind). Set by the plugin to the current game adapter.</summary>
     public static Action<Character, Character?, Kind>? Handler;
+
+    /// <summary>(bot, order) for ordinary orders given by human players. Set by the plugin to the current game adapter.</summary>
+    public static Action<Character, Order, bool>? MenuHandler;
+
+    /// <summary>True while the mod itself calls Character.SetOrder (its own orders are not "player menu orders").</summary>
+    [ThreadStatic] public static bool Internal;
 
     public enum Kind { Toggle, Revoke, DismissAll }
 
@@ -33,7 +43,8 @@ internal static class ControlOrder
         var setOrder = AccessTools.Method(typeof(Character), nameof(Character.SetOrder),
             new[] { typeof(Order), typeof(bool), typeof(bool), typeof(bool) })
             ?? throw new MissingMethodException("Character.SetOrder(Order, bool, bool, bool) not found");
-        harmony.Patch(setOrder, prefix: new HarmonyMethod(typeof(ControlOrder), nameof(SetOrderPrefix)));
+        harmony.Patch(setOrder, prefix: new HarmonyMethod(typeof(ControlOrder), nameof(SetOrderPrefix)),
+            postfix: new HarmonyMethod(typeof(ControlOrder), nameof(SetOrderPostfix)));
 
         var send = AccessTools.Method(typeof(GameServer), nameof(GameServer.SendOrderChatMessage), new[] { typeof(OrderChatMessage) });
         if (send != null) harmony.Patch(send, prefix: new HarmonyMethod(typeof(ControlOrder), nameof(SendPrefix)));
@@ -81,6 +92,21 @@ internal static class ControlOrder
         {
             Log.Warn("control order: " + e.Message);
             return order?.Identifier != Id;
+        }
+    }
+
+    /// <summary>After vanilla applied an order: tell the mod if a human player gave it (not the mod, not the control order).</summary>
+    static void SetOrderPostfix(Character __instance, Order order, bool isNewOrder)
+    {
+        try
+        {
+            if (Internal || order == null || __instance == null || IsControlOrder(order)) return;
+            if (order.OrderGiver is not { IsPlayer: true } giver || giver == __instance) return;
+            MenuHandler?.Invoke(__instance, order, isNewOrder);
+        }
+        catch (Exception e)
+        {
+            Log.Warn("menu order hook: " + e.Message);
         }
     }
 

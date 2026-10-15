@@ -91,7 +91,7 @@ public class SettingsTests
         var s = Fixtures.Settings();
         Assert.True(s.Memory.Enabled);
         Assert.Equal("memory", s.Memory.Folder);
-        Assert.Equal("always", s.Bots.Autonomy);
+        Assert.Equal("events", s.Bots.Autonomy);   // bots think when something happens
         Assert.True(s.Global.ShowBotMessagesInChat);
         Assert.Throws<InvalidDataException>(() => Fixtures.Settings(extraRoot: "\"memory\": { \"summaryProvider\": \"zzz\" },"));
         var custom = ModSettings.Parse(Fixtures.Config().Replace("\"allowedTools\": []", "\"allowedTools\": [], \"autonomy\": \"ORDER\""));

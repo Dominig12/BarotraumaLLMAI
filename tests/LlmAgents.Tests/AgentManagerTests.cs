@@ -81,20 +81,25 @@ public class AgentManagerTests
     {
         game.AddBot(1, "Ann", "mechanic");
         var (mgr, llm) = Create();
+        mgr.Settings.Bots.Autonomy = "always"; // heartbeat every decisionIntervalSeconds (10 s here) when nothing happens
         llm.ByBot["Ann"] = _ => Fixtures.OpenAiToolResponse(("go_to_room", "{\"room\":\"Nowhere\"}"));
 
-        for (int i = 0; i < 19; i++) await Step(mgr); // 9.5 s: one decision only
-        Assert.Single(llm.Seen);
-        for (int i = 0; i < 2; i++) await Step(mgr);  // passes the 10 s interval
+        for (int i = 0; i < 6; i++) await Step(mgr);   // 3 s: the error is shown to her once, right away (min gap 2 s)
         Assert.Equal(2, llm.Seen.Count);
-
         var second = llm.Seen.Last();
         var results = second.Observation["lastActionResults"]!.AsArray().Select(x => x!.GetValue<string>()).ToList();
         Assert.Contains(results, r => r.Contains("error: unknown room"));
+        Assert.Contains(second.Observation["why"]!.AsArray(), w => w!.GetValue<string>().StartsWith("[failed] your last reply had an error"));
         // history: system + (user, assistant) + current user
         Assert.Equal(4, second.Messages.Count);
         Assert.Equal("assistant", second.Messages[2]!["role"]!.GetValue<string>());
         Assert.Contains("go_to_room", second.Messages[2]!["content"]!.GetValue<string>());
+
+        for (int i = 0; i < 16; i++) await Step(mgr);  // the same error again: no loop, only the 10 s heartbeat
+        Assert.Equal(2, llm.Seen.Count);
+        for (int i = 0; i < 6; i++) await Step(mgr);
+        Assert.Equal(3, llm.Seen.Count);
+        Assert.StartsWith("[heartbeat]", llm.Seen.Last().Observation["why"]![0]!.GetValue<string>());
     }
 
     [Fact]
@@ -128,19 +133,25 @@ public class AgentManagerTests
     {
         game.AddBot(1, "Ann", "captain").AddBot(2, "Bob", "engineer");
         var (mgr, llm) = Create();
-        llm.ByBot["Ann"] = _ => Fixtures.OpenAiToolResponse(("message_crew", "{\"to\":\"bob\",\"text\":\"Check the reactor\"}"));
+        mgr.Settings.Bots.ThinkAtRoundStart = false;  // only events: nobody thinks until something happens
+        int annCalls = 0;
+        llm.ByBot["Ann"] = _ => annCalls++ == 0
+            ? Fixtures.OpenAiToolResponse(("message_crew", "{\"to\":\"bob\",\"text\":\"Check the reactor\"}"))
+            : Fixtures.OpenAiToolResponse(("carry_on", "{}"));
 
-        await Step(mgr); // both decide
-        await Step(mgr); // Ann's message is delivered
+        await Step(mgr);
+        Assert.Empty(llm.Seen);
+        mgr.GetAgent(1)!.ReceivePlayerOrder("Daniil: tell Bob to check the reactor", from: "Daniil");
+        await Step(mgr); await Step(mgr);  // Ann decides, her message is delivered
         for (int i = 0; i < 4; i++) await Step(mgr); // 2 s later: mail does not wake Bob at once (no "Roger!" ping-pong)
-        Assert.Single(llm.Seen, s => s.Bot == "Bob");
-        for (int i = 0; i < 8; i++) await Step(mgr); // by half the decision interval (5 s) he reads it
+        Assert.DoesNotContain(llm.Seen, s => s.Bot == "Bob");
+        for (int i = 0; i < 8; i++) await Step(mgr); // after mailDelaySeconds (4 s) he reads it
 
         var bobCalls = llm.Seen.Where(s => s.Bot == "Bob").ToList();
-        Assert.Equal(2, bobCalls.Count);
-        var inbox = bobCalls[1].Observation["inbox"]!.AsArray().Select(x => x!.GetValue<string>());
-        Assert.Contains("Ann: Check the reactor", inbox);
-        Assert.Single(llm.Seen, s => s.Bot == "Ann"); // Ann has no reason to call again yet
+        var bob = Assert.Single(bobCalls);
+        Assert.Contains("Ann: Check the reactor", bob.Observation["inbox"]!.AsArray().Select(x => x!.GetValue<string>()));
+        Assert.Contains(bob.Observation["why"]!.AsArray(), w => w!.GetValue<string>().Contains("message from Ann"));
+        Assert.Single(llm.Seen, s => s.Bot == "Ann"); // Ann has no reason to call again
     }
 
     [Fact]
@@ -236,7 +247,7 @@ public class AgentManagerTests
         settings.Bots.ProviderByJob["captain"] = "b";
         var handler = new FakeHandler(_ => (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("wait", "{}"))));
         var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
-        await Step(mgr);
+        for (int i = 0; i < 4; i++) await Step(mgr);   // first looks at round start are staggered
         var byHost = handler.Requests.ToDictionary(
             r => JsonNode.Parse(Fixtures.Obs(r.Body["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>()))!["name"]!.GetValue<string>(),
             r => new Uri(r.Url).Host);
@@ -340,6 +351,7 @@ public class AgentManagerTests
     {
         game.AddBot(1, "Alan Beltran", "medicaldoctor");
         var (mgr, llm) = Create();
+        mgr.Settings.Bots.Autonomy = "always";
         int n = 0;
         llm.ByBot["Alan Beltran"] = _ => n++ == 0
             ? Fixtures.OpenAiTextResponse("go_to_room{room:<|\"|>Engine Room [h10]<|\"|>}<tool_call|>")
@@ -347,8 +359,7 @@ public class AgentManagerTests
         await Step(mgr); await Step(mgr);
         Assert.Contains("1:goto Engine Room [h10]", game.Actions);
 
-        for (int i = 0; i < 21; i++) await Step(mgr);   // second decision: prose only
-        for (int i = 0; i < 21; i++) await Step(mgr);   // third decision sees the feedback
+        for (int i = 0; i < 200 && llm.Seen.Count < 3; i++) await Step(mgr);   // heartbeats: second decision prose only, third sees the feedback
         var third = llm.Seen.Where(s => s.Bot == "Alan Beltran").ElementAt(2);
         var assistantTurns = third.Messages.Where(m => m!["role"]!.GetValue<string>() == "assistant").Select(m => m!["content"]!.GetValue<string>()).ToList();
         Assert.Equal(new[] { "go_to_room(room=\"Engine Room [h10]\")", "(no tool call)" }, assistantTurns);

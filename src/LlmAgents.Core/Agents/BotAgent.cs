@@ -7,14 +7,28 @@ using LlmAgents.Llm;
 namespace LlmAgents.Agents;
 
 /// <summary>An order waiting for the bot's next decision.</summary>
-public sealed record PendingOrder(string Text, bool Authority);
+/// <param name="Authority">true = from a human player (may replace orders players gave through the command menu);
+/// false = from an AI crew member in command (binding, but player orders still come first).</param>
+/// <param name="From">Who gave it (a player's name), for feedback when it cannot be carried out.</param>
+public sealed record PendingOrder(string Text, bool Authority, string? From = null);
 
 /// <summary>One step of a multi-step reply. Authority = the reply carried out a human player's order.</summary>
 public sealed record PlanStep(ToolCall Call, bool Authority);
 
 public enum PlanWait { None, Task, Arrival }
 
-/// <summary>State of one LLM-driven bot: memory, inbox, history, scheduling flags.</summary>
+/// <summary>What the bot is working toward. Source: "player Daniil", "you", "Rosendo (in command)"...
+/// Player: the human player who gave the order (told when it is done or failed).</summary>
+public sealed record AgentGoal(string Text, string Source, double SetAt, string? Player = null);
+
+/// <summary>An order the bot got earlier (shown with its age, so an old order does not read like a fresh one).</summary>
+public sealed record PastOrder(string Text, double At);
+
+/// <summary>
+/// State of one LLM-driven bot. Everything except the inbox and the order queue (which other code may fill at any
+/// time) is used on the game thread only; LLM requests work on copies and their results are applied back on the
+/// game thread.
+/// </summary>
 public sealed class BotAgent
 {
     public int Id { get; }
@@ -23,24 +37,64 @@ public sealed class BotAgent
     /// <summary>The game's personality trait (used when no persona is set).</summary>
     public string? Trait { get; set; }
 
-    // Scheduling. Touched from the game thread; Pending is also cleared by the worker task.
-    volatile bool pending;
-    public bool Pending { get => pending; set => pending = value; }
-    public double LastRequestAt { get; set; } = double.NegativeInfinity;
-    public double NextUrgencyCheckAt { get; set; }
-    public bool WakeUp { get; set; }
+    public BotAgent(BotHandle h)
+    {
+        Id = h.Id;
+        Name = h.Name;
+        Job = h.Job;
+        Trait = h.Trait;
+    }
 
-    /// <summary>Set by the worker when a request could not be made (limits/outage): retry soon, the turn was not used.</summary>
-    volatile bool retrySoon;
-    public bool RetrySoon { get => retrySoon; set => retrySoon = value; }
+    // ------------------------------------------------------------------ scheduling
+
+    /// <summary>A request for this bot is running.</summary>
+    public bool Pending { get; set; }
+    public double LastRequestAt { get; set; } = double.NegativeInfinity;
+    /// <summary>After a failed request: not before this time.</summary>
+    public double RetryNotBefore { get; set; } = double.NegativeInfinity;
+    public int FailedRequests { get; set; }
+
+    /// <summary>Things that happened since the last decision (see <see cref="EventKind"/>).</summary>
+    public readonly List<AgentEvent> Events = new();
+
+    public void AddEvent(EventKind kind, string text, double at)
+    {
+        // the same thing twice (two breaches in one room, the same order event) is one event
+        if (Events.Any(e => e.Kind == kind && e.Text == text)) return;
+        Events.Add(new AgentEvent(kind, Tools.Clip(text, 240), at));
+        while (Events.Count > 12) Events.RemoveAt(Events.FindIndex(e => e.Kind == Events.Max(x => x.Kind)));
+    }
+
+    public bool HasEvent(EventKind kind) => Events.Any(e => e.Kind == kind);
+
+    /// <summary>Situation flags seen recently (flag -> last time seen); a flag that newly appears wakes the bot.</summary>
+    public readonly Dictionary<string, double> FlagsSeen = new();
+    public bool InDanger { get; set; }
+    public double DangerGoneSince { get; set; } = double.NaN;
+    public double NextSituationCheckAt { get; set; }
+    /// <summary>The latest observation (from the situation check), reused when a decision starts right after it.</summary>
+    public Observation? LastObservation { get; set; }
+    public double LastObservationAt { get; set; } = double.NegativeInfinity;
+
+    /// <summary>A plan review was already asked for the current plan.</summary>
+    public bool PlanReviewed { get; set; }
+
+    /// <summary>The last decision changed something (an order, a task, an item...), not only talk or "already doing that".</summary>
+    public bool ActedSinceDecision { get; set; }
+    /// <summary>Heartbeat decisions in a row that changed nothing; each one doubles the time to the next heartbeat.</summary>
+    public int IdleStreak { get; set; }
+
+    // ------------------------------------------------------------------ full AI control
 
     /// <summary>A player handed this bot full AI control (mod order in the command menu).</summary>
     public bool AiControl { get; set; }
     public string? ControlBy { get; set; }
 
-    // For !llm status / the settings window. Written by the worker thread, read on the game thread: plain values only.
-    public volatile string? LastDecision;
-    public double LastDecisionAt = double.NaN;
+    // ------------------------------------------------------------------ status
+
+    public string? LastDecision { get; set; }
+    public double LastDecisionAt { get; set; } = double.NaN;
+    public string? LastWhy { get; set; }
     public int Decisions;
     readonly Queue<string> recentErrors = new();
 
@@ -67,63 +121,18 @@ public sealed class BotAgent
         return true;
     }
 
+    // ------------------------------------------------------------------ inbox, orders, results
+
     readonly object sync = new();
-    readonly List<string> notes = new();
-    readonly List<LlmTurn> history = new();
-    readonly List<string> results = new();
     readonly ConcurrentQueue<string> inbox = new();
     readonly ConcurrentQueue<PendingOrder> playerOrders = new();
+    readonly List<string> results = new();
 
     public const int MaxNoteLength = 200;
     public const int MaxResults = 10;
     public const int MaxInbox = 10;
     public const int MaxRoundLog = 40;
-
-    readonly List<string> roundLog = new();
-
-    /// <summary>Notable events of this round (orders, task results, messages), for the end-of-round summary.</summary>
-    public void LogEvent(string line)
-    {
-        lock (sync)
-        {
-            roundLog.Add(Tools.Clip(line, 200));
-            // keep the start of the round and the latest events
-            if (roundLog.Count > MaxRoundLog) roundLog.RemoveAt(MaxRoundLog / 4);
-        }
-    }
-
-    public List<string> RoundLog() { lock (sync) return roundLog.ToList(); }
-
-    public BotAgent(BotHandle h)
-    {
-        Id = h.Id;
-        Name = h.Name;
-        Job = h.Job;
-        Trait = h.Trait;
-    }
-
-    readonly List<double> noteTimes = new();
-
-    public void AddNote(string note, int max, double at = double.NaN)
-    {
-        lock (sync)
-        {
-            notes.Add(Tools.Clip(note, MaxNoteLength));
-            noteTimes.Add(at);
-            while (notes.Count > Math.Max(1, max)) { notes.RemoveAt(0); noteTimes.RemoveAt(0); }
-        }
-    }
-
-    public List<string> Notes() { lock (sync) return notes.ToList(); }
-
-    /// <summary>Notes for the model, older ones with their age ("(4 min ago) Player order: ..."), so an old order
-    /// does not read like a fresh one.</summary>
-    public List<string> Notes(double now)
-    {
-        lock (sync)
-            return notes.Select((n, i) => !double.IsNaN(noteTimes[i]) && now - noteTimes[i] >= 60
-                ? $"({ModStatus.Ago(now - noteTimes[i])}) {n}" : n).ToList();
-    }
+    public const int MaxPastOrders = 4;
 
     public bool HasMail => !inbox.IsEmpty;
 
@@ -133,14 +142,19 @@ public sealed class BotAgent
         while (inbox.Count > MaxInbox && inbox.TryDequeue(out _)) { }
     }
 
-    /// <summary>A chat order from a human player that was routed to this bot. Processed before anything else.</summary>
+    public List<string> DrainInbox()
+    {
+        var list = new List<string>();
+        while (inbox.TryDequeue(out var m)) list.Add(m);
+        return list;
+    }
+
+    /// <summary>A chat order that was routed to this bot (or an order from an AI crew member in command).</summary>
     public bool HasPlayerOrder => !playerOrders.IsEmpty;
 
-    /// <param name="authority">true = from a human player (may replace orders players gave through the command menu);
-    /// false = from an AI crew member in command (binding, but player orders still come first).</param>
-    public void ReceivePlayerOrder(string order, bool authority = true)
+    public void ReceivePlayerOrder(string order, bool authority = true, string? from = null)
     {
-        playerOrders.Enqueue(new PendingOrder(order, authority));
+        playerOrders.Enqueue(new PendingOrder(order, authority, from));
         while (playerOrders.Count > MaxInbox && playerOrders.TryDequeue(out _)) { }
     }
 
@@ -152,13 +166,6 @@ public sealed class BotAgent
     }
 
     public List<string> DrainPlayerOrders() => DrainOrders().Select(o => o.Text).ToList();
-
-    public List<string> DrainInbox()
-    {
-        var list = new List<string>();
-        while (inbox.TryDequeue(out var m)) list.Add(m);
-        return list;
-    }
 
     public void RecordResult(string line)
     {
@@ -180,7 +187,8 @@ public sealed class BotAgent
     }
 
     /// <summary>Puts back what was taken for a request that never reached a model.</summary>
-    public void Restore(IEnumerable<string> inboxMessages, IEnumerable<string> actionResults, IEnumerable<PendingOrder>? orders = null)
+    public void Restore(IEnumerable<string> inboxMessages, IEnumerable<string> actionResults, IEnumerable<PendingOrder>? orders = null,
+        IEnumerable<AgentEvent>? events = null)
     {
         var pendingInbox = DrainInbox();
         foreach (var m in inboxMessages) inbox.Enqueue(m);
@@ -196,19 +204,70 @@ public sealed class BotAgent
             results.InsertRange(0, actionResults);
             while (results.Count > MaxResults) results.RemoveAt(0);
         }
+        if (events != null)
+            foreach (var e in events.Reverse())
+                if (!Events.Any(x => x.Kind == e.Kind && x.Text == e.Text)) Events.Insert(0, e);
     }
 
-    // ---------------------------------------------------------------- goal and plan (game thread only)
+    // ------------------------------------------------------------------ notes, past orders, round log
 
-    /// <summary>What the bot set out to do (set_goal, or a player's order). Shown every turn until done or replaced,
-    /// so the intention survives the short history window.</summary>
-    public string? Goal { get; private set; }
-    public double GoalSetAt { get; private set; }
+    readonly List<(string Text, double At)> notes = new();
 
-    public void SetGoal(string? goal, double now)
+    /// <summary>The bot's own notes (remember).</summary>
+    public void AddNote(string note, int max, double at = double.NaN)
     {
-        Goal = string.IsNullOrWhiteSpace(goal) ? null : Tools.Clip(goal.Trim(), MaxNoteLength);
-        GoalSetAt = now;
+        lock (sync)
+        {
+            notes.Add((Tools.Clip(note, MaxNoteLength), at));
+            while (notes.Count > Math.Max(1, max)) notes.RemoveAt(0);
+        }
+    }
+
+    public List<string> Notes() { lock (sync) return notes.Select(n => n.Text).ToList(); }
+
+    /// <summary>Notes for the model, older ones with their age.</summary>
+    public List<string> Notes(double now)
+    {
+        lock (sync)
+            return notes.Select(n => !double.IsNaN(n.At) && now - n.At >= 60 ? $"({ModStatus.Ago(now - n.At)}) {n.Text}" : n.Text).ToList();
+    }
+
+    readonly List<PastOrder> pastOrders = new();
+
+    public void AddPastOrder(string text, double at)
+    {
+        pastOrders.Add(new PastOrder(Tools.Clip(text, MaxNoteLength), at));
+        while (pastOrders.Count > MaxPastOrders) pastOrders.RemoveAt(0);
+    }
+
+    public IReadOnlyList<PastOrder> PastOrders => pastOrders;
+
+    readonly List<string> roundLog = new();
+
+    /// <summary>Notable events of this round (orders, task results, messages), for the end-of-round summary.</summary>
+    public void LogEvent(string line)
+    {
+        lock (sync)
+        {
+            roundLog.Add(Tools.Clip(line, 200));
+            // keep the start of the round and the latest events
+            if (roundLog.Count > MaxRoundLog) roundLog.RemoveAt(MaxRoundLog / 4);
+        }
+    }
+
+    public List<string> RoundLog() { lock (sync) return roundLog.ToList(); }
+
+    // ------------------------------------------------------------------ goal and plan
+
+    /// <summary>What the bot is working toward (set_goal, or a player's order). Shown every turn until done or replaced,
+    /// so the intention survives the short history window.</summary>
+    public AgentGoal? CurrentGoal { get; private set; }
+    public string? Goal => CurrentGoal?.Text;
+    public double GoalSetAt => CurrentGoal?.SetAt ?? 0;
+
+    public void SetGoal(string? goal, double now, string source = "you", string? player = null)
+    {
+        CurrentGoal = string.IsNullOrWhiteSpace(goal) ? null : new AgentGoal(Tools.Clip(goal.Trim(), MaxNoteLength), source, now, player);
     }
 
     /// <summary>Steps of the last reply that still wait for their turn (carried out one after another).</summary>
@@ -218,16 +277,17 @@ public sealed class BotAgent
     public string? WaitRoom { get; set; }
     public double WaitingSince { get; set; }
     public double PlanStartedAt { get; set; }
-    /// <summary>Urgent conditions already known when the plan was made: only new ones interrupt it.</summary>
-    public string PlanUrgency { get; set; } = "";
-    /// <summary>Urgency flags of the observation the current decision was made from.</summary>
-    public string DecisionUrgency { get; set; } = "";
     public double NextArrivalCheckAt { get; set; }
-
-    /// <summary>The last decision changed something (an order, a task, an item...), not only talk or "already doing that".</summary>
-    public bool ActedSinceDecision { get; set; }
-    /// <summary>Routine decisions in a row that changed nothing; each one stretches the time to the next routine decision.</summary>
-    public int IdleStreak { get; set; }
+    /// <summary>The current plan contained a task or a walk.</summary>
+    public bool PlanHadWait { get; set; }
+    /// <summary>Tool of the task the plan is waiting for (or last waited for): craft, equip, come_to...</summary>
+    public string? TaskTool { get; set; }
+    /// <summary>The plan looked something up (inspect) in its middle: the answer is read when the plan is done.</summary>
+    public bool PlanLookup { get; set; }
+    /// <summary>Errors of the calls just run (reset for every reply).</summary>
+    public readonly List<string> BatchErrors = new();
+    /// <summary>The previous reply had errors and the bot was asked again; one retry, no loops.</summary>
+    public int ErrorStreak { get; set; }
 
     /// <summary>Carrying out a plan or waiting for a task: no new decision unless something important happens.</summary>
     public bool Busy => Plan.Count > 0 || Waiting != PlanWait.None;
@@ -247,17 +307,37 @@ public sealed class BotAgent
         Plan.Clear();
         Waiting = PlanWait.None;
         WaitRoom = null;
+        PlanReviewed = false;
+        PlanHadWait = false;
+        PlanLookup = false;
     }
 
-    public List<LlmTurn> HistorySnapshot() { lock (sync) return history.ToList(); }
+    // ------------------------------------------------------------------ history
 
-    public void AddExchange(string observationJson, string assistantSummary, int maxTurns)
+    readonly List<(double At, string User, string Assistant)> history = new();
+
+    /// <summary>Earlier turns for the next request, each with its age: "(2 min ago) why: ...".</summary>
+    public List<LlmTurn> HistorySnapshot(double now = double.NaN)
     {
         lock (sync)
         {
-            history.Add(new LlmTurn("user", observationJson));
-            history.Add(new LlmTurn("assistant", assistantSummary));
-            while (history.Count > Math.Max(0, maxTurns) * 2) history.RemoveAt(0);
+            var list = new List<LlmTurn>();
+            foreach (var (at, user, assistant) in history)
+            {
+                var age = double.IsNaN(now) || double.IsNaN(at) ? "" : $"({ModStatus.Ago(now - at)}) ";
+                list.Add(new LlmTurn("user", age + user));
+                list.Add(new LlmTurn("assistant", assistant));
+            }
+            return list;
+        }
+    }
+
+    public void AddExchange(string user, string assistantSummary, int maxTurns, double at = double.NaN)
+    {
+        lock (sync)
+        {
+            history.Add((at, user, assistantSummary));
+            while (history.Count > Math.Max(0, maxTurns)) history.RemoveAt(0);
         }
     }
 }

@@ -49,14 +49,16 @@ public class Log2FixesTests
         var settings = Fixtures.Settings();
         var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
         mgr.Update(); await mgr.WhenIdle(); clock.Advance(1);
-        Assert.StartsWith("{", user); // no order: plain observation
+        Assert.StartsWith("Why you are asked now:\n- [round start]", user); // no order: why, then the observation
+        Assert.DoesNotContain("NEW ORDER", user);
 
         mgr.GetAgent(1)!.ReceivePlayerOrder("Dan on radio: \"follow me\"");
         mgr.Update(); await mgr.WhenIdle();
-        Assert.StartsWith("NEW ORDER - carry out now", user);
+        Assert.StartsWith("Why you are asked now:\n- [order] new order", user);
+        Assert.Contains("NEW ORDER - carry out now", user);
         Assert.Contains("- Dan on radio: \"follow me\"", user);
         var obs = JsonNode.Parse(Fixtures.Obs(user!))!.AsObject();
-        Assert.Equal("playerOrders", obs.First().Key); // also first inside the JSON
+        Assert.Equal(new[] { "why", "playerOrders" }, obs.Take(2).Select(kv => kv.Key)); // also first inside the JSON
     }
 
     [Fact]

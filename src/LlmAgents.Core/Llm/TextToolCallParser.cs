@@ -35,6 +35,10 @@ public static class TextToolCallParser
         ["go_to"] = "go_to_room",
         ["dismissed"] = "return_to_default",
         ["dismiss"] = "return_to_default",
+        ["carryon"] = "carry_on",
+        ["continue"] = "carry_on",
+        ["no_action"] = "carry_on",
+        ["noop"] = "carry_on",
     };
 
     public static List<ToolCall> Parse(string? text, IReadOnlyList<ToolSpec> tools)

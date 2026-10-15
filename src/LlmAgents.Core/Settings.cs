@@ -9,6 +9,9 @@ namespace LlmAgents;
 
 public sealed class ModSettings
 {
+    /// <summary>Version of the file's layout. Older files get their untouched old defaults upgraded (see ConfigEditor).</summary>
+    public int ConfigVersion { get; set; } = CurrentConfigVersion;
+    public const int CurrentConfigVersion = 2;
     public bool Enabled { get; set; } = true;
     public string DefaultProvider { get; set; } = "local";
     public string FallbackProvider { get; set; } = "";
@@ -55,7 +58,7 @@ public sealed class ModSettings
         Memory ??= new MemorySettings();
         Memory.Folder ??= "memory";
         Memory.SummaryProvider ??= "";
-        Bots.Autonomy = (Bots.Autonomy ?? "always").Trim().ToLowerInvariant();
+        Bots.Autonomy = (Bots.Autonomy ?? "events").Trim().ToLowerInvariant();
         Bots.SpeechLanguage = (Bots.SpeechLanguage ?? "").Trim();
         Chat.Prefix ??= "";
         Chat.Provider ??= "";
@@ -110,12 +113,15 @@ public sealed class ModSettings
             throw new InvalidDataException($"chat.provider '{Chat.Provider}' not found in providers");
         if (!string.IsNullOrEmpty(Memory.SummaryProvider) && !names.Contains(Memory.SummaryProvider))
             throw new InvalidDataException($"memory.summaryProvider '{Memory.SummaryProvider}' not found in providers");
-        if (Bots.Autonomy is not ("always" or "order"))
-            throw new InvalidDataException("bots.autonomy must be 'always' or 'order'");
+        if (Bots.Autonomy is not ("events" or "always" or "order"))
+            throw new InvalidDataException("bots.autonomy must be 'events', 'always' or 'order'");
         if (Global.SpeechChannel is not ("auto" or "radio" or "local"))
             throw new InvalidDataException("global.speechChannel must be 'auto', 'radio' or 'local'");
         if (Global.TickSeconds <= 0) throw new InvalidDataException("global.tickSeconds must be > 0");
         if (Global.MaxActionsPerDecision < 1) throw new InvalidDataException("global.maxActionsPerDecision must be >= 1");
+        if (Global.MailDelaySeconds < 0) throw new InvalidDataException("global.mailDelaySeconds must be >= 0");
+        if (Global.DecisionIntervalSeconds <= 0) throw new InvalidDataException("global.decisionIntervalSeconds must be > 0");
+        if (Bots.ControlDecisionIntervalSeconds <= 0) throw new InvalidDataException("bots.controlDecisionIntervalSeconds must be > 0");
         if (Global.MaxIdleIntervalSeconds <= 0) throw new InvalidDataException("global.maxIdleIntervalSeconds must be > 0");
         if (Chat.DispatchWaitSeconds <= 0) throw new InvalidDataException("chat.dispatchWaitSeconds must be > 0");
         if (Global.MaxPlanSeconds <= 0) throw new InvalidDataException("global.maxPlanSeconds must be > 0");
@@ -139,9 +145,15 @@ public sealed class GlobalSettings
     /// <summary>0 = unlimited. Counted per UTC day.</summary>
     public int DailyRequestBudget { get; set; } = 0;
     public double TickSeconds { get; set; } = 0.5;
-    public double DecisionIntervalSeconds { get; set; } = 10;
-    public double MinSecondsBetweenCallsPerBot { get; set; } = 4;
+    /// <summary>autonomy "always": a bot with nothing happening thinks again after this long (doubles while nothing changes,
+    /// up to maxIdleIntervalSeconds). With autonomy "events" (default) bots think only when something happens.</summary>
+    public double DecisionIntervalSeconds { get; set; } = 60;
+    /// <summary>Minimum time between two decisions of one bot (a player's order waits at most 1 s).</summary>
+    public double MinSecondsBetweenCallsPerBot { get; set; } = 3;
+    /// <summary>How often each bot's situation is checked for new dangers (no LLM call unless something new appears).</summary>
     public double UrgencyCheckSeconds { get; set; } = 1.5;
+    /// <summary>A message from another bot is read this long after it arrived (several messages land in one request).</summary>
+    public double MailDelaySeconds { get; set; } = 4;
     /// <summary>How soon a bot tries again when its request was skipped because of limits.</summary>
     public double RetrySeconds { get; set; } = 1.0;
     /// <summary>Per bot, private messages (message_crew) per minute. Prevents "Roger!" ping-pong between agents. 0 = unlimited.</summary>
@@ -163,7 +175,7 @@ public sealed class GlobalSettings
     public double ComeToWaitSeconds { get; set; } = 90;
     /// <summary>A goal older than this is dropped (the bot may set it again). 0 = never.</summary>
     public double GoalTimeoutMinutes { get; set; } = 8;
-    public double MaxIdleIntervalSeconds { get; set; } = 60;
+    public double MaxIdleIntervalSeconds { get; set; } = 300;
     /// <summary>A plan running longer than this lets the bot think again (it may keep the plan with keep_plan).</summary>
     public double MaxPlanSeconds { get; set; } = 180;
     /// <summary>A go_to_room step that has not arrived after this long stops the plan.</summary>
@@ -213,6 +225,11 @@ public sealed class ChatSettings
     public double MaxAgeSeconds { get; set; } = 30;
     /// <summary>If the dispatcher gets no LLM slot this soon, the order is routed by names (or to everyone who heard it).</summary>
     public double DispatchWaitSeconds { get; set; } = 6;
+    /// <summary>Route clear cases without the LLM dispatcher: a bot's name, "all"/"все", a job ("механики"),
+    /// a plural command. Only unclear messages go to the dispatcher.</summary>
+    public bool RuleRouting { get; set; } = true;
+    /// <summary>The sender gets a private note: who took the order, that nobody heard it, or that a model failed.</summary>
+    public bool ConfirmToSender { get; set; } = true;
 }
 
 public sealed class ProviderConfig
@@ -284,17 +301,24 @@ public sealed class BotSettings
     /// <summary>Empty = all tools.</summary>
     public List<string> AllowedTools { get; set; } = new();
     /// <summary>
-    /// "always": every AI bot thinks on its own all the time (orders from players come first).
-    /// "order": bots only react to chat orders and messages; full autonomy only for bots given the
-    /// "Full AI control" order from the command menu. Everything else is the vanilla AI.
+    /// When bots ask their model (the vanilla AI keeps doing the routine work in between):
+    /// "events" (default): on orders, messages, task results, new dangers and the end of danger;
+    /// "always": the same plus a slow heartbeat (decisionIntervalSeconds) when nothing happens;
+    /// "order": only orders, messages and their own task results.
+    /// Bots under full AI control always get the heartbeat (controlDecisionIntervalSeconds).
     /// </summary>
-    public string Autonomy { get; set; } = "always";
+    public string Autonomy { get; set; } = "events";
     /// <summary>Language bots speak in (say, message_crew), e.g. "Russian". Empty = the language the players use.</summary>
     public string SpeechLanguage { get; set; } = "";
     /// <summary>Without a persona, the game's own personality trait of the character (Hothead, Lazy...) shapes the bot.</summary>
     public bool UseGamePersonality { get; set; } = true;
-    /// <summary>Decision interval for bots under full AI control (they plan more often).</summary>
-    public double ControlDecisionIntervalSeconds { get; set; } = 6;
+    /// <summary>Heartbeat for bots under full AI control (they plan on their own even when nothing happens).</summary>
+    public double ControlDecisionIntervalSeconds { get; set; } = 20;
+    /// <summary>Every bot takes one look around when the round starts (staggered, one request each).</summary>
+    public bool ThinkAtRoundStart { get; set; } = true;
+    /// <summary>An order a player gives through the command menu is shown to the bot's model (one request), so it can
+    /// confirm and plan around it. The order itself always works like in vanilla and cancels the bot's own plan.</summary>
+    public bool ReactToMenuOrders { get; set; } = true;
 }
 
 /// <summary>Long-term memory kept on disk between rounds (per campaign save).</summary>

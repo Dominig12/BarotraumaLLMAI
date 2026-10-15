@@ -361,6 +361,7 @@ public sealed class PersonaPromptTests
         });
         mgr.ApplySettings(s2, new LlmRouter(s2, handler, clock.Utc));
         clock.Advance(20);
+        mgr.GetAgent(1)!.ReceivePlayerOrder("Daniil: status");
         await Step(mgr);
         Assert.Same(ann, mgr.GetAgent(1));
         Assert.StartsWith("http://b.test", requests.Last().Url);

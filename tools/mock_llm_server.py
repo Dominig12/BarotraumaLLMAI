@@ -89,6 +89,18 @@ def room_ids(obs: dict) -> list[str]:
 def decide(obs: dict) -> list[dict]:
     """Возвращает список {name, arguments}."""
     calls = []
+    why = " ".join(obs.get("why", [])).lower()
+    if "[control]" in why:
+        granted = "handed you full control" in why
+        calls.append({"name": "say", "arguments": {"text": "Принял командование." if granted else "Возвращаюсь к обычной службе."}})
+        if granted:
+            calls.append({"name": "order_crew", "arguments": {"to": "mechanic", "order": "Проверить и заварить все течи, приоритет 3"}})
+        return calls
+    if not obs.get("playerOrders"):
+        if "[menu order]" in why:
+            return [{"name": "carry_on", "arguments": {}}]
+        if "[calm]" in why:
+            return [{"name": "keep_gear", "arguments": {"on": False}}]
     for order in obs.get("playerOrders", []):
         text = order.lower()
         if "full control" in text:
@@ -101,7 +113,9 @@ def decide(obs: dict) -> list[dict]:
         if "приоритет" in text or "сначала" in text or "first" in text:
             return (calls + prioritized(text))[:3]
         crew = crew_names(obs)
-        if any(w in text for w in ["леч", "heal", "treat", "перевяж"]):
+        if "ко мне" in text or "сюда" in text or "come to me" in text:
+            calls.append({"name": "come_to", "arguments": {"target": "Daniil"}})
+        elif any(w in text for w in ["леч", "heal", "treat", "перевяж"]):
             target = next((n for n in crew if latin(n.split()[0])[:3] in latin(text)), obs.get("name"))
             item = "bandage" if ("бинт" in text or "bandage" in text) else None
             calls.append({"name": "treat", "arguments": {"target": target, **({"item": item} if item else {})}})
@@ -140,7 +154,7 @@ def decide(obs: dict) -> list[dict]:
     elif obs.get("healthPercent", 100) < 40:
         calls.append({"name": "say", "arguments": {"text": "Мне нужен медик!"}})
     if not calls:
-        calls.append({"name": "return_to_default", "arguments": {}})
+        calls.append({"name": "carry_on", "arguments": {}})
     return calls[:3]
 
 

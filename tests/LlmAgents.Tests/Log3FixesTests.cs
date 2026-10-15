@@ -143,12 +143,11 @@ public class Log3FixesTests
     public async Task OrderIsRoutedByNamesWhenTheDispatcherGetsNoSlot()
     {
         game.AddBot(1, "Ann", "mechanic").AddBot(2, "Bob", "engineer");
-        // one request per minute in total: the bots' first decisions use it up, the dispatcher never gets a slot
-        var settings = Fixtures.Settings(@", ""dailyRequestBudget"": 2");
+        // two requests in total: the bots' first looks use them up, the dispatcher never gets a slot
+        var settings = Fixtures.Settings(@", ""dailyRequestBudget"": 2", extraRoot: "\"chat\": { \"ruleRouting\": false },");
         var handler = new FakeHandler(_ => (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("wait", "{}"))));
         var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
-        mgr.Update();
-        await mgr.WhenIdle();
+        for (int i = 0; i < 5; i++) { mgr.Update(); await mgr.WhenIdle(); clock.Advance(0.5); }
         mgr.SubmitChat(new ChatCommand("Daniil", null, "Bob, разбери сварочный аппарат", new[] { 1, 2 }, true));
         for (int i = 0; i < 20; i++) { mgr.Update(); await mgr.WhenIdle(); clock.Advance(0.5); }
 
@@ -162,6 +161,7 @@ public class Log3FixesTests
     {
         game.AddBot(1, "Ann", "mechanic");
         var settings = Fixtures.Settings(@", ""maxIdleIntervalSeconds"": 40");
+        settings.Bots.Autonomy = "always";   // heartbeat every 10 s when nothing happens
         var times = new ConcurrentQueue<double>();
         var handler = new FakeHandler(_ =>
         {
@@ -222,7 +222,7 @@ public class Log3FixesTests
         mgr.GetAgent(1)!.ReceivePlayerOrder("Daniil: status?");
         await Run(2);
         var last = seen.Last();
-        Assert.Contains(last["notes"]!.AsArray(), x => x!.GetValue<string>().StartsWith("(") && x.GetValue<string>().Contains("Все ко мне"));
+        Assert.Contains(last["earlierOrders"]!.AsArray(), x => x!.GetValue<string>().StartsWith("(") && x.GetValue<string>().Contains("Все ко мне"));
         Assert.Contains(seen, o => o["lastActionResults"] is JsonArray r && r.Any(x => x!.GetValue<string>().Contains("expired")));
         Assert.Null(last["goal"]);
     }

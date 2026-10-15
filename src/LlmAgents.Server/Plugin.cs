@@ -141,15 +141,19 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         string cfgPath = Path.Combine(modDir!, ConfigFileName);
         if (!File.Exists(cfgPath)) throw new FileNotFoundException("LLM agents config not found", cfgPath);
         var editor = ConfigEditor.Load(cfgPath);
+        // an old config from a previous version: upgrade untouched old defaults, add the new settings
+        var migrated = editor.MigrateDefaults();
         var added = editor.AddMissingDefaults();
-        if (added.Count > 0)
+        if (migrated.Count + added.Count > 0)
         {
-            // an old config from a previous version: add the new settings so they can be seen and changed
             try
             {
                 File.Copy(cfgPath, cfgPath + ".bak", overwrite: true);
                 editor.Save();
-                Log.Warn($"llm_config.json: added {added.Count} new setting(s) with default values (backup: llm_config.json.bak): {string.Join(", ", added.Take(20))}{(added.Count > 20 ? ", ..." : "")}");
+                if (migrated.Count > 0)
+                    Log.Warn($"llm_config.json upgraded (backup: llm_config.json.bak): {string.Join(", ", migrated)}");
+                if (added.Count > 0)
+                    Log.Warn($"llm_config.json: added {added.Count} new setting(s) with default values: {string.Join(", ", added.Take(20))}{(added.Count > 20 ? ", ..." : "")}");
             }
             catch (Exception e) { Log.Warn("could not update llm_config.json with the new settings: " + e.Message); }
         }
@@ -163,6 +167,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         adapter?.Reset();
         adapter = new GameAdapter(settings);
         ControlOrder.Handler = adapter.OnControlOrder;
+        ControlOrder.MenuHandler = adapter.OnMenuOrder;
 
         // Long-term memory: one JSON file per campaign save in <mod>/memory (or memory.folder).
         string memDir = Path.IsPathRooted(settings.Memory.Folder) ? settings.Memory.Folder : Path.Combine(modDir!, settings.Memory.Folder);
@@ -221,7 +226,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     System.Collections.Generic.List<FeatureStatus> Features() => new()
     {
         new("Не снимать костюмы при опасности (патч)", GearLock.Patched, GearLock.Patched ? null : "патч не встал, см. консоль сервера"),
-        new("Приказ «Полный контроль ИИ» (патч)", ControlOrder.Patched, ControlOrder.Patched ? null : "патч не встал, см. консоль сервера"),
+        new("Приказ «Полный контроль ИИ» и приказы из меню (патч)", ControlOrder.Patched, ControlOrder.Patched ? null : "патч не встал, см. консоль сервера"),
         new("Приказы из чата", chatListener != null, chatListener != null ? null : "не удалось подписаться на чат"),
         new("Окно настроек (сеть LuaCs)", settingsWindowRegistered,
             settingsWindowRegistered ? null : settingsWindowFailed ? "не удалось зарегистрировать; работают команды !llm" : "ещё не зарегистрировано"),
@@ -270,7 +275,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         }
         catch { /* shutting down */ }
         try { GearLock.Unpatch(); } catch { /* shutting down */ }
-        try { ControlOrder.Unpatch(); ControlOrder.Handler = null; } catch { /* shutting down */ }
+        try { ControlOrder.Unpatch(); ControlOrder.Handler = null; ControlOrder.MenuHandler = null; } catch { /* shutting down */ }
         try { memory?.Flush(); } catch { /* shutting down */ }
         manager?.Dispose();
         manager = null;

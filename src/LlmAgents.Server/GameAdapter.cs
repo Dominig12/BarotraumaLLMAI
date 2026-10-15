@@ -33,6 +33,7 @@ public sealed class GameAdapter : IGameApi
     readonly List<GameReport> reports = new();
     readonly HashSet<ushort> controlled = new();                      // bots under full AI control
     readonly List<ControlEvent> controlEvents = new();
+    readonly List<MenuOrder> menuOrders = new();
     double nextTaskTick, nextDangerCheck;
 
     public GameAdapter(ModSettings settings) { Settings = settings; }
@@ -106,6 +107,54 @@ public sealed class GameAdapter : IGameApi
         controlEvents.Add(new ControlEvent(bot.ID, grant, giver?.Name ?? "a player"));
     }
 
+    /// <summary>Called from the Harmony patch when a human player gives a bot an ordinary order through the command menu.
+    /// The player's order wins: the bot's running task is cancelled, and the agent layer drops its plan.</summary>
+    internal void OnMenuOrder(Character bot, Order order, bool isNewOrder)
+    {
+        if (!IsControllableBot(bot)) return;
+        if (!isNewOrder && !order.IsDismissal)
+        {
+            // the player only changed the order's priority (dragged it in the crew list): the task goes on
+            menuOrders.Add(new MenuOrder(bot.ID, order.OrderGiver?.Name ?? "a player", $"priority change: {Name(order)} is now p{order.ManualPriority}", PriorityOnly: true));
+            return;
+        }
+        string task = "";
+        if (tasks.Remove(bot.ID, out var t))
+        {
+            t.Cancel();
+            task = $" (your task '{t.Name}' was cancelled)";
+        }
+        menuOrders.Add(new MenuOrder(bot.ID, order.OrderGiver?.Name ?? "a player", DescribeOrder(order) + task, order.IsDismissal));
+    }
+
+    public IReadOnlyList<MenuOrder> DrainMenuOrders()
+    {
+        if (menuOrders.Count == 0) return Array.Empty<MenuOrder>();
+        var r = menuOrders.ToList();
+        menuOrders.Clear();
+        return r;
+    }
+
+    /// <summary>"operatereactor:powerup", "wait at Engine [h2]", "follow Daniil", "fixleaks".</summary>
+    static string DescribeOrder(Order o)
+    {
+        if (o.IsDismissal) return o.Option.IsEmpty ? "dismiss all orders" : "dismiss " + o.Option.Value;
+        var s = Name(o);
+        if (o.Identifier == "follow" && o.OrderGiver != null) s += " " + o.OrderGiver.Name;
+        else if (o.TargetEntity is Item item) s += " " + item.Name + (item.CurrentHull != null ? " in " + RoomId(item.CurrentHull) : "");
+        else if (o.TargetPosition?.Hull is Hull h) s += " at " + RoomId(h);
+        return s;
+    }
+
+    public void NotifyPlayer(string playerName, string text)
+    {
+        var server = GameMain.Server;
+        if (server == null || string.IsNullOrWhiteSpace(playerName)) return;
+        var client = server.ConnectedClients.FirstOrDefault(c => c.Character?.Name == playerName)
+                  ?? server.ConnectedClients.FirstOrDefault(c => c.Name == playerName);
+        if (client != null) server.SendDirectChatMessage(text, client, ChatMessageType.Server);
+    }
+
     // ----------------------------------------------------------- observation
 
     public Observation Observe(int botId)
@@ -126,6 +175,7 @@ public sealed class GameAdapter : IGameApi
         o.RoomFires = hull?.FireSources?.Count ?? 0;
         o.CurrentOrder = DescribeOrders(c);
         o.CurrentTask = tasks.TryGetValue(c.ID, out var task) ? task.Describe() : null;
+        o.Doing = DescribeActivity(c);
 
         var carried = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>()).ToList();
         // the ID card is always there and only costs tokens
@@ -195,6 +245,50 @@ public sealed class GameAdapter : IGameApi
 
         return o;
     }
+
+    /// <summary>What the game's AI is doing for the bot right now: "fix leaks > go to: Ballast [h5]", "operate item: Reactor", "idle".</summary>
+    static string? DescribeActivity(Character c)
+    {
+        try
+        {
+            if (c.AIController is not HumanAIController ai || ai.ObjectiveManager == null) return null;
+            var current = ai.ObjectiveManager.CurrentObjective;
+            if (current == null) return "idle";
+            var active = current.GetActiveObjective() ?? current;
+            var s = Tag(current);
+            if (active != current && Tag(active) != s) s += " > " + Tag(active);
+            var target = TargetOf(active) ?? TargetOf(current);
+            if (target != null) s += ": " + target;
+            return s.Length > 120 ? s.Substring(0, 120) : s;
+        }
+        catch { return null; }
+    }
+
+    static string Tag(AIObjective o)
+    {
+        var t = o.DebugTag;
+        return string.IsNullOrWhiteSpace(t) ? o.GetType().Name.Replace("AIObjective", "").ToLowerInvariant() : t;
+    }
+
+    static string? TargetOf(AIObjective o) => o switch
+    {
+        AIObjectiveGoTo g => Where(g.Target),
+        AIObjectiveRepairItem r when r.Item != null => r.Item.Name + (r.Item.CurrentHull != null ? " in " + RoomId(r.Item.CurrentHull) : ""),
+        AIObjectiveFixLeak f when f.Leak != null => f.Leak.linkedTo.OfType<Hull>().FirstOrDefault() is Hull h ? RoomId(h) : null,
+        AIObjectiveOperateItem op when op.Component?.Item != null => op.Component.Item.Name,
+        AIObjectiveGetItem gi when gi.TargetItem != null => gi.TargetItem.Name,
+        AIObjectiveCombat cb when cb.Enemy != null => cb.Enemy.IsHuman ? cb.Enemy.Name : cb.Enemy.SpeciesName.Value,
+        _ => null,
+    };
+
+    static string? Where(ISpatialEntity? t) => t switch
+    {
+        null => null,
+        Character ch => ch.Name,
+        Item i => i.Name,
+        Hull h => RoomId(h),
+        _ => Hull.FindHull(t.WorldPosition) is Hull h2 ? RoomId(h2) : null,
+    };
 
     static string DescribeGear(Character c)
     {
@@ -553,7 +647,9 @@ public sealed class GameAdapter : IGameApi
     {
         try
         {
-            c.SetOrder(order, isNewOrder: isNewOrder, speak: false, force: true);
+            ControlOrder.Internal = true;
+            try { c.SetOrder(order, isNewOrder: isNewOrder, speak: false, force: true); }
+            finally { ControlOrder.Internal = false; }
             if (Settings.Global.SyncOrdersToClients && GameMain.Server != null)
                 GameMain.Server.SendOrderChatMessage(new OrderChatMessage(order, c, c, isNewOrder));
             return true;
@@ -595,6 +691,7 @@ public sealed class GameAdapter : IGameApi
         authority.Clear();
         controlled.Clear();       // restored from long-term memory when the agents are created again
         controlEvents.Clear();
+        menuOrders.Clear();
         reports.Clear();
     }
 

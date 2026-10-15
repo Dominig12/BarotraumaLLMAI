@@ -41,12 +41,18 @@ public sealed class LlmGate
         }
     }
 
-    string? Check(DateTime now)
+    /// <summary>Part of the per-minute and daily limits kept for priority requests (players' orders, chat routing),
+    /// so routine thinking can never use up the budget a player's order needs.</summary>
+    static int Reserve(int limit, int share) => limit >= share ? Math.Max(1, limit / share) : 0;
+
+    string? Check(DateTime now, bool priority = true)
     {
         if (now.Date != day) { day = now.Date; dayCount = 0; }
         Prune(now);
         if (dailyBudget > 0 && dayCount >= dailyBudget) return "daily budget exhausted";
+        if (dailyBudget > 0 && !priority && dayCount >= dailyBudget - Reserve(dailyBudget, 20)) return "daily budget: the rest is kept for orders";
         if (rpm > 0 && requests.Count >= rpm) return "requests/minute limit";
+        if (rpm > 0 && !priority && requests.Count >= rpm - Reserve(rpm, 5)) return "requests/minute limit (the rest is kept for orders)";
         if (tpm > 0)
         {
             long sum = 0;
@@ -57,12 +63,13 @@ public sealed class LlmGate
         return null;
     }
 
-    public Lease? TryEnter(out string denyReason)
+    /// <param name="priority">false = routine work: leaves part of the limits to priority requests.</param>
+    public Lease? TryEnter(out string denyReason, bool priority = true)
     {
         lock (sync)
         {
             var now = utcNow();
-            var deny = Check(now);
+            var deny = Check(now, priority);
             if (deny != null) { denyReason = deny; return null; }
 
             active++;

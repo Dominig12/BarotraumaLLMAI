@@ -10,6 +10,9 @@ namespace LlmAgents.Agents;
 /// <summary>Plain, engine-independent snapshot of what one bot knows right now. Serialized to JSON for the LLM.</summary>
 public sealed class Observation
 {
+    /// <summary>Why the bot is asked now (the events since its last decision), most important first.</summary>
+    [JsonPropertyOrder(-2)]
+    public List<string> Why { get; set; } = new();
     /// <summary>Orders from human players routed to this bot (highest priority). First in the JSON on purpose:
     /// small models pay most attention to the start.</summary>
     [JsonPropertyOrder(-1)]
@@ -29,6 +32,8 @@ public sealed class Observation
     public int RoomWaterPercent { get; set; }
     public int RoomFires { get; set; }
     public string CurrentOrder { get; set; } = "none";
+    /// <summary>What the game's AI is actually doing right now for this bot, e.g. "fix leaks: Ballast [h5]", "idle".</summary>
+    public string? Doing { get; set; }
     /// <summary>Multi-step task in progress (equip, refuel_reactor, craft, deconstruct, treat), if any.</summary>
     public string? CurrentTask { get; set; }
     /// <summary>Own injuries, e.g. "burn 30 (left arm), bleeding 12".</summary>
@@ -50,6 +55,8 @@ public sealed class Observation
     // Filled in by the agent layer, not by the game adapter:
     public List<string> Inbox { get; set; } = new();
     public List<string> Notes { get; set; } = new();
+    /// <summary>Earlier orders with their age, e.g. "(3 min ago) Daniil: all to me".</summary>
+    public List<string> EarlierOrders { get; set; } = new();
     public List<string> LastActionResults { get; set; } = new();
     /// <summary>"FULL AI CONTROL (given by X)" while a player has handed this bot full control.</summary>
     public string? Control { get; set; }
@@ -62,22 +69,6 @@ public sealed class Observation
         Threats.Count > 0 || Leaks.Count > 0 ||
         (Submarine?.ReactorFuelPercent is int fuel && fuel < 10) || (Submarine?.OxygenPercent is int o2 && o2 < 50) ||
         DangerWithoutSuit;
-
-    /// <summary>Which urgent conditions hold, as short flags ("hp,fire,threat"). A plan in progress is only
-    /// interrupted by a flag that was not there when it was made.</summary>
-    [JsonIgnore]
-    public string UrgencyKey => string.Join(",", new[]
-    {
-        HealthPercent < 50 ? "hp" : null,
-        OxygenPercent < 40 ? "o2" : null,
-        RoomWaterPercent > 60 ? "water" : null,
-        RoomFires > 0 ? "fire" : null,
-        Threats.Count > 0 ? "threat" : null,
-        Leaks.Count > 0 ? "leak" : null,
-        Submarine?.ReactorFuelPercent is int fuel && fuel < 10 ? "fuel" : null,
-        Submarine?.OxygenPercent is int o2 && o2 < 50 ? "subo2" : null,
-        DangerWithoutSuit ? "suit" : null,
-    }.Where(x => x != null));
 
     /// <summary>The sub is in danger and this bot wears no diving gear: think now, put a suit on.</summary>
     [JsonIgnore]
@@ -95,7 +86,9 @@ public sealed class Observation
     /// <summary>One line standing for this observation in the history of later requests.</summary>
     public string HistorySummary()
     {
-        var parts = new List<string> { $"(earlier) you were in {Room ?? "outside"}, health {HealthPercent}%, order: {CurrentOrder}" };
+        var parts = new List<string>();
+        if (Why.Count > 0) parts.Add("why: " + string.Join(" | ", Why.Select(w => Tools.Clip(w, 140))));
+        parts.Add($"you were in {Room ?? "outside"}, health {HealthPercent}%, order: {CurrentOrder}" + (Doing != null ? $", doing: {Doing}" : ""));
         if (Goal != null) parts.Add("goal: " + Goal);
         if (CurrentTask != null) parts.Add("task: " + CurrentTask);
         if (PlayerOrders.Count > 0) parts.Add("player orders: " + string.Join(" | ", PlayerOrders));
@@ -103,7 +96,7 @@ public sealed class Observation
         if (LastActionResults.Count > 0) parts.Add("results: " + string.Join(" | ", LastActionResults.Select(r => Tools.Clip(r, 160))));
         var alerts = Threats.Count + Leaks.Count + Rooms.Count(r => r.Fires > 0 || r.WaterPercent >= 20);
         if (alerts > 0) parts.Add($"alerts: {Threats.Count} threats, {Leaks.Count} leaking rooms");
-        return Tools.Clip(string.Join("; ", parts), 900);
+        return Tools.Clip(string.Join("; ", parts), 1000);
     }
 
     /// <summary>

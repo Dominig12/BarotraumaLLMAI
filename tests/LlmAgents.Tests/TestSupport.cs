@@ -46,7 +46,8 @@ public sealed class FakeGame : IGameApi
         {
             Name = src.Name, Job = src.Job, HealthPercent = src.HealthPercent, OxygenPercent = src.OxygenPercent,
             Room = src.Room, RoomWaterPercent = src.RoomWaterPercent, RoomFires = src.RoomFires,
-            CurrentOrder = src.CurrentOrder, Rooms = src.Rooms.ToList(), Crew = src.Crew.ToList(),
+            CurrentOrder = src.CurrentOrder, Doing = src.Doing, Rooms = src.Rooms.ToList(), Crew = src.Crew.ToList(),
+            Gear = src.Gear, Submarine = src.Submarine, CurrentTask = src.CurrentTask,
             Threats = src.Threats.ToList(), Leaks = src.Leaks.ToList(), Inventory = src.Inventory.ToList(),
         };
     }
@@ -92,6 +93,18 @@ public sealed class FakeGame : IGameApi
         PendingControl.Clear();
         return r;
     }
+    public readonly List<MenuOrder> PendingMenuOrders = new();
+    public IReadOnlyList<MenuOrder> DrainMenuOrders()
+    {
+        var r = PendingMenuOrders.ToList();
+        PendingMenuOrders.Clear();
+        return r;
+    }
+
+    /// <summary>Private notes sent to players: (player, text).</summary>
+    public readonly ConcurrentQueue<(string Player, string Text)> Notices = new();
+    public void NotifyPlayer(string playerName, string text) => Notices.Enqueue((playerName, text));
+
     public IReadOnlyList<GameReport> DrainReports()
     {
         var r = PendingReports.ToList();

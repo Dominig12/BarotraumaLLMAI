@@ -71,7 +71,7 @@ public class CompactObservationTests
             var settings = Fixtures.Settings($", \"compactObservation\": {(compact ? "true" : "false")}");
             var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
             mgr.Update(); await mgr.WhenIdle();
-            var rooms = JsonNode.Parse(user!)!["rooms"]!.AsArray();
+            var rooms = JsonNode.Parse(Fixtures.Obs(user!))!["rooms"]!.AsArray();
             Assert.Equal(compact, rooms[0] is JsonValue);
         }
     }
@@ -87,7 +87,9 @@ public class StatusTests
         var settings = Fixtures.Settings();
         var handler = new FakeHandler(_ => (System.Net.HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("fix_leaks", "{}"))));
         var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
-        mgr.Update(); await mgr.WhenIdle(); clock.Advance(3);
+        mgr.Update(); await mgr.WhenIdle(); clock.Advance(0.5); mgr.Update();   // t=0.5: Ann's first look applied (answers apply on the next update)
+        clock.Advance(1.0); mgr.Update(); await mgr.WhenIdle(); clock.Advance(0.5); mgr.Update();   // Bob's (staggered by 1.5 s)
+        clock.Advance(1.5);                                                      // t=3.5
         game.Observations[2].CurrentOrder = "x";
         var st = mgr.Status(new[] { new FeatureStatus("Chat orders", true), new FeatureStatus("Gear lock", false, "patch failed") });
 
@@ -95,13 +97,15 @@ public class StatusTests
         var ann = st.Bots.Single(b => b.Name == "Ann");
         Assert.Equal("fixleaks [p3]", ann.Orders);
         Assert.Equal("fix_leaks()", ann.LastDecision);
-        Assert.Equal(3, ann.SecondsSinceDecision!.Value, 1);
+        Assert.True(Math.Abs(ann.SecondsSinceDecision!.Value - 3) < 0.1, $"since {ann.SecondsSinceDecision} why {ann.Why} decisions {ann.Decisions}");
         Assert.Equal(2, st.Providers.Single(p => p.Name == "a").Ok);
         Assert.Equal(2, st.RequestsToday);
 
         var text = st.ToText();
         Assert.Contains("PROBLEMS: Gear lock (patch failed)", text);
-        Assert.Contains("Ann (mechanic): fixleaks [p3]; last decision 3s ago: fix_leaks()", text);
+        Assert.Contains("Ann (mechanic): fixleaks [p3]; last decision 3s ago (why: round start", text);
+        Assert.Contains("): fix_leaks()", text);
+        Assert.Contains("Requests: 2 in the last minute, 2 today; bots think: on events", text);
         Assert.Contains("a (m-a): ok 2, errors 0", text);
     }
 
@@ -207,12 +211,15 @@ public class CompactHistoryTests
         int Run(bool compact)
         {
             var settings = Fixtures.Settings($", \"compactObservation\": {(compact ? "true" : "false")}, \"historyTurns\": 6");
+            settings.Bots.Autonomy = "always";   // a heartbeat every 10 s: 7 turns
             var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
             for (int i = 0; i < 7; i++) { mgr.Update(); mgr.WhenIdle().Wait(); clock.Advance(11); }
             return lastSize;
         }
         int full = Run(false), compact = Run(true);
-        Assert.StartsWith("(earlier) you were in Реакторный отсек [h163]", lastMessages![1]!["content"]!.GetValue<string>());
+        var old = lastMessages![1]!["content"]!.GetValue<string>();
+        Assert.Matches(@"^\(\d+ ?(s|min) ago\) why: ", old);   // each old turn: its age, why the bot was asked, where it was
+        Assert.Contains("you were in Реакторный отсек [h163]", old);
         Assert.True(compact < full / 2, $"compact request {compact} vs full {full}");
         await Task.CompletedTask;
     }

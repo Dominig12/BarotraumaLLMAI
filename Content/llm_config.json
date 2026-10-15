@@ -1,4 +1,5 @@
 {
+  "configVersion": 2,
   "enabled": true,
   "defaultProvider": "local",
   "fallbackProvider": "local",
@@ -7,14 +8,15 @@
     "requestsPerMinute": 60,
     "dailyRequestBudget": 3000,
     "tickSeconds": 0.5,
-    "decisionIntervalSeconds": 10,
-    "minSecondsBetweenCallsPerBot": 4,
+    "decisionIntervalSeconds": 60,
+    "minSecondsBetweenCallsPerBot": 3,
     "urgencyCheckSeconds": 1.5,
+    "mailDelaySeconds": 4,
     "retrySeconds": 1,
     "maxActionsPerDecision": 6,
     "sequentialActions": true,
     "idleBackoff": true,
-    "maxIdleIntervalSeconds": 60,
+    "maxIdleIntervalSeconds": 300,
     "comeToWaitSeconds": 90,
     "goalTimeoutMinutes": 8,
     "maxPlanSeconds": 180,
@@ -93,12 +95,14 @@
     "disabledJobs": [],
     "disabledCharacters": [],
     "allowedTools": [],
-    "autonomy": "always",
+    "autonomy": "events",
     "speechLanguage": "",
     "useGamePersonality": true,
-    "controlDecisionIntervalSeconds": 6,
+    "controlDecisionIntervalSeconds": 20,
+    "thinkAtRoundStart": true,
+    "reactToMenuOrders": true,
     "extraPromptByJob": {
-      "captain": "You are the captain: keep the big picture, coordinate the crew with message_crew, and keep the sub on course.",
+      "captain": "You are the captain: keep the big picture and the sub on course; coordinate the crew only when someone must do something.",
       "medicaldoctor": "You are the medic: your first priority is keeping the crew alive (rescue_injured)."
     }
   },
@@ -110,7 +114,9 @@
     "directIfSingleListener": true,
     "maxQueue": 10,
     "maxAgeSeconds": 30,
-    "dispatchWaitSeconds": 6
+    "dispatchWaitSeconds": 6,
+    "ruleRouting": true,
+    "confirmToSender": true
   },
   "memory": {
     "enabled": true,
