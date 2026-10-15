@@ -83,7 +83,8 @@ var settingsService = new LlmAgents.SettingsUi.SettingsService(simEditor, person
     (s, providersChanged) => mgr.ApplySettings(ApplySimOverrides(s), providersChanged ? new LlmRouter(s) : null),
     () => new LlmAgents.SettingsUi.GameInfo(
         world.GetBots().Select(b => new LlmAgents.SettingsUi.CrewEntry(b.Name, b.Job, b.Trait, false)).ToList(),
-        new[] { "captain", "engineer", "mechanic", "medicaldoctor", "assistant", "securityofficer" }));
+        new[] { "captain", "engineer", "mechanic", "medicaldoctor", "assistant", "securityofficer" }),
+    () => mgr.Status(new[] { new FeatureStatus("Simulator (no game patches)", true) }));
 
 ModSettings ApplySimOverrides(ModSettings s)
 {

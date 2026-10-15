@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json.Nodes;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -67,6 +69,62 @@ public sealed class Observation
     };
 
     public string ToJson() => JsonSerializer.Serialize(this, Opts);
+
+    /// <summary>One line standing for this observation in the history of later requests.</summary>
+    public string HistorySummary()
+    {
+        var parts = new List<string> { $"(earlier) you were in {Room ?? "outside"}, health {HealthPercent}%, order: {CurrentOrder}" };
+        if (CurrentTask != null) parts.Add("task: " + CurrentTask);
+        if (PlayerOrders.Count > 0) parts.Add("player orders: " + string.Join(" | ", PlayerOrders));
+        if (Inbox.Count > 0) parts.Add("messages: " + string.Join(" | ", Inbox));
+        if (LastActionResults.Count > 0) parts.Add("results: " + string.Join(" | ", LastActionResults.Select(r => Tools.Clip(r, 160))));
+        var alerts = Threats.Count + Leaks.Count + Rooms.Count(r => r.Fires > 0 || r.WaterPercent >= 20);
+        if (alerts > 0) parts.Add($"alerts: {Threats.Count} threats, {Leaks.Count} leaking rooms");
+        return Tools.Clip(string.Join("; ", parts), 900);
+    }
+
+    /// <summary>
+    /// Shorter form for the LLM (about half the size): no empty lists or zero values, crew/threats as one line each,
+    /// room ids as plain strings with a separate list of rooms that have water or fire. Small local models read
+    /// it faster and lose fewer details (orders!) in it.
+    /// </summary>
+    public string ToCompactJson()
+    {
+        var o = JsonSerializer.SerializeToNode(this, Opts)!.AsObject();
+
+        if (RoomWaterPercent == 0) o.Remove("roomWaterPercent");
+        if (RoomFires == 0) o.Remove("roomFires");
+        if (OxygenPercent >= 100) o.Remove("oxygenPercent");
+
+        o["rooms"] = new JsonArray(Rooms.Select(r => (JsonNode)JsonValue.Create(r.Id)!).ToArray());
+        var alerts = Rooms.Where(r => r.WaterPercent >= 5 || r.Fires > 0)
+            .Select(r => r.Id + ": " + string.Join(", ", new[]
+            {
+                r.WaterPercent >= 5 ? $"water {r.WaterPercent}%" : null,
+                r.Fires > 0 ? $"fire x{r.Fires}" : null,
+            }.Where(x => x != null)))
+            .ToList();
+        if (alerts.Count > 0) o["roomAlerts"] = new JsonArray(alerts.Select(a => (JsonNode)JsonValue.Create(a)!).ToArray());
+
+        o["crew"] = new JsonArray(Crew.Select(c => (JsonNode)JsonValue.Create(
+            $"{c.Name} ({c.Job}{(c.IsPlayer ? ", HUMAN PLAYER" : "")})" +
+            (c.Room != null ? $" in {c.Room}" : " outside") +
+            (c.HealthPercent < 100 ? $", health {c.HealthPercent}%" : "") +
+            (c.Order != "none" ? $", order: {c.Order}" : "") +
+            (c.Injuries != null ? $", injuries: {c.Injuries}" : ""))!).ToArray());
+
+        o["threats"] = new JsonArray(Threats.Select(t => (JsonNode)JsonValue.Create(
+            $"{t.Kind} {t.DistanceMeters}m" + (t.Room != null ? $" in {t.Room}" : " outside"))!).ToArray());
+
+        // drop everything empty
+        foreach (var key in o.Select(kv => kv.Key).ToList())
+        {
+            var v = o[key];
+            if (v == null || (v is JsonArray arr && arr.Count == 0) || (v is JsonValue jv && jv.TryGetValue<string>(out var str) && str.Length == 0))
+                o.Remove(key);
+        }
+        return o.ToJsonString(Opts);
+    }
 }
 
 public sealed class MemoryView

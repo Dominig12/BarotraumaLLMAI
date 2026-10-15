@@ -18,6 +18,7 @@ public sealed record GameInfo(IReadOnlyList<CrewEntry> Crew, IReadOnlyList<strin
 /// </summary>
 public static class SettingsSchema
 {
+    public const string StatusTab = "Статус";
     public const string General = "Общее";
     public const string Limits = "Лимиты";
     public const string Models = "Модели";
@@ -26,7 +27,7 @@ public static class SettingsSchema
     public const string Presets = "Характеры";
     public const string ChatAndMemory = "Чат и память";
 
-    public static readonly IReadOnlyList<string> Categories = new[] { General, Crew, Presets, Jobs, Models, Limits, ChatAndMemory };
+    public static readonly IReadOnlyList<string> Categories = new[] { StatusTab, General, Crew, Presets, Jobs, Models, Limits, ChatAndMemory };
 
     static SettingField F(string category, string label, string type, JsonNode? value, params string[] path) =>
         new() { Category = category, Label = label, Type = type, Value = value, Path = path };
@@ -41,9 +42,10 @@ public static class SettingsSchema
         _ => JsonValue.Create(o.ToString()),
     };
 
-    public static List<SettingField> Build(ModSettings s, PersonaStore personas, GameInfo game)
+    public static List<SettingField> Build(ModSettings s, PersonaStore personas, GameInfo game, Agents.ModStatus? status = null)
     {
         var list = new List<SettingField>();
+        if (status != null) AddStatus(list, s, status, game);
         var providerNames = s.Providers.Select(p => p.Name).ToList();
         var optionalProviders = new List<string> { "" }.Concat(providerNames).ToList();
         var optionalProviderLabels = new List<string> { "(по умолчанию)" }.Concat(providerNames).ToList();
@@ -82,6 +84,8 @@ public static class SettingsSchema
         Add(F(General, "Показывать приказы ботов клиентам", FieldType.Bool, V(g.SyncOrdersToClients), "global", "syncOrdersToClients"));
         Add(F(General, "Не снимать костюм при опасности", FieldType.Bool, V(g.KeepDivingGearInDanger), "global", "keepDivingGearInDanger"));
         Add(F(General, "Радиус опасности монстров, м", FieldType.Float, V(g.DangerMonsterRadiusMeters), "global", "dangerMonsterRadiusMeters"), min: 0, max: 500);
+        Add(F(General, "Сжатое наблюдение", FieldType.Bool, V(g.CompactObservation), "global", "compactObservation"),
+            "Короче запрос к модели: без пустых полей, экипаж одной строкой на человека. Быстрее и понятнее маленьким моделям.");
         Add(F(General, "Писать запросы в лог", FieldType.Bool, V(g.LogPrompts), "global", "logPrompts"));
         Add(F(General, "Писать сырые ответы в лог", FieldType.Bool, V(g.LogRawReplies), "global", "logRawReplies"));
 
@@ -182,6 +186,47 @@ public static class SettingsSchema
 
         return list;
     }
+
+    static void AddStatus(List<SettingField> list, ModSettings s, Agents.ModStatus st, GameInfo game)
+    {
+        void Info(string group, string label, string value, string? help = null) =>
+            list.Add(new SettingField { Category = StatusTab, Group = group, Label = label, Type = FieldType.Info, Value = V(value), Help = help,
+                                        Path = new[] { "status", group, label } });
+
+        string mod = $"Мод {st.Version}";
+        Info(mod, "Состояние", st.Enabled ? "включён" : "ВЫКЛЮЧЕН");
+        foreach (var f in st.Features) Info(mod, f.Name, f.Ok ? "работает" : "НЕ РАБОТАЕТ" + (f.Note != null ? ": " + f.Note : ""));
+        Info(mod, "Запросов сегодня", st.RequestsToday + (st.DailyBudget > 0 ? $" из {st.DailyBudget}" : ""));
+        if (st.MemoryScope != null) Info(mod, "Память", st.MemoryScope);
+        foreach (var p in st.Providers)
+            Info("Модели", p.Name, $"{p.Model}: ответов {p.Ok}, ошибок {p.Errors}, в среднем {p.AvgSeconds:0.0} с, сейчас {p.Active}" +
+                 (p.PausedForSeconds > 0 ? $", НА ПАУЗЕ ещё {p.PausedForSeconds:0} с" : "") + (p.LastError != null ? $"; последняя ошибка: {p.LastError}" : ""));
+
+        foreach (var b in st.Bots)
+        {
+            string grp = $"{b.Name} — {b.Job}" + (b.AiControl ? ", ПОЛНЫЙ КОНТРОЛЬ" : "") + (b.HasPersona ? ", с характером" : "");
+            Info(grp, "Приказы", b.Orders);
+            if (b.Task != null) Info(grp, "Задача", b.Task);
+            Info(grp, "Последнее решение", (b.Thinking ? "думает сейчас; " : "") + $"{Agents.ModStatus.Ago(b.SecondsSinceDecision)}: {b.LastDecision ?? "—"}");
+            Info(grp, "Модель", $"{b.Provider}, решений: {b.Decisions}");
+            if (b.RecentErrors.Count > 0) Info(grp, "Ошибки", string.Join(" | ", b.RecentErrors));
+            AddDisableToggle(list, b.Name, grp, false);
+        }
+        // bots switched to the vanilla AI are no agents any more: still list them so they can be switched back
+        foreach (var name in s.Bots.DisabledCharacters)
+            AddDisableToggle(list, name, $"{name} — ванильный ИИ", true);
+        var others = game.Crew.Where(c => c.IsBot && st.Bots.All(b => b.Name != c.Name)
+                                          && !s.Bots.DisabledCharacters.Contains(c.Name, StringComparer.OrdinalIgnoreCase)).ToList();
+        foreach (var c in others) Info($"{c.Name} — {c.Job}", "LLM", "не управляется (профессия выключена или бот ещё не создан)");
+    }
+
+    static void AddDisableToggle(List<SettingField> list, string name, string group, bool disabled) =>
+        list.Add(new SettingField
+        {
+            Category = StatusTab, Group = group, Label = "Только ванильный ИИ", Type = FieldType.Bool, Value = V(disabled),
+            Help = "Выключить LLM для этого персонажа: им управляет обычный ИИ игры (сохраняется в llm_config.json).",
+            Path = new[] { "bots", "disabledCharacters", name },
+        });
 
     /// <summary>"global.decisionIntervalSeconds" style key for chat commands.</summary>
     public static string DottedKey(SettingField f) => (f.Target == "personas" ? "personas." : "") + string.Join(".", f.Path);

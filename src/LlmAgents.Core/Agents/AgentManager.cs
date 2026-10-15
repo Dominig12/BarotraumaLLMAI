@@ -91,6 +91,22 @@ public sealed class AgentManager : IDisposable
         nextTick = double.NegativeInfinity;
     }
 
+    /// <summary>Snapshot for !llm status and the settings window (game thread).</summary>
+    public ModStatus Status(IReadOnlyList<FeatureStatus> features)
+    {
+        double now = clock();
+        var bots = agents.Values.OrderBy(a => a.Name).Select(a =>
+        {
+            Observation? o = null;
+            try { if (game.IsAlive(a.Id)) o = game.Observe(a.Id); } catch { /* status must never fail */ }
+            return new BotStatus(a.Id, a.Name, a.Job, ProviderFor(a), a.AiControl, personas.PromptFor(a.Name) != null,
+                o?.CurrentOrder ?? "?", o?.CurrentTask, a.LastDecision,
+                double.IsNaN(a.LastDecisionAt) ? null : now - a.LastDecisionAt, a.RecentErrors(), a.Pending, a.Decisions);
+        }).ToList();
+        return new ModStatus(ModInfo.Version, Settings.Enabled, features, router.Status(), router.GlobalGate.UsedToday,
+            Settings.Global.DailyRequestBudget, bots, Settings.Bots.DisabledCharacters.ToList(), MemoryOn ? memory.Scope : null);
+    }
+
     /// <summary>Provider for this bot: its persona's provider if set and known, else by job, else the default.</summary>
     public string ProviderFor(BotAgent agent)
     {
@@ -150,7 +166,7 @@ public sealed class AgentManager : IDisposable
         var seen = new HashSet<int>();
         foreach (var h in game.GetBots())
         {
-            if (!Settings.IsJobEnabled(h.Job)) continue;
+            if (!Settings.IsJobEnabled(h.Job) || !Settings.IsCharacterEnabled(h.Name)) continue;
             seen.Add(h.Id);
             if (!agents.TryGetValue(h.Id, out var agent))
             {
@@ -190,6 +206,7 @@ public sealed class AgentManager : IDisposable
             var result = Tools.Execute(cmd.Call, agent, game, this);
             var line = $"{cmd.Call.Name}({Tools.ArgsToString(cmd.Call)}) -> {result}";
             agent.RecordResult(line);
+            if (result.StartsWith("error")) agent.AddError(line);
             // the round log feeds the end-of-round summary: keep what matters, skip routine noise
             if (cmd.Call.Name is not ("inspect" or "remember" or "return_to_default" or "wait" or "keep_gear" or "forget")
                 && !result.Contains("already")) agent.LogEvent(line);
@@ -228,6 +245,7 @@ public sealed class AgentManager : IDisposable
             if (!agents.TryGetValue(r.BotId, out var agent)) continue;
             agent.RecordResult(r.Text);
             agent.LogEvent(r.Text);
+            if (r.Text.Contains("failed")) agent.AddError(r.Text);
             agent.WakeUp = true;
             Log.Info($"[{agent.Name}] {r.Text}");
         }
@@ -331,7 +349,8 @@ public sealed class AgentManager : IDisposable
         agent.Pending = true;
         agent.LastRequestAt = now;
 
-        string obsJson = obs.ToJson();
+        string obsJson = g.CompactObservation ? obs.ToCompactJson() : obs.ToJson();
+        string historyLine = obs.HistorySummary();
         if (takenOrders.Count > 0)
         {
             // Said in plain words before the JSON as well: small local models tend to miss it inside a long observation.
@@ -372,7 +391,12 @@ public sealed class AgentManager : IDisposable
                 var calls = r.Response.ToolCalls.Take(g.MaxActionsPerDecision).ToList();
                 // Only canonical calls go into the history: raw broken replies would teach the model to keep writing them.
                 var summary = calls.Count == 0 ? "(no tool call)" : string.Join("; ", calls.Select(c => $"{c.Name}({Tools.ArgsToString(c)})"));
-                agent.AddExchange(obsJson, summary, g.HistoryTurns);
+                // Past turns are kept short: the model only needs what happened then, not the whole old observation
+                // (with historyTurns=6 the old observations were most of every request).
+                agent.AddExchange(g.CompactObservation ? historyLine : obsJson, summary, g.HistoryTurns);
+                agent.LastDecision = summary;
+                agent.LastDecisionAt = clock();
+                Interlocked.Increment(ref agent.Decisions);
                 if (calls.Count == 0 && !string.IsNullOrWhiteSpace(r.Response.Text))
                 {
                     agent.RecordResult("error: your last reply contained no valid tool call, so nothing happened. Reply only with tool calls.");

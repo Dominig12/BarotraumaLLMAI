@@ -23,10 +23,13 @@ public sealed class SettingsService
     readonly PersonaStore personas;
     readonly Action<ModSettings, bool> apply;
     readonly Func<GameInfo> game;
+    readonly Func<Agents.ModStatus?>? status;
 
     /// <param name="apply">(new settings, providers or limits changed) — called after every successful config change.</param>
-    public SettingsService(ConfigEditor editor, PersonaStore personas, Action<ModSettings, bool> apply, Func<GameInfo> game)
+    public SettingsService(ConfigEditor editor, PersonaStore personas, Action<ModSettings, bool> apply, Func<GameInfo> game,
+        Func<Agents.ModStatus?>? status = null)
     {
+        this.status = status;
         this.editor = editor;
         this.personas = personas;
         this.apply = apply;
@@ -35,7 +38,13 @@ public sealed class SettingsService
 
     public ModSettings Settings => editor.Settings;
 
-    public List<SettingField> Fields() => SettingsSchema.Build(editor.Settings, personas, game());
+    public List<SettingField> Fields() => SettingsSchema.Build(editor.Settings, personas, game(), SafeStatus());
+
+    Agents.ModStatus? SafeStatus()
+    {
+        try { return status?.Invoke(); }
+        catch (Exception e) { Log.Warn("status failed: " + e.Message); return null; }
+    }
 
     public SettingsResponse State(bool canEdit, string? message = null, bool error = false)
     {
@@ -210,6 +219,7 @@ public sealed class SettingsService
 
     public const string Help =
         "LLM-агенты. Окно настроек открывается, если у вас стоит клиентская часть мода (LuaCs), иначе — команды:\n" +
+        "!llm status — что работает, модели, чем занят каждый бот; !llm ai <имя> on|off — LLM или обычный ИИ для бота\n" +
         "!llm list [вкладка] — ключи и значения; !llm get <ключ>; !llm set <ключ> <значение>\n" +
         "!llm persona <имя> — характер бота; !llm persona <имя> preset <id> | prompt <текст> | provider <модель> | clear\n" +
         "!llm presets — список характеров; !llm preset <id> <текст> — создать/изменить; !llm preset <id> delete\n" +
@@ -224,6 +234,17 @@ public sealed class SettingsService
         if (!canEdit) return "Нет прав: нужен владелец сервера или право «Управление настройками».";
 
         var cmd = args[0].ToLowerInvariant();
+        if (cmd is "status" or "статус" or "diag")
+            return SafeStatus()?.ToText() ?? "Статус недоступен: агенты не запущены (проверьте llm_config.json и консоль сервера).";
+        if (cmd is "ai" or "ии" && args.Count >= 3)
+        {
+            // !llm ai <name> on|off : LLM or the vanilla AI for one character
+            var name = ResolveCrewName(args[1]);
+            var on = Bool(JsonValue.Create(args[2]));
+            if (on == null) return "Использование: !llm ai <имя> on|off";
+            var err = Apply(new[] { new SettingChange { Path = new[] { "bots", "disabledCharacters", name }, Value = !on.Value } }, out _);
+            return err ?? $"{name}: {(on.Value ? "управляет LLM" : "только ванильный ИИ")}";
+        }
         try
         {
             switch (cmd)

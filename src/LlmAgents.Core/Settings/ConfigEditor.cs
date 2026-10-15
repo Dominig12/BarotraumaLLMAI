@@ -99,6 +99,61 @@ public sealed class ConfigEditor
         return null;
     }
 
+    /// <summary>
+    /// Adds settings that are missing from the file with their default values (new versions bring new settings;
+    /// an existing llm_config.json is never replaced on update). Values already there are never touched.
+    /// Returns the added keys ("global.maxChatEchoPerMinute", "providers.local.toolMode"...); nothing changes on error.
+    /// </summary>
+    public List<string> AddMissingDefaults()
+    {
+        var added = new List<string>();
+        var copy = (JsonObject)JsonNode.Parse(root.ToJsonString(), NodeOptions)!;
+        var opts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+        var defaults = JsonSerializer.SerializeToNode(new ModSettings(), opts)!.AsObject();
+        defaults.Remove("providers");
+        Merge(copy, defaults, "", added);
+
+        if (copy["providers"] is JsonArray providers)
+        {
+            var providerDefaults = JsonSerializer.SerializeToNode(new ProviderConfig(), opts)!.AsObject();
+            foreach (var key in new[] { "name", "type", "baseUrl", "model", "apiKey" }) providerDefaults.Remove(key);
+            foreach (var p in providers.OfType<JsonObject>())
+                Merge(p, providerDefaults, $"providers.{(string?)p["name"] ?? "?"}.", added);
+        }
+        if (added.Count == 0) return added;
+        try
+        {
+            Settings = ModSettings.Parse(copy.ToJsonString());
+            root = copy;
+            return added;
+        }
+        catch (Exception e)
+        {
+            Log.Warn("could not add new default settings: " + e.Message);
+            return new List<string>();
+        }
+    }
+
+    static void Merge(JsonObject target, JsonObject defaults, string prefix, List<string> added)
+    {
+        foreach (var (key, value) in defaults.ToList())
+        {
+            var existing = target.Select(kv => kv.Key).FirstOrDefault(k => Is(k, key));
+            if (existing == null)
+            {
+                target[key] = value?.DeepClone();
+                added.Add(prefix + key);
+            }
+            else if (target[existing] is JsonObject t && value is JsonObject d && d.Count > 0 && !IsMap(key))
+            {
+                Merge(t, d, prefix + key + ".", added);
+            }
+        }
+    }
+
+    /// <summary>Maps keyed by job etc.: their defaults are examples, not keys to add.</summary>
+    static bool IsMap(string key) => Is(key, "providerByJob") || Is(key, "extraPromptByJob") || Is(key, "extraHeaders");
+
     public JsonNode? Get(string[] p)
     {
         if (p.Length == 0) return null;
@@ -107,8 +162,8 @@ public sealed class ConfigEditor
         {
             if (node is JsonObject o)
             {
-                if (i == 1 && Is(p[0], "bots") && Is(p[1], "disabledJobs") && p.Length == 3)
-                    return JsonValue.Create(o["disabledJobs"] is JsonArray arr && arr.Any(x => Is(x?.GetValue<string>() ?? "", p[2])));
+                if (i == 1 && Is(p[0], "bots") && IsNameList(p[1]) && p.Length == 3)
+                    return JsonValue.Create(o[p[1]] is JsonArray arr && arr.Any(x => Is(x?.GetValue<string>() ?? "", p[2])));
                 node = o[p[i]];
             }
             else if (node is JsonArray a && i == 1 && Is(p[0], "providers"))
@@ -117,6 +172,9 @@ public sealed class ConfigEditor
         }
         return node;
     }
+
+    /// <summary>bots.disabledJobs / bots.disabledCharacters: lists edited as name = true/false.</summary>
+    static bool IsNameList(string s) => Is(s, "disabledJobs") || Is(s, "disabledCharacters");
 
     static bool Is(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
@@ -138,12 +196,12 @@ public sealed class ConfigEditor
             return null;
         }
 
-        // bots.disabledJobs.<job> = bool
-        if (p.Length == 3 && Is(p[0], "bots") && Is(p[1], "disabledJobs"))
+        // bots.disabledJobs.<job> / bots.disabledCharacters.<name> = bool
+        if (p.Length == 3 && Is(p[0], "bots") && IsNameList(p[1]))
         {
             var bots = Obj(root, "bots");
-            var list = bots[Prop(bots, "disabledJobs")] as JsonArray;
-            if (list == null) bots[Prop(bots, "disabledJobs")] = list = new JsonArray();
+            var list = bots[Prop(bots, p[1])] as JsonArray;
+            if (list == null) bots[Prop(bots, p[1])] = list = new JsonArray();
             bool on = value is JsonValue jv && jv.TryGetValue<bool>(out var b) && b;
             var existing = list.Where(x => Is(x?.GetValue<string>() ?? "", p[2])).ToList();
             foreach (var x in existing) list.Remove(x);

@@ -77,6 +77,15 @@ def prioritized(text: str) -> list[dict]:
     return calls
 
 
+def crew_names(obs: dict) -> list[str]:
+    """crew: в компактном наблюдении строки "Имя (job) in ...", в полном — объекты."""
+    return [c["name"] if isinstance(c, dict) else c.split(" (")[0] for c in obs.get("crew", [])]
+
+
+def room_ids(obs: dict) -> list[str]:
+    return [r["id"] if isinstance(r, dict) else r for r in obs.get("rooms", [])]
+
+
 def decide(obs: dict) -> list[dict]:
     """Возвращает список {name, arguments}."""
     calls = []
@@ -91,7 +100,7 @@ def decide(obs: dict) -> list[dict]:
         calls.append({"name": "say", "arguments": {"text": "Есть, выполняю!"}})
         if "приоритет" in text or "сначала" in text or "first" in text:
             return (calls + prioritized(text))[:3]
-        crew = [c["name"] for c in obs.get("crew", [])]
+        crew = crew_names(obs)
         if any(w in text for w in ["леч", "heal", "treat", "перевяж"]):
             target = next((n for n in crew if latin(n.split()[0])[:3] in latin(text)), obs.get("name"))
             item = "bandage" if ("бинт" in text or "bandage" in text) else None
@@ -112,7 +121,7 @@ def decide(obs: dict) -> list[dict]:
         elif "течь" in text or "пробоин" in text or "leak" in text:
             calls.append({"name": "fix_leaks", "arguments": {}})
         else:
-            rooms = [r["id"] for r in obs.get("rooms", [])]
+            rooms = room_ids(obs)
             target = next((r for r in rooms if r.split(" [")[0].lower()[:5] in text), None)
             if target:
                 calls.append({"name": "go_to_room", "arguments": {"room": target}})
@@ -121,7 +130,7 @@ def decide(obs: dict) -> list[dict]:
         calls.append({"name": "say", "arguments": {"text": "Принял, " + obs["inbox"][0].split(":")[0] + "."}})
     if obs.get("threats"):
         calls.append({"name": "fight_intruders", "arguments": {}})
-        crew = [c for c in obs.get("crew", []) if c.get("healthPercent", 100) < 100]
+        crew = [c for c in obs.get("crew", []) if (c.get("healthPercent", 100) < 100 if isinstance(c, dict) else "health " in c)]
         if crew:
             calls.append({"name": "message_crew", "arguments": {"to": "all", "text": "Враг на борту, нужна помощь!"}})
     elif obs.get("leaks"):

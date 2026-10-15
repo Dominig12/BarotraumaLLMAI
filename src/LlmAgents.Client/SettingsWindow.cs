@@ -101,20 +101,25 @@ internal sealed class SettingsWindow
         {
             RelativeSpacing = 0.01f,
         };
-        new GUIButton(new RectTransform(new Vector2(0.22f, 1f), buttons.RectTransform), "Применить")
+        new GUIButton(new RectTransform(new Vector2(0.15f, 1f), buttons.RectTransform), "Обновить")
+        {
+            ToolTip = "Загрузить свежие значения и статус ботов с сервера (несохранённые правки пропадут).",
+            OnClicked = (_, _) => { send(new SettingsRequest { Op = "get" }); SetStatus("Обновляю..."); return true; },
+        };
+        new GUIButton(new RectTransform(new Vector2(0.2f, 1f), buttons.RectTransform), "Применить")
         {
             OnClicked = (_, _) => { Apply(); return true; },
         };
-        new GUIButton(new RectTransform(new Vector2(0.22f, 1f), buttons.RectTransform), "Отменить изменения")
+        new GUIButton(new RectTransform(new Vector2(0.2f, 1f), buttons.RectTransform), "Отменить изменения")
         {
             OnClicked = (_, _) => { pending.Clear(); RebuildFields(); SetStatus("Изменения отменены"); return true; },
         };
-        new GUIButton(new RectTransform(new Vector2(0.22f, 1f), buttons.RectTransform), "Перечитать файлы")
+        new GUIButton(new RectTransform(new Vector2(0.2f, 1f), buttons.RectTransform), "Перечитать файлы")
         {
             ToolTip = "Перечитать llm_config.json и personas.json с диска (если правили их руками).",
             OnClicked = (_, _) => { send(new SettingsRequest { Op = "reload" }); SetStatus("Перечитываю..."); return true; },
         };
-        new GUIButton(new RectTransform(new Vector2(0.15f, 1f), buttons.RectTransform), "Закрыть")
+        new GUIButton(new RectTransform(new Vector2(0.13f, 1f), buttons.RectTransform), "Закрыть")
         {
             OnClicked = (_, _) => { Close(); return true; },
         };

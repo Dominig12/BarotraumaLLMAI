@@ -28,6 +28,26 @@ public sealed class LlmRouter : IDisposable
         public DateTime PausedUntil;
         public int Failures;
         public string LastError = "";
+        // statistics, guarded by `lock (this)`
+        public int Ok, Errors;
+        public double TotalSeconds;
+        public string? LastErrorDetail;
+        public DateTime LastErrorAt;
+    }
+
+    /// <summary>Health and usage of one provider, for !llm status and the settings window.</summary>
+    public sealed record ProviderStatus(string Name, string Model, double PausedForSeconds, string? LastError, DateTime? LastErrorAt,
+        int Active, int UsedToday, int Ok, int Errors, double AvgSeconds);
+
+    public IReadOnlyList<ProviderStatus> Status()
+    {
+        var list = new List<ProviderStatus>();
+        foreach (var e in providers.Values)
+            lock (e)
+                list.Add(new ProviderStatus(e.Config.Name, e.Config.Model, Math.Max(0, (e.PausedUntil - utcNow()).TotalSeconds),
+                    e.LastErrorDetail, e.LastErrorDetail != null ? e.LastErrorAt : null,
+                    e.Gate.Active, e.Gate.UsedToday, e.Ok, e.Errors, e.Ok > 0 ? e.TotalSeconds / e.Ok : 0));
+        return list;
     }
 
     /// <summary>Held slots for one request. Dispose to release (CompleteAsync does it for you).</summary>
@@ -158,8 +178,10 @@ public sealed class LlmRouter : IDisposable
                 try
                 {
                     var req = new LlmRequest(system, turns, tools, e.Config.MaxOutputTokens, e.Config.Temperature);
+                    var started = utcNow();
                     var res = await e.Provider.CompleteAsync(req, ct).ConfigureAwait(false);
                     e.Gate.ReportTokens(res.InputTokens + res.OutputTokens);
+                    lock (e) { e.Ok++; e.TotalSeconds += Math.Max(0, (utcNow() - started).TotalSeconds); }
                     MarkHealthy(e);
                     return new RouteResult(RouteStatus.Ok, res, current.Provider, "");
                 }
@@ -170,6 +192,7 @@ public sealed class LlmRouter : IDisposable
                 catch (Exception ex)
                 {
                     detail += (detail.Length > 0 ? "; " : "") + $"{current.Provider}: {ex.Message}";
+                    lock (e) { e.Errors++; e.LastErrorDetail = JsonUtil.Trim(ex.Message, 160); e.LastErrorAt = utcNow(); }
                     MarkFailed(e, ex);
                 }
 

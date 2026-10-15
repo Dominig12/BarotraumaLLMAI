@@ -70,6 +70,7 @@ public sealed class ModSettings
         Bots.ProviderByJob = new Dictionary<string, string>(Bots.ProviderByJob ?? new(), StringComparer.OrdinalIgnoreCase);
         Bots.ExtraPromptByJob = new Dictionary<string, string>(Bots.ExtraPromptByJob ?? new(), StringComparer.OrdinalIgnoreCase);
         Bots.DisabledJobs ??= new List<string>();
+        Bots.DisabledCharacters ??= new List<string>();
         Bots.AllowedTools ??= new List<string>();
     }
 
@@ -113,6 +114,9 @@ public sealed class ModSettings
 
     public bool IsJobEnabled(string job) =>
         !Bots.DisabledJobs.Any(j => string.Equals(j, job, StringComparison.OrdinalIgnoreCase));
+
+    public bool IsCharacterEnabled(string name) =>
+        !Bots.DisabledCharacters.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
 }
 
 public sealed class GlobalSettings
@@ -142,6 +146,8 @@ public sealed class GlobalSettings
     public bool ShowBotMessagesInChat { get; set; } = true;
     /// <summary>At most this many bot-to-bot messages per minute are spoken in the chat (crew-wide); the rest are only delivered. 0 = no limit.</summary>
     public int MaxChatEchoPerMinute { get; set; } = 6;
+    /// <summary>Shorter observation for the LLM (no empty fields, one line per crew member). Faster and clearer for small models.</summary>
+    public bool CompactObservation { get; set; } = true;
     /// <summary>
     /// Where bots speak: "auto" = radio if the bot wears a working headset, otherwise out loud (like vanilla bots);
     /// "radio" = same as auto (radio is always preferred); "local" = always out loud, nearby only.
@@ -216,6 +222,8 @@ public sealed class BotSettings
     /// <summary>Extra system-prompt text per job identifier (e.g. personality, priorities).</summary>
     public Dictionary<string, string> ExtraPromptByJob { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<string> DisabledJobs { get; set; } = new();
+    /// <summary>Characters (by name) left to the vanilla AI.</summary>
+    public List<string> DisabledCharacters { get; set; } = new();
     /// <summary>Empty = all tools.</summary>
     public List<string> AllowedTools { get; set; } = new();
     /// <summary>

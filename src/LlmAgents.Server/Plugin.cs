@@ -141,6 +141,18 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         string cfgPath = Path.Combine(modDir!, ConfigFileName);
         if (!File.Exists(cfgPath)) throw new FileNotFoundException("LLM agents config not found", cfgPath);
         var editor = ConfigEditor.Load(cfgPath);
+        var added = editor.AddMissingDefaults();
+        if (added.Count > 0)
+        {
+            // an old config from a previous version: add the new settings so they can be seen and changed
+            try
+            {
+                File.Copy(cfgPath, cfgPath + ".bak", overwrite: true);
+                editor.Save();
+                Log.Warn($"llm_config.json: added {added.Count} new setting(s) with default values (backup: llm_config.json.bak): {string.Join(", ", added.Take(20))}{(added.Count > 20 ? ", ..." : "")}");
+            }
+            catch (Exception e) { Log.Warn("could not update llm_config.json with the new settings: " + e.Message); }
+        }
         var settings = editor.Settings;
         personas = new PersonaStore(Path.Combine(modDir!, PersonasFileName));
         Log.FilePath = Path.IsPathRooted(settings.Global.LogFile)
@@ -162,8 +174,9 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         }
         manager = new AgentManager(settings, adapter, new LlmRouter(settings), memory: memory, personas: personas);
         manager.BeginRound(MemoryScope());
-        settingsService = new SettingsService(editor, personas, ApplySettings, () => SettingsBridge.GameInfo(adapter));
-        Log.Warn($"loaded from {cfgPath}. Providers: {string.Join(", ", settings.Providers.Select(p => $"{p.Name} ({p.Type}, {p.Model})"))}; " +
+        settingsService = new SettingsService(editor, personas, ApplySettings, () => SettingsBridge.GameInfo(adapter),
+            () => manager?.Status(Features()));
+        Log.Warn($"LlmAgents {ModInfo.Version} loaded from {cfgPath}. Providers: {string.Join(", ", settings.Providers.Select(p => $"{p.Name} ({p.Type}, {p.Model})"))}; " +
                  $"default '{settings.DefaultProvider}', fallback '{settings.FallbackProvider}'. Enabled: {settings.Enabled}");
     }
 
@@ -203,6 +216,16 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     }
 
     bool settingsWindowRegistered, settingsWindowFailed;
+
+    /// <summary>What actually works in this game, for !llm status.</summary>
+    System.Collections.Generic.List<FeatureStatus> Features() => new()
+    {
+        new("Не снимать костюмы при опасности (патч)", GearLock.Patched, GearLock.Patched ? null : "патч не встал, см. консоль сервера"),
+        new("Приказ «Полный контроль ИИ» (патч)", ControlOrder.Patched, ControlOrder.Patched ? null : "патч не встал, см. консоль сервера"),
+        new("Приказы из чата", chatListener != null, chatListener != null ? null : "не удалось подписаться на чат"),
+        new("Окно настроек (сеть LuaCs)", settingsWindowRegistered,
+            settingsWindowRegistered ? null : settingsWindowFailed ? "не удалось зарегистрировать; работают команды !llm" : "ещё не зарегистрировано"),
+    };
 
     /// <summary>The network message can only be registered once the server is up; retried from OnUpdate until then.</summary>
     void TryRegisterSettingsWindow()

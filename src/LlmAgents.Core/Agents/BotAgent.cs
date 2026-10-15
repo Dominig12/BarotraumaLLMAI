@@ -33,6 +33,23 @@ public sealed class BotAgent
     public bool AiControl { get; set; }
     public string? ControlBy { get; set; }
 
+    // For !llm status / the settings window. Written by the worker thread, read on the game thread: plain values only.
+    public volatile string? LastDecision;
+    public double LastDecisionAt = double.NaN;
+    public int Decisions;
+    readonly Queue<string> recentErrors = new();
+
+    public void AddError(string line)
+    {
+        lock (sync)
+        {
+            recentErrors.Enqueue(Tools.Clip(line, 200));
+            while (recentErrors.Count > 3) recentErrors.Dequeue();
+        }
+    }
+
+    public List<string> RecentErrors() { lock (sync) return recentErrors.ToList(); }
+
     readonly Queue<double> sentMessages = new();
 
     /// <summary>Sliding one-minute window of private messages sent by this bot (anti ping-pong).</summary>

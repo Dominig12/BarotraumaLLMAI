@@ -128,7 +128,8 @@ public sealed class GameAdapter : IGameApi
         o.CurrentTask = tasks.TryGetValue(c.ID, out var task) ? task.Describe() : null;
 
         var carried = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>()).ToList();
-        o.Equipped = carried.Where(i => c.HasEquippedItem(i)).Select(ItemQueries.Label).Distinct().Take(10).ToList();
+        // the ID card is always there and only costs tokens
+        o.Equipped = carried.Where(i => c.HasEquippedItem(i) && !i.HasTag("identitycard".ToIdentifier())).Select(ItemQueries.Label).Distinct().Take(10).ToList();
         o.Inventory = carried.Where(i => !c.HasEquippedItem(i))
             .GroupBy(i => i.Prefab)
             .Select(g => g.Count() > 1 ? $"{ItemQueries.Label(g.First())} x{g.Count()}" : ItemQueries.Label(g.First()))
