@@ -71,10 +71,20 @@ public static class SettingsSchema
         Add(F(General, "Не чаще раза в, с", FieldType.Float, V(g.MinSecondsBetweenCallsPerBot), "global", "minSecondsBetweenCallsPerBot"),
             "Минимальная пауза между решениями одного бота, даже при тревоге.", 0, 60);
         Add(F(General, "Решение при полном контроле, с", FieldType.Float, V(s.Bots.ControlDecisionIntervalSeconds), "bots", "controlDecisionIntervalSeconds"), min: 2, max: 120);
-        Add(F(General, "Действий за решение", FieldType.Int, V(g.MaxActionsPerDecision), "global", "maxActionsPerDecision"), min: 1, max: 6);
+        Add(F(General, "Действий за решение", FieldType.Int, V(g.MaxActionsPerDecision), "global", "maxActionsPerDecision"),
+            "Сколько шагов может быть в одном ответе модели (длина плана).", 1, 12);
+        Add(F(General, "Выполнять действия по очереди (план)", FieldType.Bool, V(g.SequentialActions), "global", "sequentialActions"),
+            "Ответ модели — план: задача (надеть, скрафтить, разобрать...) или переход в отсек завершается до начала следующего шага, " +
+            "и бота не спрашивают заново, пока план не выполнен, шаг не провалился, игрок не отдал приказ или не случилось что-то новое и срочное. " +
+            "Выключено: все действия ответа выполняются сразу (следующая задача отменяет предыдущую).");
+        Add(F(General, "Пересмотр плана не реже, с", FieldType.Float, V(g.MaxPlanSeconds), "global", "maxPlanSeconds"),
+            "Если план выполняется дольше, бот думает снова (и может продолжить план).", 20, 1200);
+        Add(F(General, "Ожидание прихода в отсек, с", FieldType.Float, V(g.PlanStepTimeoutSeconds), "global", "planStepTimeoutSeconds"),
+            "Шаг go_to_room, который не дошёл за это время, останавливает план.", 10, 600);
         Add(F(General, "Сообщений боту в минуту", FieldType.Int, V(g.MaxMessagesPerMinute), "global", "maxMessagesPerMinute"),
             "Ограничение message_crew/order_crew, чтобы боты не болтали бесконечно. 0 = без ограничения.", 0, 30);
-        Add(F(General, "Ходов истории", FieldType.Int, V(g.HistoryTurns), "global", "historyTurns"), min: 0, max: 20);
+        Add(F(General, "Ходов истории", FieldType.Int, V(g.HistoryTurns), "global", "historyTurns"),
+            "Сколько прошлых ходов (кратко: что было и что бот сделал) модель видит в каждом запросе. Больше = лучше помнит, но длиннее запрос.", 0, 40);
         Add(F(General, "Заметок на раунд", FieldType.Int, V(g.MaxNotes), "global", "maxNotes"), min: 1, max: 20);
         Add(F(General, "Канал речи", FieldType.Enum, V(g.SpeechChannel), "global", "speechChannel"),
             options: new() { "auto", "radio", "local" }, labels: new() { "Авто (радио при гарнитуре)", "Радио", "Только вслух" });
@@ -220,6 +230,8 @@ public static class SettingsSchema
             string grp = $"{b.Name} — {b.Job}" + (b.AiControl ? ", ПОЛНЫЙ КОНТРОЛЬ" : "") + (b.HasPersona ? ", с характером" : "");
             Info(grp, "Приказы", b.Orders);
             if (b.Task != null) Info(grp, "Задача", b.Task);
+            if (b.Goal != null) Info(grp, "Цель", b.Goal);
+            if (b.Plan != null) Info(grp, "План", b.Plan);
             Info(grp, "Последнее решение", (b.Thinking ? "думает сейчас; " : "") + $"{Agents.ModStatus.Ago(b.SecondsSinceDecision)}: {b.LastDecision ?? "—"}");
             Info(grp, "Модель", $"{b.Provider}, решений: {b.Decisions}");
             if (b.RecentErrors.Count > 0) Info(grp, "Ошибки", string.Join(" | ", b.RecentErrors));

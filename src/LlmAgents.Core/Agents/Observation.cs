@@ -14,6 +14,12 @@ public sealed class Observation
     /// small models pay most attention to the start.</summary>
     [JsonPropertyOrder(-1)]
     public List<string> PlayerOrders { get; set; } = new();
+    /// <summary>What this bot set out to do (set_goal or a player's order), e.g. "craft 3 bandages for Ivan (set 2 min ago)".</summary>
+    [JsonPropertyOrder(-1)]
+    public string? Goal { get; set; }
+    /// <summary>Steps of the bot's previous reply still waiting to be carried out (only shown when it is asked mid-plan).</summary>
+    [JsonPropertyOrder(-1)]
+    public string? Plan { get; set; }
     public string Name { get; set; } = "";
     public string Job { get; set; } = "";
     public int HealthPercent { get; set; } = 100;
@@ -57,6 +63,22 @@ public sealed class Observation
         (Submarine?.ReactorFuelPercent is int fuel && fuel < 10) || (Submarine?.OxygenPercent is int o2 && o2 < 50) ||
         DangerWithoutSuit;
 
+    /// <summary>Which urgent conditions hold, as short flags ("hp,fire,threat"). A plan in progress is only
+    /// interrupted by a flag that was not there when it was made.</summary>
+    [JsonIgnore]
+    public string UrgencyKey => string.Join(",", new[]
+    {
+        HealthPercent < 50 ? "hp" : null,
+        OxygenPercent < 40 ? "o2" : null,
+        RoomWaterPercent > 60 ? "water" : null,
+        RoomFires > 0 ? "fire" : null,
+        Threats.Count > 0 ? "threat" : null,
+        Leaks.Count > 0 ? "leak" : null,
+        Submarine?.ReactorFuelPercent is int fuel && fuel < 10 ? "fuel" : null,
+        Submarine?.OxygenPercent is int o2 && o2 < 50 ? "subo2" : null,
+        DangerWithoutSuit ? "suit" : null,
+    }.Where(x => x != null));
+
     /// <summary>The sub is in danger and this bot wears no diving gear: think now, put a suit on.</summary>
     [JsonIgnore]
     public bool DangerWithoutSuit => Gear != null && Gear.Contains("DANGER") && Gear.StartsWith("no diving gear");
@@ -74,6 +96,7 @@ public sealed class Observation
     public string HistorySummary()
     {
         var parts = new List<string> { $"(earlier) you were in {Room ?? "outside"}, health {HealthPercent}%, order: {CurrentOrder}" };
+        if (Goal != null) parts.Add("goal: " + Goal);
         if (CurrentTask != null) parts.Add("task: " + CurrentTask);
         if (PlayerOrders.Count > 0) parts.Add("player orders: " + string.Join(" | ", PlayerOrders));
         if (Inbox.Count > 0) parts.Add("messages: " + string.Join(" | ", Inbox));

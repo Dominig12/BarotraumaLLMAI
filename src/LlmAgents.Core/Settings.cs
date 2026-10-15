@@ -111,6 +111,8 @@ public sealed class ModSettings
             throw new InvalidDataException("global.speechChannel must be 'auto', 'radio' or 'local'");
         if (Global.TickSeconds <= 0) throw new InvalidDataException("global.tickSeconds must be > 0");
         if (Global.MaxActionsPerDecision < 1) throw new InvalidDataException("global.maxActionsPerDecision must be >= 1");
+        if (Global.MaxPlanSeconds <= 0) throw new InvalidDataException("global.maxPlanSeconds must be > 0");
+        if (Global.PlanStepTimeoutSeconds <= 0) throw new InvalidDataException("global.planStepTimeoutSeconds must be > 0");
     }
 
     public string ProviderFor(string job) =>
@@ -137,8 +139,20 @@ public sealed class GlobalSettings
     public double RetrySeconds { get; set; } = 1.0;
     /// <summary>Per bot, private messages (message_crew) per minute. Prevents "Roger!" ping-pong between agents. 0 = unlimited.</summary>
     public int MaxMessagesPerMinute { get; set; } = 3;
-    public int MaxActionsPerDecision { get; set; } = 3;
-    public int HistoryTurns { get; set; } = 6;
+    /// <summary>Most tool calls one reply may contain (with sequentialActions: the length of a plan).</summary>
+    public int MaxActionsPerDecision { get; set; } = 6;
+    /// <summary>Earlier turns the model sees (compact: one short line each, plus what it did then).</summary>
+    public int HistoryTurns { get; set; } = 10;
+    /// <summary>
+    /// The calls of one reply are a plan carried out step by step: a multi-step task (equip, craft...) or go_to_room
+    /// finishes before the next step starts, and the bot is not asked again until the plan is done, a step fails,
+    /// a player gives an order or something new and urgent happens. false = all calls run at once (old behaviour).
+    /// </summary>
+    public bool SequentialActions { get; set; } = true;
+    /// <summary>A plan running longer than this lets the bot think again (it may keep the plan with keep_plan).</summary>
+    public double MaxPlanSeconds { get; set; } = 180;
+    /// <summary>A go_to_room step that has not arrived after this long stops the plan.</summary>
+    public double PlanStepTimeoutSeconds { get; set; } = 90;
     public int MaxNotes { get; set; } = 5;
     public string LogFile { get; set; } = "llm_agents.log";
     public bool LogPrompts { get; set; } = true;

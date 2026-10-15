@@ -11,8 +11,10 @@ using LlmAgents.Personas;
 
 namespace LlmAgents.Agents;
 
+/// <summary>The tool calls of one reply.</summary>
 /// <param name="PlayerAuthority">The decision carried out a human player's chat order.</param>
-public sealed record AgentCommand(int BotId, ToolCall Call, bool PlayerAuthority = false);
+/// <param name="AutoGoal">null = leave the goal; "" = clear it; text = the player's order becomes the goal.</param>
+public sealed record AgentBatch(int BotId, List<ToolCall> Calls, bool PlayerAuthority = false, string? AutoGoal = null);
 
 /// <summary>
 /// Owns all agents. <see cref="Update"/> must be called every frame on the game thread; it is cheap
@@ -32,7 +34,7 @@ public sealed class AgentManager : IDisposable
     readonly Func<double> clock;
     readonly MemoryStore memory;
     readonly Dictionary<int, BotAgent> agents = new();
-    readonly ConcurrentQueue<AgentCommand> commands = new();
+    readonly ConcurrentQueue<AgentBatch> batches = new();
     readonly ConcurrentQueue<(int Generation, ChatCommand Cmd, List<RosterEntry> Recipients)> routedChats = new();
     readonly List<(double At, ChatCommand Cmd)> pendingChats = new();
     readonly ConcurrentDictionary<Task, byte> inFlight = new();
@@ -41,7 +43,11 @@ public sealed class AgentManager : IDisposable
     double nextFlush;
     int generation; // bumped on Reset, so late answers from a previous round are dropped
 
-    public const int MaxCommandsPerUpdate = 32;
+    public const int MaxBatchesPerUpdate = 16;
+    /// <summary>Tools that start a multi-step task; with sequentialActions the next step waits for its result.</summary>
+    public static readonly IReadOnlyCollection<string> TaskTools = new[] { "equip", "refuel_reactor", "craft", "deconstruct", "treat", "move_item" };
+    /// <summary>Calls that only talk or note things down: a reply made only of these doesn't turn an order into a goal.</summary>
+    static readonly IReadOnlyCollection<string> TalkTools = new[] { "say", "message_crew", "remember", "forget", "note_relationship", "note_preference", "inspect", "keep_plan" };
     /// <summary>Echoed bot-to-bot messages are clipped to this (the game's chat limit is about 200).</summary>
     public const int MaxChatEcho = 190;
     const double FlushSeconds = 15;
@@ -69,6 +75,7 @@ public sealed class AgentManager : IDisposable
     }
 
     public IReadOnlyCollection<BotAgent> Agents => agents.Values;
+    public double Now => clock();
     public BotAgent? GetAgent(int id) => agents.TryGetValue(id, out var a) ? a : null;
     public int PendingChatCount => pendingChats.Count;
     public MemoryStore Memory => memory;
@@ -101,7 +108,8 @@ public sealed class AgentManager : IDisposable
             try { if (game.IsAlive(a.Id)) o = game.Observe(a.Id); } catch { /* status must never fail */ }
             return new BotStatus(a.Id, a.Name, a.Job, ProviderFor(a), a.AiControl, personas.PromptFor(a.Name) != null,
                 o?.CurrentOrder ?? "?", o?.CurrentTask, a.LastDecision,
-                double.IsNaN(a.LastDecisionAt) ? null : now - a.LastDecisionAt, a.RecentErrors(), a.Pending, a.Decisions);
+                double.IsNaN(a.LastDecisionAt) ? null : now - a.LastDecisionAt, a.RecentErrors(), a.Pending, a.Decisions,
+                a.Goal, a.PlanText());
         }).ToList();
         return new ModStatus(ModInfo.Version, Settings.Enabled, features, router.Status(), router.GlobalGate.UsedToday,
             Settings.Global.DailyRequestBudget, bots, Settings.Bots.DisabledCharacters.ToList(), MemoryOn ? memory.Scope : null);
@@ -132,7 +140,7 @@ public sealed class AgentManager : IDisposable
         Interlocked.Increment(ref generation);
         agents.Clear();
         pendingChats.Clear();
-        while (commands.TryDequeue(out _)) { }
+        while (batches.TryDequeue(out _)) { }
         while (routedChats.TryDequeue(out _)) { }
         nextTick = double.NegativeInfinity;
     }
@@ -146,9 +154,10 @@ public sealed class AgentManager : IDisposable
         if (now < nextTick) return;
         nextTick = now + Settings.Global.TickSeconds;
 
-        DrainCommands();
+        DrainCommands(now);
         SyncAgents();
-        DrainReports();
+        DrainReports(now);
+        CheckArrivals(now);
         DrainControl();
         DeliverRoutedChats();
         DispatchChats(now);   // chat routing gets LLM slots before routine thinking
@@ -196,21 +205,129 @@ public sealed class AgentManager : IDisposable
         }
     }
 
-    void DrainCommands()
+    void DrainCommands(double now)
     {
-        int budget = MaxCommandsPerUpdate;
-        while (budget-- > 0 && commands.TryDequeue(out var cmd))
+        int budget = MaxBatchesPerUpdate;
+        while (budget-- > 0 && batches.TryDequeue(out var b))
         {
-            if (!agents.TryGetValue(cmd.BotId, out var agent) || !game.IsAlive(cmd.BotId)) continue;
-            game.BeginCommand(cmd.BotId, cmd.PlayerAuthority);
-            var result = Tools.Execute(cmd.Call, agent, game, this);
-            var line = $"{cmd.Call.Name}({Tools.ArgsToString(cmd.Call)}) -> {result}";
-            agent.RecordResult(line);
-            if (result.StartsWith("error")) agent.AddError(line);
-            // the round log feeds the end-of-round summary: keep what matters, skip routine noise
-            if (cmd.Call.Name is not ("inspect" or "remember" or "return_to_default" or "wait" or "keep_gear" or "forget")
-                && !result.Contains("already")) agent.LogEvent(line);
-            Log.Info($"[{agent.Name}] {line}");
+            if (!agents.TryGetValue(b.BotId, out var agent) || !game.IsAlive(b.BotId)) continue;
+            if (b.AutoGoal != null) agent.SetGoal(b.AutoGoal, now);
+            bool keep = b.Calls.Any(c => c.Name == "keep_plan");
+            var steps = b.Calls.Select(c => new PlanStep(c, b.PlayerAuthority)).ToList();
+
+            if (!Settings.Global.SequentialActions)
+            {
+                agent.ClearPlan();
+                foreach (var step in steps) Run(agent, step);
+                continue;
+            }
+
+            agent.PlanStartedAt = now;
+            agent.PlanUrgency = agent.DecisionUrgency;
+            if (keep && agent.Busy)
+            {
+                // a word in between (say, message...), then the old plan goes on
+                foreach (var step in steps) Run(agent, step);
+                continue;
+            }
+            if (agent.Plan.Count > 0) Log.Info($"[{agent.Name}] new decision replaces planned steps: {agent.PlanText()}");
+            // the new plan starts now (a task still running goes on until a new task replaces it; its report just wakes the bot)
+            agent.ClearPlan();
+            agent.Plan.AddRange(steps);
+            Advance(agent, now);
+        }
+    }
+
+    /// <summary>Runs the plan's next steps until one has to be waited for (a task or walking to a room).</summary>
+    void Advance(BotAgent agent, double now)
+    {
+        while (agent.Waiting == PlanWait.None && agent.Plan.Count > 0)
+        {
+            var step = agent.Plan[0];
+            agent.Plan.RemoveAt(0);
+            var result = Run(agent, step);
+            if (result.StartsWith("error"))
+            {
+                if (agent.Plan.Count > 0) StopPlan(agent, $"step {step.Call.Name} failed");
+                return;
+            }
+            if (TaskTools.Contains(step.Call.Name) && result.StartsWith("ok, started"))
+            {
+                agent.Waiting = PlanWait.Task;
+                agent.WaitingSince = now;
+            }
+            else if (step.Call.Name == "go_to_room" && agent.Plan.Count > 0)
+            {
+                agent.Waiting = PlanWait.Arrival;
+                agent.WaitRoom = ArrivalRoom(result) ?? Tools.Str(step.Call.Arguments, "room");
+                agent.WaitingSince = now;
+                agent.NextArrivalCheckAt = now;
+            }
+        }
+    }
+
+    void StopPlan(BotAgent agent, string why)
+    {
+        var rest = agent.PlanText();
+        agent.ClearPlan();
+        var line = $"plan stopped ({why})" + (rest != null ? "; not done: " + rest : "");
+        agent.RecordResult(line);
+        agent.LogEvent(line);
+        agent.WakeUp = true;
+        Log.Info($"[{agent.Name}] {line}");
+    }
+
+    string Run(BotAgent agent, PlanStep step)
+    {
+        game.BeginCommand(agent.Id, step.Authority);
+        var result = Tools.Execute(step.Call, agent, game, this);
+        var line = $"{step.Call.Name}({Tools.ArgsToString(step.Call)}) -> {result}";
+        if (step.Call.Name != "keep_plan") agent.RecordResult(line);
+        if (result.StartsWith("error")) agent.AddError(line);
+        // the round log feeds the end-of-round summary: keep what matters, skip routine noise
+        if (step.Call.Name is not ("inspect" or "remember" or "return_to_default" or "wait" or "keep_gear" or "forget" or "keep_plan" or "set_goal")
+            && !result.Contains("already")) agent.LogEvent(line);
+        Log.Info($"[{agent.Name}] {line}");
+        return result;
+    }
+
+    static readonly System.Text.RegularExpressions.Regex HeadingTo = new(@"heading to (.+?\[[^\]]+\])");
+    static readonly System.Text.RegularExpressions.Regex RoomTag = new(@"\[[^\]]+\]");
+
+    /// <summary>The room id the game resolved ("ok, heading to Engine Room [h57]").</summary>
+    static string? ArrivalRoom(string result)
+    {
+        var m = HeadingTo.Match(result);
+        return m.Success ? m.Groups[1].Value : null;
+    }
+
+    public static bool InRoom(string? current, string? target)
+    {
+        if (current == null || string.IsNullOrWhiteSpace(target)) return false;
+        if (string.Equals(current, target, StringComparison.OrdinalIgnoreCase)) return true;
+        var tag = RoomTag.Match(target);
+        return tag.Success ? current.Contains(tag.Value, StringComparison.OrdinalIgnoreCase)
+                           : current.StartsWith(target.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>go_to_room steps: go on with the plan once the bot is there.</summary>
+    void CheckArrivals(double now)
+    {
+        foreach (var agent in agents.Values)
+        {
+            if (agent.Waiting != PlanWait.Arrival || now < agent.NextArrivalCheckAt) continue;
+            agent.NextArrivalCheckAt = now + 1.0;
+            if (!game.IsAlive(agent.Id)) { agent.ClearPlan(); continue; }
+            if (InRoom(game.Observe(agent.Id).Room, agent.WaitRoom))
+            {
+                agent.Waiting = PlanWait.None;
+                agent.WaitRoom = null;
+                Advance(agent, now);
+            }
+            else if (now - agent.WaitingSince > Settings.Global.PlanStepTimeoutSeconds)
+            {
+                StopPlan(agent, $"did not reach {agent.WaitRoom} in {Settings.Global.PlanStepTimeoutSeconds:0}s");
+            }
         }
     }
 
@@ -238,16 +355,29 @@ public sealed class AgentManager : IDisposable
     }
 
     /// <summary>Results of multi-step tasks (equip, craft, treat...) go back to the bot, which then thinks again.</summary>
-    void DrainReports()
+    void DrainReports(double now)
     {
         foreach (var r in game.DrainReports())
         {
             if (!agents.TryGetValue(r.BotId, out var agent)) continue;
             agent.RecordResult(r.Text);
             agent.LogEvent(r.Text);
-            if (r.Text.Contains("failed")) agent.AddError(r.Text);
-            agent.WakeUp = true;
+            bool failed = r.Text.Contains("failed") || r.Text.Contains("cancelled");
+            if (failed) agent.AddError(r.Text);
             Log.Info($"[{agent.Name}] {r.Text}");
+            if (agent.Waiting == PlanWait.Task)
+            {
+                agent.Waiting = PlanWait.None;
+                if (failed && agent.Plan.Count > 0) { StopPlan(agent, "a task failed"); continue; }
+                if (agent.Plan.Count > 0)
+                {
+                    // next step right away; the model sees all results when the plan is done
+                    Advance(agent, now);
+                    if (!agent.Busy) agent.WakeUp = true;
+                    continue;
+                }
+            }
+            agent.WakeUp = true;
         }
     }
 
@@ -314,23 +444,35 @@ public sealed class AgentManager : IDisposable
         // Mail is read at the next decision, not instantly: waking the recipient at once made bots answer
         // each other back and forth ("Roger!" - "Thanks!") faster than anything else happened.
         bool mailDue = agent.HasMail && since >= Math.Max(g.MinSecondsBetweenCallsPerBot, interval / 2);
-        bool due = playerOrder || agent.WakeUp || mailDue || (autonomous && since >= interval);
+        // Carrying out a plan: no routine thinking (and mail waits) until it is done or has run too long.
+        bool busy = agent.Busy && g.SequentialActions;
+        bool overdue = busy && now - agent.PlanStartedAt >= g.MaxPlanSeconds;
+        bool due = playerOrder || agent.WakeUp || (busy ? overdue : mailDue || (autonomous && since >= interval));
         if (!due && !autonomous) return null;
 
         // Observe() walks hulls/gaps/characters, so between scheduled decisions only check urgency now and then.
         if (!due && now < agent.NextUrgencyCheckAt) return null;
 
         Observation obs = game.Observe(agent.Id);
-        if (!due && !obs.Urgent)
+        // mid-plan only a NEW urgent condition interrupts (the plan was made knowing the old ones)
+        bool urgent = busy ? NewUrgency(obs.UrgencyKey, agent.PlanUrgency) : obs.Urgent;
+        if (!due && !urgent)
         {
             agent.NextUrgencyCheckAt = now + g.UrgencyCheckSeconds;
             return null;
         }
 
         var tier = playerOrder ? Tier.PlayerOrder
-                 : obs.Urgent || agent.HasMail || agent.WakeUp ? Tier.Urgent
+                 : urgent || agent.HasMail || agent.WakeUp ? Tier.Urgent
                  : Tier.Routine;
         return new Candidate(agent, obs, tier, due);
+    }
+
+    static bool NewUrgency(string current, string known)
+    {
+        if (current.Length == 0) return false;
+        var old = known.Split(',', StringSplitOptions.RemoveEmptyEntries);
+        return current.Split(',').Any(f => !old.Contains(f));
     }
 
     void StartDecision(BotAgent agent, Observation obs, LlmRouter.Reservation reservation, double now)
@@ -343,6 +485,9 @@ public sealed class AgentManager : IDisposable
         obs.LastActionResults = agent.TakeResults();
         if (agent.AiControl) obs.Control = $"FULL AI CONTROL (given by {agent.ControlBy ?? "a player"})";
         if (MemoryOn) obs.Memory = MemoryFor(agent, obs);
+        if (agent.Goal != null) obs.Goal = $"{agent.Goal} (set {ModStatus.Ago(now - agent.GoalSetAt)})";
+        if (g.SequentialActions) obs.Plan = agent.PlanText();
+        agent.DecisionUrgency = obs.UrgencyKey;
         foreach (var o in takenOrders) agent.LogEvent("order: " + o.Text);
 
         agent.WakeUp = false;
@@ -410,13 +555,28 @@ public sealed class AgentManager : IDisposable
                 // A human player's order may replace orders given through the command menu (under full AI control the
                 // game adapter allows that anyway, but a locked diving suit still needs a human's word).
                 bool authority = takenOrders.Any(o => o.Authority);
-                foreach (var c in calls) commands.Enqueue(new AgentCommand(botId, c, authority));
+                batches.Enqueue(new AgentBatch(botId, calls, authority, AutoGoal(takenOrders, calls)));
             }
             catch (OperationCanceledException) { }
             catch (Exception e) { Log.Error($"[{agent.Name}] decision failed: {e.Message}"); }
             finally { agent.Pending = false; }
         }));
     }
+
+    /// <summary>A player's order becomes the bot's goal, so it is not forgotten after a few small steps.</summary>
+    static string? AutoGoal(List<PendingOrder> orders, List<ToolCall> calls)
+    {
+        if (orders.Count == 0 || calls.Any(c => c.Name == "set_goal")) return null;
+        if (calls.Any(c => c.Name == "return_to_default")) return ""; // "dismissed"
+        if (calls.All(c => TalkTools.Contains(c.Name))) return null;   // a greeting or a question, not a job
+        return "carry out: " + string.Join(" | ", orders.Select(o => GoalText(o.Text)));
+    }
+
+    static readonly System.Text.RegularExpressions.Regex OrderNoise = new(
+        @"\s*(Hint:.*$|\[also sent to:[^\]]*\]|\('me' = [^)]*\))", System.Text.RegularExpressions.RegexOptions.Singleline);
+
+    /// <summary>The order without the dispatcher's routing notes and hints.</summary>
+    public static string GoalText(string order) => OrderNoise.Replace(order, "").Trim();
 
     void Track(Task task)
     {

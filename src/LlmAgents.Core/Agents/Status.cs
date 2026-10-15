@@ -8,7 +8,7 @@ namespace LlmAgents
 {
     public static class ModInfo
     {
-        public const string Version = "0.3.0";
+        public const string Version = "0.4.0";
     }
 }
 
@@ -18,7 +18,7 @@ namespace LlmAgents.Agents
 
     public sealed record BotStatus(int Id, string Name, string Job, string Provider, bool AiControl, bool HasPersona,
         string Orders, string? Task, string? LastDecision, double? SecondsSinceDecision, IReadOnlyList<string> RecentErrors,
-        bool Thinking, int Decisions);
+        bool Thinking, int Decisions, string? Goal = null, string? Plan = null);
 
     /// <summary>Everything !llm status and the settings window's status tab show.</summary>
     public sealed record ModStatus(string Version, bool Enabled, IReadOnlyList<FeatureStatus> Features,
@@ -49,6 +49,8 @@ namespace LlmAgents.Agents
             {
                 sb.Append($"{b.Name} ({b.Job}{(b.AiControl ? ", FULL CONTROL" : "")}): {b.Orders}");
                 if (b.Task != null) sb.Append($"; task: {b.Task}");
+                if (b.Goal != null) sb.Append($"; goal: {Tools_Clip(b.Goal, 80)}");
+                if (b.Plan != null) sb.Append($"; plan: {Tools_Clip(b.Plan, 90)}");
                 sb.Append($"; {(b.Thinking ? "thinking now" : "last decision " + Ago(b.SecondsSinceDecision))}");
                 if (b.LastDecision != null) sb.Append($": {Tools_Clip(b.LastDecision, 90)}");
                 if (b.RecentErrors.Count > 0) sb.Append($"; last error: {Tools_Clip(b.RecentErrors[^1], 90)}");

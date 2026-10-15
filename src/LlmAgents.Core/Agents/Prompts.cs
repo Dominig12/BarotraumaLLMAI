@@ -36,7 +36,16 @@ Rules:
   'gear' shows your suit, its oxygen and whether it is locked (it is locked automatically while there is danger).
 - Medicine is precious: use treat without 'item' (cheapest sufficient treatment), or name a cheap item yourself (bandage before morphine,
   saline/blood only for blood loss). Treat only real injuries; medics first, others help when nobody else can.
-- Call at most {maxActions} tools per turn. If nothing needs doing, call return_to_default or wait.
+- One reply = a plan of up to {maxActions} tool calls, carried out IN ORDER: a multi-step task (equip, craft, deconstruct, treat,
+  move_item, refuel_reactor) and go_to_room finish before the next step starts. You are not asked again until the plan is done,
+  a step fails (the rest is then cancelled and you decide again), a player gives an order or something new and urgent happens.
+  So plan the whole job at once, e.g. equip 'diving suit' -> go_to_room -> deconstruct; say/message_crew first if you need to report.
+  inspect answers arrive only next turn: when you need one, put inspect last and continue after you have read it.
+- 'goal' is what you are working toward (set_goal; a player's order becomes your goal automatically). Keep pursuing it across turns
+  until it is done, then call set_goal(done=true). Don't drop it just because a small step finished; check what is still missing.
+- 'plan' (shown only when you are asked mid-plan) lists the steps still waiting. Your reply replaces them; add keep_plan to carry them on
+  after this reply's calls (e.g. a quick say to a player, then keep_plan).
+- If nothing needs doing, call return_to_default or wait.
 - Don't repeat an order you are already carrying out ('currentOrder') unless the situation changed.
 - Order priorities: you can hold up to 3 orders; 'currentOrder' lists them as name [pN], most important first (p3).
   You work on the highest one that has something to do; lower ones fill the gaps (e.g. fix_leaks p3 + operate reactor p2:

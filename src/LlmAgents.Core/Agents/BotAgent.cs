@@ -9,6 +9,11 @@ namespace LlmAgents.Agents;
 /// <summary>An order waiting for the bot's next decision.</summary>
 public sealed record PendingOrder(string Text, bool Authority);
 
+/// <summary>One step of a multi-step reply. Authority = the reply carried out a human player's order.</summary>
+public sealed record PlanStep(ToolCall Call, bool Authority);
+
+public enum PlanWait { None, Task, Arrival }
+
 /// <summary>State of one LLM-driven bot: memory, inbox, history, scheduling flags.</summary>
 public sealed class BotAgent
 {
@@ -70,7 +75,7 @@ public sealed class BotAgent
     readonly ConcurrentQueue<PendingOrder> playerOrders = new();
 
     public const int MaxNoteLength = 200;
-    public const int MaxResults = 6;
+    public const int MaxResults = 10;
     public const int MaxInbox = 10;
     public const int MaxRoundLog = 40;
 
@@ -179,6 +184,52 @@ public sealed class BotAgent
             results.InsertRange(0, actionResults);
             while (results.Count > MaxResults) results.RemoveAt(0);
         }
+    }
+
+    // ---------------------------------------------------------------- goal and plan (game thread only)
+
+    /// <summary>What the bot set out to do (set_goal, or a player's order). Shown every turn until done or replaced,
+    /// so the intention survives the short history window.</summary>
+    public string? Goal { get; private set; }
+    public double GoalSetAt { get; private set; }
+
+    public void SetGoal(string? goal, double now)
+    {
+        Goal = string.IsNullOrWhiteSpace(goal) ? null : Tools.Clip(goal.Trim(), MaxNoteLength);
+        GoalSetAt = now;
+    }
+
+    /// <summary>Steps of the last reply that still wait for their turn (carried out one after another).</summary>
+    public readonly List<PlanStep> Plan = new();
+    public PlanWait Waiting { get; set; } = PlanWait.None;
+    /// <summary>go_to_room step: the room to reach before the next step.</summary>
+    public string? WaitRoom { get; set; }
+    public double WaitingSince { get; set; }
+    public double PlanStartedAt { get; set; }
+    /// <summary>Urgent conditions already known when the plan was made: only new ones interrupt it.</summary>
+    public string PlanUrgency { get; set; } = "";
+    /// <summary>Urgency flags of the observation the current decision was made from.</summary>
+    public string DecisionUrgency { get; set; } = "";
+    public double NextArrivalCheckAt { get; set; }
+
+    /// <summary>Carrying out a plan or waiting for a task: no new decision unless something important happens.</summary>
+    public bool Busy => Plan.Count > 0 || Waiting != PlanWait.None;
+
+    public string? PlanText()
+    {
+        if (!Busy) return null;
+        var parts = new List<string>();
+        if (Waiting == PlanWait.Task) parts.Add("now: waiting for the current task");
+        else if (Waiting == PlanWait.Arrival) parts.Add($"now: walking to {WaitRoom}");
+        parts.AddRange(Plan.Select((p, i) => $"{i + 1}. {p.Call.Name}({Tools.ArgsToString(p.Call)})"));
+        return string.Join("; ", parts);
+    }
+
+    public void ClearPlan()
+    {
+        Plan.Clear();
+        Waiting = PlanWait.None;
+        WaitRoom = null;
     }
 
     public List<LlmTurn> HistorySnapshot() { lock (sync) return history.ToList(); }

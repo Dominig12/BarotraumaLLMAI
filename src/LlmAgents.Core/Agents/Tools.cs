@@ -87,6 +87,10 @@ public static class Tools
         new("set_order_priority", "Reorder your current orders ('currentOrder' shows them as name [pN]). 3 = most important. 0 = drop that order.",
             Schema(("order", "string", "The order as shown in currentOrder (e.g. 'fixleaks', 'operatereactor') or the tool name (e.g. 'fix_leaks', 'reactor')", null, true),
                    ("priority", "integer", "0-3", null, true))),
+        new("set_goal", "Set what you are trying to achieve over the next minutes (e.g. 'craft 3 bandages for Ivan', 'keep the reactor fuelled'). It is shown to you every turn as 'goal', so you don't lose track between small steps. done=true when it is achieved or no longer needed.",
+            Schema(("goal", "string", "The goal, one short sentence (leave out with done=true)", null, false),
+                   ("done", "boolean", "true = the goal is achieved or dropped", null, false))),
+        new("keep_plan", "Only when 'plan' is shown: keep carrying out those planned steps after the other calls of this reply. Without it, this reply replaces them.", NoArgs()),
         new("return_to_default", "Drop your orders and let your normal instincts take over. Use when nothing special is needed.", NoArgs()),
         new("say", "Say something out loud in the game chat (players see it). Keep it short and in character.",
             Schema(("text", "string", $"What to say (max {MaxSayLength} chars)", null, true))),
@@ -210,6 +214,19 @@ public static class Tools
                     });
                 case "return_to_default":
                     return game.Dismiss(agent.Id);
+                case "set_goal":
+                {
+                    if (Bool(a, "done") == true || string.IsNullOrWhiteSpace(Str(a, "goal")))
+                    {
+                        var old = agent.Goal;
+                        agent.SetGoal(null, mgr.Now);
+                        return old == null ? "ok (no goal)" : "ok, goal finished: " + old;
+                    }
+                    agent.SetGoal(Str(a, "goal"), mgr.Now);
+                    return "ok, goal: " + agent.Goal;
+                }
+                case "keep_plan":
+                    return agent.Busy ? "ok, continuing the plan" : "ok (no plan left)";
                 case "say":
                     return Need(Str(a, "text"), "text", v =>
                     {
