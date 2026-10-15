@@ -47,7 +47,7 @@ public class AgentManagerTests
     {
         var settings = Fixtures.Settings(global, extraRoot: extraRoot);
         var llm = new ScriptedLlm();
-        var mgr = new AgentManager(settings, game, new LlmRouter(settings, llm.Handler()), clock.Get);
+        var mgr = new AgentManager(settings, game, new LlmRouter(settings, llm.Handler(), clock.Utc), clock.Get);
         return (mgr, llm);
     }
 
@@ -159,7 +159,7 @@ public class AgentManagerTests
         game.AddBot(1, "Ann", "mechanic");
         var settings = Fixtures.Settings();
         var handler = new FakeHandler(_ => (HttpStatusCode.ServiceUnavailable, "down"));
-        var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler), clock.Get);
+        var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
         for (int i = 0; i < 30; i++) await Step(mgr);
         Assert.Empty(game.Actions);
         Assert.False(mgr.GetAgent(1)!.Pending);
@@ -202,7 +202,7 @@ public class AgentManagerTests
             await gate.WaitAsync(ct);
             return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("fix_leaks", "{}")));
         });
-        var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler), clock.Get);
+        var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
         mgr.Update();              // request in flight
         mgr.Reset();               // new round
         gate.Release(5);
@@ -233,7 +233,7 @@ public class AgentManagerTests
         var settings = Fixtures.Settings();
         settings.Bots.ProviderByJob["captain"] = "b";
         var handler = new FakeHandler(_ => (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("wait", "{}"))));
-        var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler), clock.Get);
+        var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
         await Step(mgr);
         var byHost = handler.Requests.ToDictionary(
             r => JsonNode.Parse(r.Body["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>())!["name"]!.GetValue<string>(),
@@ -277,7 +277,7 @@ public class AgentManagerTests
             await release.WaitAsync(ct);
             return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("wait", "{}")));
         });
-        var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler), clock.Get);
+        var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
 
         mgr.Update();                           // Ann takes the only slot, Bob is skipped without losing his turn
         SpinWait.SpinUntil(() => !seen.IsEmpty && !mgr.GetAgent(2)!.Pending, 2000);
@@ -309,14 +309,15 @@ public class AgentManagerTests
                 foreach (var m in a) inboxSeen.Enqueue(m!.GetValue<string>());
             return down ? (HttpStatusCode.ServiceUnavailable, "") : (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("wait", "{}")));
         });
-        var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler), clock.Get);
+        var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
         mgr.Update();
         await mgr.WhenIdle();
         mgr.DeliverMessage(mgr.GetAgent(1)!, "Bob", "pump the ballast");
         clock.Advance(2.5); mgr.Update(); await mgr.WhenIdle();   // Bob reads it, provider is down
         down = false;
         clock.Advance(11); mgr.Update(); await mgr.WhenIdle();    // next try still carries the message
-        Assert.True(inboxSeen.Count(m => m == "Ann: pump the ballast") >= 2);
+        // while the providers were paused the message waited in the inbox; it reaches the model once they recover
+        Assert.Contains("Ann: pump the ballast", inboxSeen);
     }
 
     [Fact]
@@ -330,5 +331,25 @@ public class AgentManagerTests
         Assert.StartsWith("error:", mgr.DeliverMessage(ann, "Bob", "too many"));
         clock.Advance(61);
         Assert.StartsWith("ok", mgr.DeliverMessage(ann, "Bob", "again"));
+    }
+
+    [Fact]
+    public async Task GemmaTextRepliesAreExecutedAndHistoryStaysClean()
+    {
+        game.AddBot(1, "Alan Beltran", "medicaldoctor");
+        var (mgr, llm) = Create();
+        int n = 0;
+        llm.ByBot["Alan Beltran"] = _ => n++ == 0
+            ? Fixtures.OpenAiTextResponse("go_to_room{room:<|\"|>Engine Room [h10]<|\"|>}<tool_call|>")
+            : Fixtures.OpenAiTextResponse("// Okay, I'm thinking about what to do next, the reactor is fine.");
+        await Step(mgr); await Step(mgr);
+        Assert.Contains("1:goto Engine Room [h10]", game.Actions);
+
+        for (int i = 0; i < 21; i++) await Step(mgr);   // second decision: prose only
+        for (int i = 0; i < 21; i++) await Step(mgr);   // third decision sees the feedback
+        var third = llm.Seen.Where(s => s.Bot == "Alan Beltran").ElementAt(2);
+        var assistantTurns = third.Messages.Where(m => m!["role"]!.GetValue<string>() == "assistant").Select(m => m!["content"]!.GetValue<string>()).ToList();
+        Assert.Equal(new[] { "go_to_room(room=\"Engine Room [h10]\")", "(no tool call)" }, assistantTurns);
+        Assert.Contains(third.Observation["lastActionResults"]!.AsArray(), x => x!.GetValue<string>().Contains("no valid tool call"));
     }
 }

@@ -249,14 +249,19 @@ public sealed class AgentManager : IDisposable
                 if (gen != Volatile.Read(ref generation)) return;
 
                 var calls = r.Response.ToolCalls.Take(g.MaxActionsPerDecision).ToList();
-                var summary = calls.Count == 0
-                    ? (string.IsNullOrWhiteSpace(r.Response.Text) ? "(no action)" : Tools.Clip(r.Response.Text.Trim(), 300))
-                    : string.Join("; ", calls.Select(c => $"{c.Name}({Tools.ArgsToString(c)})"));
+                // Only canonical calls go into the history: raw broken replies would teach the model to keep writing them.
+                var summary = calls.Count == 0 ? "(no tool call)" : string.Join("; ", calls.Select(c => $"{c.Name}({Tools.ArgsToString(c)})"));
                 agent.AddExchange(obsJson, summary, g.HistoryTurns);
+                if (calls.Count == 0 && !string.IsNullOrWhiteSpace(r.Response.Text))
+                {
+                    agent.RecordResult("error: your last reply contained no valid tool call, so nothing happened. Reply only with tool calls.");
+                    Log.Warn($"[{agent.Name}] reply had no recognizable tool call ({r.Provider}); if this repeats, set \"toolMode\": \"prompt\" for this provider. Reply: {Tools.Clip(JsonUtil.OneLine(r.Response.Text), 300)}");
+                }
                 // keep player orders visible after this exchange scrolls out of the history
                 foreach (var o in takenOrders) agent.AddNote("Player order: " + o, g.MaxNotes);
 
-                if (g.LogPrompts) Log.Info($"[{agent.Name}] <- {r.Provider}: {summary}");
+                if (g.LogPrompts) Log.Info($"[{agent.Name}] <- {r.Provider}: {summary}" +
+                    (g.LogRawReplies && !string.IsNullOrWhiteSpace(r.Response.Text) ? $"  [raw: {Tools.Clip(JsonUtil.OneLine(r.Response.Text), 500)}]" : ""));
                 foreach (var c in calls) commands.Enqueue(new AgentCommand(botId, c));
             }
             catch (OperationCanceledException) { }

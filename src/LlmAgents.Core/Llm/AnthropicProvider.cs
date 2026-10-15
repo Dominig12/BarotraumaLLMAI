@@ -32,16 +32,17 @@ public sealed class AnthropicProvider : ILlmProvider
         foreach (var t in NormalizeTurns(req.Turns))
             messages.Add(new JsonObject { ["role"] = t.Role, ["content"] = t.Text });
 
+        bool promptMode = cfg.ToolMode == "prompt" && req.Tools.Count > 0;
         var body = new JsonObject
         {
             ["model"] = cfg.Model,
             ["max_tokens"] = req.MaxOutputTokens,
             ["temperature"] = req.Temperature,
-            ["system"] = req.System,
+            ["system"] = promptMode ? ToolPrompt.Build(req.System, req.Tools) : req.System,
             ["messages"] = messages,
         };
 
-        if (req.Tools.Count > 0)
+        if (req.Tools.Count > 0 && !promptMode)
         {
             var tools = new JsonArray();
             foreach (var t in req.Tools)
@@ -58,7 +59,7 @@ public sealed class AnthropicProvider : ILlmProvider
         return body;
     }
 
-    public static LlmResponse ParseResponse(string raw, ICollection<string> knownTools)
+    public static LlmResponse ParseResponse(string raw, IReadOnlyList<ToolSpec> tools)
     {
         var root = JsonNode.Parse(raw) as JsonObject ?? throw new FormatException("response is not a JSON object");
         if (JsonUtil.Str(root["type"]) == "error")
@@ -84,7 +85,7 @@ public sealed class AnthropicProvider : ILlmProvider
                 }
             }
         }
-        if (calls.Count == 0) calls = TextToolCallParser.Parse(text.ToString(), knownTools);
+        if (calls.Count == 0) calls = TextToolCallParser.Parse(text.ToString(), tools);
 
         return new LlmResponse(text.ToString(), calls,
             JsonUtil.Int(root["usage"]?["input_tokens"]),
@@ -111,7 +112,7 @@ public sealed class AnthropicProvider : ILlmProvider
             using var resp = await http.SendAsync(msg, cts.Token).ConfigureAwait(false);
             raw = await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
-                throw new HttpRequestException($"HTTP {(int)resp.StatusCode}: {JsonUtil.Trim(raw)}");
+                throw new HttpRequestException($"HTTP {(int)resp.StatusCode}: {JsonUtil.Trim(JsonUtil.OneLine(raw))}", null, resp.StatusCode);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -120,7 +121,7 @@ public sealed class AnthropicProvider : ILlmProvider
 
         try
         {
-            return ParseResponse(raw, req.Tools.Select(t => t.Name).ToHashSet());
+            return ParseResponse(raw, req.Tools);
         }
         catch (JsonException e)
         {

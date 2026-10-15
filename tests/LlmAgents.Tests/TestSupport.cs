@@ -171,4 +171,7 @@ public sealed class FakeClock
     public double Now;
     public double Get() => Now;
     public void Advance(double seconds) => Now += seconds;
+    static readonly DateTime Epoch = new(2026, 10, 15, 12, 0, 0, DateTimeKind.Utc);
+    /// <summary>Same fake time as a UTC clock, for the router's limits and provider pauses.</summary>
+    public DateTime Utc() => Epoch.AddSeconds(Now);
 }

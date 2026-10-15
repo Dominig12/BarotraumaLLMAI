@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -16,6 +17,7 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
 {
     readonly ProviderConfig cfg;
     readonly HttpClient http;
+    volatile bool jsonFormatUnsupported; // the server rejected response_format once; don't send it again
 
     public string Name => cfg.Name;
 
@@ -25,9 +27,13 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
         this.http = http;
     }
 
-    public static JsonObject BuildBody(ProviderConfig cfg, LlmRequest req)
+    public static JsonObject BuildBody(ProviderConfig cfg, LlmRequest req) => BuildBody(cfg, req, allowJsonFormat: true);
+
+    static JsonObject BuildBody(ProviderConfig cfg, LlmRequest req, bool allowJsonFormat)
     {
-        var messages = new JsonArray { new JsonObject { ["role"] = "system", ["content"] = req.System } };
+        bool promptMode = cfg.ToolMode == "prompt" && req.Tools.Count > 0;
+        var system = promptMode ? ToolPrompt.Build(req.System, req.Tools) : req.System;
+        var messages = new JsonArray { new JsonObject { ["role"] = "system", ["content"] = system } };
         foreach (var t in req.Turns)
             messages.Add(new JsonObject { ["role"] = t.Role, ["content"] = t.Text });
 
@@ -40,7 +46,11 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
             ["stream"] = false,
         };
 
-        if (req.Tools.Count > 0)
+        if (promptMode)
+        {
+            if (cfg.JsonResponseFormat && allowJsonFormat) body["response_format"] = new JsonObject { ["type"] = "json_object" };
+        }
+        else if (req.Tools.Count > 0)
         {
             var tools = new JsonArray();
             foreach (var t in req.Tools)
@@ -62,7 +72,7 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
         return body;
     }
 
-    public static LlmResponse ParseResponse(string raw, ICollection<string> knownTools)
+    public static LlmResponse ParseResponse(string raw, IReadOnlyList<ToolSpec> tools)
     {
         var root = JsonNode.Parse(raw) as JsonObject ?? throw new FormatException("response is not a JSON object");
         if (root["error"] is JsonNode err) throw new FormatException("provider error: " + JsonUtil.Trim(err.ToJsonString()));
@@ -81,7 +91,7 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
                 calls.Add(new ToolCall(name!, ParseArgs(fn?["arguments"])));
             }
         }
-        if (calls.Count == 0) calls = TextToolCallParser.Parse(text, knownTools);
+        if (calls.Count == 0) calls = TextToolCallParser.Parse(text, tools);
 
         return new LlmResponse(text, calls,
             JsonUtil.Int(root["usage"]?["prompt_tokens"]),
@@ -90,25 +100,25 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
 
     public async Task<LlmResponse> CompleteAsync(LlmRequest req, CancellationToken ct)
     {
-        var body = BuildBody(cfg, req);
-        using var msg = new HttpRequestMessage(HttpMethod.Post, cfg.BaseUrl.TrimEnd('/') + "/chat/completions")
-        {
-            Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
-        };
-        var key = cfg.ResolvedKey;
-        if (!string.IsNullOrEmpty(key)) msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
-        foreach (var kv in cfg.ExtraHeaders) msg.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
-
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(cfg.TimeoutSeconds));
 
         string raw;
         try
         {
-            using var resp = await http.SendAsync(msg, cts.Token).ConfigureAwait(false);
-            raw = await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
-                throw new HttpRequestException($"HTTP {(int)resp.StatusCode}: {JsonUtil.Trim(raw)}");
+            var body = BuildBody(cfg, req, allowJsonFormat: !jsonFormatUnsupported);
+            var (status, text) = await SendAsync(body, cts.Token).ConfigureAwait(false);
+            if (status == HttpStatusCode.BadRequest && body.ContainsKey("response_format") &&
+                text.Contains("response_format", StringComparison.OrdinalIgnoreCase))
+            {
+                // e.g. LM Studio only accepts json_schema: retry once without it and remember
+                jsonFormatUnsupported = true;
+                Log.Warn($"provider '{cfg.Name}' does not support response_format json_object; continuing without it");
+                (status, text) = await SendAsync(BuildBody(cfg, req, allowJsonFormat: false), cts.Token).ConfigureAwait(false);
+            }
+            if ((int)status < 200 || (int)status > 299)
+                throw new HttpRequestException($"HTTP {(int)status}: {JsonUtil.Trim(JsonUtil.OneLine(text))}", null, status);
+            raw = text;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -117,12 +127,26 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
 
         try
         {
-            return ParseResponse(raw, req.Tools.Select(t => t.Name).ToHashSet());
+            return ParseResponse(raw, req.Tools);
         }
         catch (JsonException e)
         {
             throw new FormatException("invalid JSON response: " + e.Message);
         }
+    }
+
+    async Task<(HttpStatusCode Status, string Body)> SendAsync(JsonObject body, CancellationToken ct)
+    {
+        using var msg = new HttpRequestMessage(HttpMethod.Post, cfg.BaseUrl.TrimEnd('/') + "/chat/completions")
+        {
+            Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
+        };
+        var key = cfg.ResolvedKey;
+        if (!string.IsNullOrEmpty(key)) msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+        foreach (var kv in cfg.ExtraHeaders) msg.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+        using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
+        var text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        return (resp.StatusCode, text);
     }
 
     // OpenAI returns arguments as a JSON *string*; some servers (e.g. Ollama) return an object. Accept both.

@@ -107,13 +107,22 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         last_user = next((m for m in reversed(body["messages"]) if m["role"] == "user"), {"content": ""})
         tool_names = [t["function"]["name"] for t in body.get("tools", [])]
-        if "route_message" in tool_names:
+        prompt_mode = not tool_names  # toolMode=prompt: tools are described in the system prompt, reply is JSON text
+        system = body["messages"][0]["content"] if body.get("messages") else ""
+        if "route_message" in tool_names or (prompt_mode and "route_message" in system):
             calls = [{"name": "route_message", "arguments": {"recipients": route(last_user["content"]), "reason": "mock"}}]
         else:
             try:
                 calls = decide(json.loads(last_user["content"]))
             except Exception:
                 calls = [{"name": "wait", "arguments": {}}]
+        if prompt_mode:
+            content = json.dumps({"calls": calls}, ensure_ascii=False)
+            return self._send(200, {
+                "id": "mock-" + uuid.uuid4().hex[:8], "object": "chat.completion",
+                "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+            })
         tool_calls = [
             {
                 "id": "call_" + uuid.uuid4().hex[:8],

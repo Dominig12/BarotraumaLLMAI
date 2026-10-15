@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,7 +18,17 @@ public sealed record RouteResult(RouteStatus Status, LlmResponse? Response, stri
 /// </summary>
 public sealed class LlmRouter : IDisposable
 {
-    sealed record Entry(ProviderConfig Config, ILlmProvider Provider, LlmGate Gate);
+    sealed class Entry
+    {
+        public Entry(ProviderConfig config, ILlmProvider provider, LlmGate gate) { Config = config; Provider = provider; Gate = gate; }
+        public ProviderConfig Config { get; }
+        public ILlmProvider Provider { get; set; }
+        public LlmGate Gate { get; }
+        // health: guarded by `lock (this)`
+        public DateTime PausedUntil;
+        public int Failures;
+        public string LastError = "";
+    }
 
     /// <summary>Held slots for one request. Dispose to release (CompleteAsync does it for you).</summary>
     public sealed class Reservation : IDisposable
@@ -44,10 +55,12 @@ public sealed class LlmRouter : IDisposable
     readonly LlmGate globalGate;
     readonly ModSettings settings;
     readonly HttpClient http;
+    readonly Func<DateTime> utcNow;
 
     public LlmRouter(ModSettings settings, HttpMessageHandler? handler = null, Func<DateTime>? utcNow = null)
     {
         this.settings = settings;
+        this.utcNow = utcNow ?? (() => DateTime.UtcNow);
         globalGate = new LlmGate(
             settings.Global.MaxConcurrentRequests,
             settings.Global.RequestsPerMinute,
@@ -95,10 +108,22 @@ public sealed class LlmRouter : IDisposable
         return false;
     }
 
+    /// <summary>Seconds until the provider is used again after errors (0 = healthy).</summary>
+    public double PausedFor(string provider)
+    {
+        if (!providers.TryGetValue(provider, out var e)) return 0;
+        lock (e) return Math.Max(0, (e.PausedUntil - utcNow()).TotalSeconds);
+    }
+
     bool TryReserveExact(string name, out Reservation? reservation, out string reason)
     {
         reservation = null;
         var e = providers[name];
+        lock (e)
+        {
+            var left = (e.PausedUntil - utcNow()).TotalSeconds;
+            if (left > 0) { reason = $"{name}: paused {left:0}s after errors ({e.LastError})"; return false; }
+        }
         // Provider gate first, so a provider that is full does not burn global quota.
         var lease = e.Gate.TryEnter(out var why);
         if (lease == null) { reason = $"{name}: {why}"; return false; }
@@ -135,6 +160,7 @@ public sealed class LlmRouter : IDisposable
                     var req = new LlmRequest(system, turns, tools, e.Config.MaxOutputTokens, e.Config.Temperature);
                     var res = await e.Provider.CompleteAsync(req, ct).ConfigureAwait(false);
                     e.Gate.ReportTokens(res.InputTokens + res.OutputTokens);
+                    MarkHealthy(e);
                     return new RouteResult(RouteStatus.Ok, res, current.Provider, "");
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -144,6 +170,7 @@ public sealed class LlmRouter : IDisposable
                 catch (Exception ex)
                 {
                     detail += (detail.Length > 0 ? "; " : "") + $"{current.Provider}: {ex.Message}";
+                    MarkFailed(e, ex);
                 }
 
                 var fb = settings.FallbackProvider;
@@ -159,6 +186,44 @@ public sealed class LlmRouter : IDisposable
         finally
         {
             current.Dispose();
+        }
+    }
+
+    void MarkHealthy(Entry e)
+    {
+        lock (e)
+        {
+            if (e.Failures > 0) Log.Warn($"provider '{e.Config.Name}' is working again");
+            e.Failures = 0;
+            e.PausedUntil = DateTime.MinValue;
+        }
+    }
+
+    void MarkFailed(Entry e, Exception ex)
+    {
+        var code = (ex as HttpRequestException)?.StatusCode;
+        bool permanent = code is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.NotFound
+                         or HttpStatusCode.PaymentRequired;
+        bool transient = permanent || code is HttpStatusCode.TooManyRequests || (int?)code >= 500
+                         || ex is TimeoutException || (ex is HttpRequestException && code == null);
+        if (!transient) return; // e.g. a malformed answer: the provider itself is fine
+
+        lock (e)
+        {
+            e.Failures++;
+            e.LastError = code != null ? $"HTTP {(int)code.Value}" : ex.GetType().Name.Replace("Exception", "");
+            double pause = permanent
+                ? settings.Global.ProviderAuthCooldownSeconds
+                : Math.Min(settings.Global.ProviderBackoffMaxSeconds, 5 * Math.Pow(2, Math.Min(e.Failures - 1, 10)));
+            e.PausedUntil = utcNow().AddSeconds(pause);
+            if (permanent || e.Failures == 1 || pause >= settings.Global.ProviderBackoffMaxSeconds)
+            {
+                var hint = code == HttpStatusCode.Forbidden
+                    ? " (403: access denied: region not supported by the API, or the key has no access. Use a VPN/proxy or another provider)"
+                    : code == HttpStatusCode.Unauthorized ? " (401: wrong or missing API key; check apiKey/apiKeyEnv)"
+                    : code == HttpStatusCode.NotFound ? " (404: wrong baseUrl or model name)" : "";
+                Log.Warn($"provider '{e.Config.Name}' paused for {pause:0}s: {JsonUtil.Trim(ex.Message, 200)}{hint}");
+            }
         }
     }
 

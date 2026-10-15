@@ -59,6 +59,7 @@ public sealed class ModSettings
         {
             p.Type = (p.Type ?? "").Trim().ToLowerInvariant();
             p.ExtraHeaders ??= new Dictionary<string, string>();
+            p.ToolMode = (p.ToolMode ?? "native").Trim().ToLowerInvariant();
         }
         Bots.ProviderByJob = new Dictionary<string, string>(Bots.ProviderByJob ?? new(), StringComparer.OrdinalIgnoreCase);
         Bots.ExtraPromptByJob = new Dictionary<string, string>(Bots.ExtraPromptByJob ?? new(), StringComparer.OrdinalIgnoreCase);
@@ -79,6 +80,8 @@ public sealed class ModSettings
             if (!Uri.TryCreate(p.BaseUrl, UriKind.Absolute, out _))
                 throw new InvalidDataException($"Provider '{p.Name}': baseUrl is not a valid absolute URL");
             if (string.IsNullOrWhiteSpace(p.Model)) throw new InvalidDataException($"Provider '{p.Name}': model is required");
+            if (p.ToolMode is not ("native" or "prompt"))
+                throw new InvalidDataException($"Provider '{p.Name}': toolMode must be 'native' or 'prompt'");
             if (p.TimeoutSeconds <= 0) throw new InvalidDataException($"Provider '{p.Name}': timeoutSeconds must be > 0");
         }
         if (!names.Contains(DefaultProvider)) throw new InvalidDataException($"defaultProvider '{DefaultProvider}' not found in providers");
@@ -121,6 +124,8 @@ public sealed class GlobalSettings
     public int MaxNotes { get; set; } = 5;
     public string LogFile { get; set; } = "llm_agents.log";
     public bool LogPrompts { get; set; } = true;
+    /// <summary>Also log the model's raw text next to the parsed calls (useful when tuning a local model).</summary>
+    public bool LogRawReplies { get; set; } = true;
     /// <summary>Broadcast LLM-issued orders to clients as order chat messages, so the crew UI shows them.</summary>
     public bool SyncOrdersToClients { get; set; } = true;
     /// <summary>
@@ -128,6 +133,10 @@ public sealed class GlobalSettings
     /// "radio" = same as auto (radio is always preferred); "local" = always out loud, nearby only.
     /// </summary>
     public string SpeechChannel { get; set; } = "auto";
+    /// <summary>A provider that answers 401/403/404 (bad key, region block, unknown model) is skipped for this long.</summary>
+    public double ProviderAuthCooldownSeconds { get; set; } = 300;
+    /// <summary>After 429/5xx/timeouts a provider is paused 5 s, 10 s, 20 s... up to this many seconds.</summary>
+    public double ProviderBackoffMaxSeconds { get; set; } = 120;
 }
 
 /// <summary>Orders typed by human players in the game chat.</summary>
@@ -168,6 +177,14 @@ public sealed class ProviderConfig
     public int MaxOutputTokens { get; set; } = 300;
     public double Temperature { get; set; } = 0.6;
     public Dictionary<string, string> ExtraHeaders { get; set; } = new();
+    /// <summary>
+    /// "native": the API's tool calling (best when the server supports it for this model).
+    /// "prompt": tools are described in the prompt and the model replies with JSON. Use for local models whose
+    /// tool calls come back as text (e.g. Gemma on some servers).
+    /// </summary>
+    public string ToolMode { get; set; } = "native";
+    /// <summary>prompt mode, OpenAI-compatible servers: ask for response_format json_object.</summary>
+    public bool JsonResponseFormat { get; set; } = true;
 
     [JsonIgnore]
     public string ResolvedKey =>

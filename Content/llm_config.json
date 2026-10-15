@@ -18,7 +18,10 @@
     "syncOrdersToClients": true,
     "logFile": "llm_agents.log",
     "logPrompts": true,
-    "speechChannel": "auto"
+    "speechChannel": "auto",
+    "logRawReplies": true,
+    "providerAuthCooldownSeconds": 300,
+    "providerBackoffMaxSeconds": 120
   },
   "providers": [
     {
@@ -34,7 +37,8 @@
       "tokensPerMinute": 0,
       "maxOutputTokens": 300,
       "temperature": 0.6,
-      "dailyRequestBudget": 0
+      "dailyRequestBudget": 0,
+      "toolMode": "prompt"
     },
     {
       "name": "cloud",
@@ -49,7 +53,8 @@
       "tokensPerMinute": 60000,
       "maxOutputTokens": 300,
       "temperature": 0.6,
-      "dailyRequestBudget": 0
+      "dailyRequestBudget": 0,
+      "toolMode": "native"
     }
   ],
   "bots": {

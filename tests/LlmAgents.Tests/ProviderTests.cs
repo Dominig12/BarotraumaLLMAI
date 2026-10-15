@@ -14,7 +14,7 @@ namespace LlmAgents.Tests;
 
 public class ProviderTests
 {
-    static readonly HashSet<string> Known = Tools.All.Select(t => t.Name).ToHashSet();
+    static readonly IReadOnlyList<ToolSpec> Known = Tools.All;
 
     static LlmRequest Request() => new(
         "sys",
@@ -158,7 +158,7 @@ public class ProviderTests
 
 public class TextToolCallParserTests
 {
-    static readonly HashSet<string> Known = Tools.All.Select(t => t.Name).ToHashSet();
+    static readonly IReadOnlyList<ToolSpec> Known = Tools.All;
 
     [Theory]
     [InlineData("{\"name\":\"fix_leaks\",\"arguments\":{}}", "fix_leaks")]

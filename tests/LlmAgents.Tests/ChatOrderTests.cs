@@ -55,7 +55,7 @@ public class ChatOrderTests
     {
         var settings = Fixtures.Settings(extraRoot: extraRoot);
         var llm = new Llm();
-        return (new AgentManager(settings, game, new LlmRouter(settings, llm.Handler()), clock.Get), llm);
+        return (new AgentManager(settings, game, new LlmRouter(settings, llm.Handler(), clock.Utc), clock.Get), llm);
     }
 
     async Task Run(AgentManager mgr, double seconds)
@@ -174,12 +174,12 @@ public class ChatOrderTests
         llm.DispatchStatus = HttpStatusCode.InternalServerError;
         await Run(mgr, 1);
         mgr.SubmitChat(Chat("Oleg, check the pumps"));
-        await Run(mgr, 2);
+        await Run(mgr, 8);   // both providers are paused ~5 s after the dispatcher errors
         Assert.Single(llm.OrdersOf("Oleg Sidorov"));
         Assert.Empty(llm.OrdersOf("Max Volkov"));
 
         mgr.SubmitChat(Chat("everybody to the command room"));   // no name -> everyone who heard it
-        await Run(mgr, 2);
+        await Run(mgr, 25);
         Assert.Equal(4, llm.Decisions.Count(d => d.Orders.Any(o => o.Contains("command room"))));
     }
 
@@ -214,7 +214,7 @@ public class ChatOrderTests
         var providers = @"[ { ""name"": ""a"", ""type"": ""openai"", ""baseUrl"": ""http://a.test/v1"", ""model"": ""m"", ""requestsPerMinute"": 4, ""maxConcurrent"": 10 } ]";
         var settings = ModSettings.Parse(Fixtures.Config(providersOverride: providers).Replace("\"fallbackProvider\": \"b\"", "\"fallbackProvider\": \"\""));
         var llm = new Llm();
-        var mgr = new AgentManager(settings, game, new LlmRouter(settings, llm.Handler()), clock.Get);
+        var mgr = new AgentManager(settings, game, new LlmRouter(settings, llm.Handler(), clock.Utc), clock.Get);
         mgr.Update(); await mgr.WhenIdle();       // 4 bots use the whole per-minute budget
         mgr.SubmitChat(Chat("hello crew"));
         await Run(mgr, 35);                        // > chat.maxAgeSeconds (30) and still within the minute
@@ -318,7 +318,7 @@ public class FairSchedulingTests
             while (clock.Now < end) await Task.Delay(1, ct);
             return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("wait", "{}")));
         });
-        var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler), clock.Get);
+        var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
 
         for (int i = 0; i < 240; i++) // 120 s of game time
         {
