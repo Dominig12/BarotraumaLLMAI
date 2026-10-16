@@ -88,7 +88,8 @@ public interface IGameApi
     string Unequip(int botId, string item);
     string Drop(int botId, string item);
     /// <summary>to = container name, room id, or crew member name ("me" = take it). Multi-step task.</summary>
-    string MoveItem(int botId, string item, string to);
+    /// <param name="count">0 = the whole stack.</param>
+    string MoveItem(int botId, string item, string to, int count = 0);
     /// <summary>
     /// Pick up to <paramref name="count"/> matching items into the inventory; a kind ("medical") takes a mix. Multi-step task.
     /// from = a container, a room or a crew member (the room they are in); null = anywhere, nearest first.

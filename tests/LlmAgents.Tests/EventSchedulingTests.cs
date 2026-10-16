@@ -30,7 +30,7 @@ public class EventSchedulingTests
             var msgs = body["messages"]!.AsArray();
             var user = msgs[^1]!["content"]!.GetValue<string>();
             if (body["tools"]!.AsArray().Any(t => t!["function"]!["name"]!.GetValue<string>() == ChatDispatcher.ToolName))
-                return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse((ChatDispatcher.ToolName, "{\"recipients\":[]}")));
+                return (HttpStatusCode.OK, Fixtures.DispatchByName(user));
             var obs = (JsonObject)JsonNode.Parse(Fixtures.Obs(user))!;
             var name = obs["name"]!.GetValue<string>();
             seen.Enqueue((name, obs, user, msgs));
@@ -344,54 +344,6 @@ public class EventSchedulingTests
     }
 }
 
-public class ChatRoutingRulesTests
-{
-    static readonly List<RosterEntry> Roster = new()
-    {
-        new(1, "Ivan Petrov", "captain", "Command [h1]", "none"),
-        new(2, "Max Volkov", "mechanic", "Engine [h2]", "none"),
-        new(3, "Oleg Sidorov", "mechanic", "Ballast [h3]", "fixleaks"),
-        new(4, "Anna Kuznetsova", "medicaldoctor", "Medbay [h4]", "none"),
-        new(5, "Erline Tseng", "engineer", "Reactor [h5]", "none"),
-    };
-
-    static ChatRouter.Route? R(string text) => ChatRouter.TryRoute(new ChatCommand("Daniil", null, text, new[] { 1, 2, 3, 4, 5 }, true), Roster);
-    static string[]? Names(string text) => R(text)?.Recipients.Select(r => r.Name).ToArray();
-
-    [Theory]
-    [InlineData("Анна, иди в медотсек", new[] { "Anna Kuznetsova" })]
-    [InlineData("Эрлин и Макс, за мной", new[] { "Max Volkov", "Erline Tseng" })]
-    [InlineData("Механики, заварите течи", new[] { "Max Volkov", "Oleg Sidorov" })]
-    [InlineData("инженер, проверь реактор", new[] { "Erline Tseng" })]
-    [InlineData("Все ко мне", new[] { "Ivan Petrov", "Max Volkov", "Oleg Sidorov", "Anna Kuznetsova", "Erline Tseng" })]
-    [InlineData("Наденьте костюмы!", new[] { "Ivan Petrov", "Max Volkov", "Oleg Sidorov", "Anna Kuznetsova", "Erline Tseng" })]
-    [InlineData("Все, заделайте пробоину", new[] { "Max Volkov", "Oleg Sidorov", "Erline Tseng" })]
-    public void ClearMessagesAreRoutedWithoutTheDispatcher(string text, string[] expected) =>
-        Assert.Equal(expected.OrderBy(x => x), Names(text)!.OrderBy(x => x));
-
-    [Theory]
-    [InlineData("Скрафтите гарпун")]                  // one item: somebody, not everybody
-    [InlineData("Разберите сварочный аппарат")]
-    [InlineData("Привет всем")]                        // small talk: one answer
-    [InlineData("Механик, почини насос")]              // one of two mechanics: the dispatcher picks
-    [InlineData("Все, кроме Макса, ко мне")]           // needs understanding
-    [InlineData("Всё в порядке?")]
-    public void UnclearMessagesGoToTheDispatcher(string text) => Assert.Null(R(text));
-
-    [Theory]
-    [InlineData("Скрафтите гарпун", "Max Volkov")]       // one job: the most suitable bot (an idle mechanic), not five harpoons
-    [InlineData("Лечите раненых", "Anna Kuznetsova")]
-    [InlineData("Как дела?", "Ivan Petrov")]              // a question: the captain answers
-    public void WithoutTheDispatcherAOnePersonJobGoesToOneBot(string text, string expected) =>
-        Assert.Equal(new[] { expected }, ChatRouter.Fallback(new ChatCommand("Daniil", null, text, new[] { 1, 2, 3, 4, 5 }, true), Roster).Select(r => r.Name));
-
-    [Theory]
-    [InlineData("Все ко мне", true)]
-    [InlineData("Заварите течь в балласте", true)]
-    [InlineData("ну и денёк", false)]
-    public void OrderLikeMessages(string text, bool expected) => Assert.Equal(expected, ChatRouter.LooksLikeOrder(text));
-}
-
 public class ChatFeedbackTests
 {
     [Fact]
@@ -403,7 +355,11 @@ public class ChatFeedbackTests
         int dispatches = 0;
         var handler = new FakeHandler(body =>
         {
-            if (body["tools"]!.AsArray().Any(t => t!["function"]!["name"]!.GetValue<string>() == ChatDispatcher.ToolName)) dispatches++;
+            if (body["tools"]!.AsArray().Any(t => t!["function"]!["name"]!.GetValue<string>() == ChatDispatcher.ToolName))
+            {
+                dispatches++;
+                return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse((ChatDispatcher.ToolName, "{\"recipients\":[\"Ann\",\"Bob\"]}")));
+            }
             return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("carry_on", "{}")));
         });
         var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
@@ -413,7 +369,7 @@ public class ChatFeedbackTests
         mgr.SubmitChat(new ChatCommand("Daniil", null, "ну и денёк", Array.Empty<int>(), true));
         for (int i = 0; i < 4; i++) { mgr.Update(); await mgr.WhenIdle(); clock.Advance(0.5); }
 
-        Assert.Equal(0, dispatches);   // routed by the rules
+        Assert.Equal(1, dispatches);   // the model decides; nobody heard the other two
         var notes = game.Notices.Select(n => n.Text).ToList();
         Assert.Contains("[ИИ] Приказ получили: Ann, Bob", notes);
         Assert.Single(notes, n => n.Contains("никто из ИИ-экипажа не услышал"));   // the order, not the chatter
@@ -460,15 +416,28 @@ public class ConfigMigrationTests
         // the second time nothing changes
         var again = new ConfigEditor(editor.ToJson());
         Assert.Empty(again.MigrateDefaults());
-        Assert.Contains("\"configVersion\": 2", editor.ToJson());
+        Assert.Contains($"\"configVersion\": {ModSettings.CurrentConfigVersion}", editor.ToJson());
     }
 
     [Fact]
     public void ACurrentConfigIsNotTouched()
     {
-        var json = OldConfig.Replace("\"enabled\": true,", "\"configVersion\": 2, \"enabled\": true,");
+        var json = OldConfig.Replace("\"enabled\": true,", $"\"configVersion\": {ModSettings.CurrentConfigVersion}, \"enabled\": true,");
         var editor = new ConfigEditor(json);
         Assert.Empty(editor.MigrateDefaults());
         Assert.Equal("always", editor.Settings.Bots.Autonomy);
+    }
+
+    [Fact]
+    public void Version2GetsOnlyTheVersion3Changes()
+    {
+        var json = OldConfig.Replace("\"enabled\": true,", "\"configVersion\": 2, \"enabled\": true,")
+            .Replace("\"global\": {", "\"chat\": { \"dispatchWaitSeconds\": 6 }, \"global\": { \"maxNotes\": 5,");
+        var editor = new ConfigEditor(json);
+        var changed = editor.MigrateDefaults();
+        Assert.Equal("always", editor.Settings.Bots.Autonomy);          // a version 2 change: not applied again
+        Assert.Equal(12, editor.Settings.Chat.DispatchWaitSeconds);
+        Assert.Equal(12, editor.Settings.Global.MaxNotes);
+        Assert.Contains("configVersion: 2 -> 3", changed);
     }
 }

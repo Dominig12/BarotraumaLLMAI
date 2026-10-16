@@ -17,6 +17,10 @@ public sealed class Observation
     /// small models pay most attention to the start.</summary>
     [JsonPropertyOrder(-1)]
     public List<string> PlayerOrders { get; set; } = new();
+    /// <summary>What was said around this bot lately (players and crew, newest last): what a message without a name
+    /// continues, what "there" and "it" refer to.</summary>
+    [JsonPropertyOrder(-1)]
+    public List<string> Conversation { get; set; } = new();
     /// <summary>What this bot set out to do (set_goal or a player's order), e.g. "craft 3 bandages for Ivan (set 2 min ago)".</summary>
     [JsonPropertyOrder(-1)]
     public string? Goal { get; set; }

@@ -155,7 +155,7 @@ public sealed partial class AgentManager
         var bots = agents.Values.Where(a => game.IsAlive(a.Id)).OrderBy(a => a.Name)
             .Select(a => new DirectedBot(a, ObserveForDirector(a, now), NotAssignable(a))).ToList();
 
-        string user = Director.Summary(events, bots, directorNotes, results, now);
+        string user = Director.Summary(events, bots, directorNotes, results, now, ConversationFor(null, now).TakeLast(8).ToList());
         string system = Director.SystemPrompt(Settings.Bots.SpeechLanguage);
         var turns = new List<LlmTurn>();
         foreach (var (at, u, a) in directorHistory)

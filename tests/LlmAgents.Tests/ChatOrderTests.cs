@@ -28,7 +28,7 @@ public class ChatOrderTests
         public Func<string, string> Dispatch = _ => Fixtures.OpenAiToolResponse((ChatDispatcher.ToolName, "{\"recipients\":[]}"));
         public HttpStatusCode DispatchStatus = HttpStatusCode.OK;
         public readonly ConcurrentQueue<string> DispatchPrompts = new();
-        public readonly ConcurrentQueue<(string Bot, List<string> Orders, string System)> Decisions = new();
+        public readonly ConcurrentQueue<(string Bot, List<string> Orders, string System, JsonNode Observation)> Decisions = new();
 
         public FakeHandler Handler() => new(body =>
         {
@@ -42,7 +42,7 @@ public class ChatOrderTests
             }
             var obs = JsonNode.Parse(Fixtures.Obs(content))!;
             var orders = obs["playerOrders"]?.AsArray().Select(x => x!.GetValue<string>()).ToList() ?? new();
-            Decisions.Enqueue((obs["name"]!.GetValue<string>(), orders, msgs[0]!["content"]!.GetValue<string>()));
+            Decisions.Enqueue((obs["name"]!.GetValue<string>(), orders, msgs[0]!["content"]!.GetValue<string>(), obs));
             return (HttpStatusCode.OK, orders.Count > 0
                 ? Fixtures.OpenAiToolResponse(("say", "{\"text\":\"Есть!\"}"), ("fix_leaks", "{}"))
                 : Fixtures.OpenAiToolResponse(("wait", "{}")));
@@ -74,7 +74,7 @@ public class ChatOrderTests
     [Fact]
     public async Task DispatcherPicksRecipientAndOnlyTheyGetTheOrder()
     {
-        var (mgr, llm) = Create("\"chat\": { \"ruleRouting\": false },");   // the dispatcher decides even clear cases
+        var (mgr, llm) = Create();   // the dispatcher decides even clear cases
         llm.Dispatch = _ => Fixtures.OpenAiToolResponse((ChatDispatcher.ToolName, "{\"recipients\":[\"Anna Kuznetsova\"],\"reason\":\"named\"}"));
         await Run(mgr, 1);                         // initial decisions done
         mgr.SubmitChat(Chat("Анна, заделай течь в балласте"));
@@ -135,14 +135,34 @@ public class ChatOrderTests
     }
 
     [Fact]
-    public async Task SingleListenerSkipsTheDispatcher()
+    public async Task EvenASingleListenerIsDecidedByTheDispatcher()
     {
         var (mgr, llm) = Create();
+        llm.Dispatch = _ => Fixtures.OpenAiToolResponse((ChatDispatcher.ToolName, "{\"recipients\":[\"Oleg Sidorov\"]}"));
         await Run(mgr, 1);
         mgr.SubmitChat(Chat("эй, помоги", 3));
         await Run(mgr, 1.5);
-        Assert.Empty(llm.DispatchPrompts);
+        Assert.Single(llm.DispatchPrompts);
         Assert.Single(llm.OrdersOf("Oleg Sidorov"));
+    }
+
+    [Fact]
+    public async Task AFollowUpWithoutANameSeesTheConversation()
+    {
+        var (mgr, llm) = Create();
+        llm.Dispatch = p => Fixtures.OpenAiToolResponse((ChatDispatcher.ToolName, "{\"recipients\":[\"Max Volkov\"]}"));
+        await Run(mgr, 1);
+        mgr.SubmitChat(Chat("Макс, найди шкаф в щитовой"));
+        await Run(mgr, 3);
+        mgr.SubmitChat(Chat("и потом скажи, что в нём"));
+        await Run(mgr, 3);
+        var second = llm.DispatchPrompts.Last();
+        Assert.Contains("Recent conversation", second);
+        Assert.Contains("Daniil (player) -> Max Volkov", second);
+        Assert.Contains("\"Макс, найди шкаф в щитовой\"", second);
+        // the bot sees the talk too
+        var obs = llm.Decisions.Last(d => d.Bot == "Max Volkov").Observation;
+        Assert.Contains("Макс, найди шкаф", obs["conversation"]!.ToJsonString(new System.Text.Json.JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
     }
 
     [Fact]
@@ -168,19 +188,17 @@ public class ChatOrderTests
     }
 
     [Fact]
-    public async Task DispatcherOutageFallsBackToNamesInTheText()
+    public async Task DispatcherOutageLetsEveryListenerDecide()
     {
         var (mgr, llm) = Create();
         llm.DispatchStatus = HttpStatusCode.InternalServerError;
         await Run(mgr, 1);
         mgr.SubmitChat(Chat("Oleg, check the pumps"));
-        await Run(mgr, 8);   // both providers are paused ~5 s after the dispatcher errors
-        Assert.Single(llm.OrdersOf("Oleg Sidorov"));
-        Assert.Empty(llm.OrdersOf("Max Volkov"));
-
-        mgr.SubmitChat(Chat("everybody to the command room"));   // no name -> everyone who heard it
         await Run(mgr, 25);
-        Assert.Equal(4, llm.Decisions.Count(d => d.Orders.Any(o => o.Contains("command room"))));
+        // no rules guess from the name: everybody who heard it gets it, marked as maybe not theirs
+        var got = llm.Decisions.Where(d => d.Orders.Any(o => o.Contains("check the pumps"))).ToList();
+        Assert.Equal(4, got.Count);
+        Assert.All(got, d => Assert.Contains(d.Orders, o => o.Contains("only if it is meant for you")));
     }
 
     [Fact]
@@ -217,7 +235,7 @@ public class ChatOrderTests
         var mgr = new AgentManager(settings, game, new LlmRouter(settings, llm.Handler(), clock.Utc), clock.Get);
         await Run(mgr, 5);                         // 4 bots look around at round start: the whole per-minute budget
         mgr.SubmitChat(Chat("hello crew"));
-        await Run(mgr, 10);                        // no slot for the dispatcher: after dispatchWaitSeconds the message goes to everyone
+        await Run(mgr, 14);                        // no slot for the dispatcher: after dispatchWaitSeconds the message goes to everyone
         Assert.Equal(0, mgr.PendingChatCount);
         Assert.Empty(llm.DispatchPrompts);
         Assert.All(new[] { 1, 2, 3, 4 }, id => Assert.True(mgr.GetAgent(id)!.HasPlayerOrder));
@@ -266,27 +284,22 @@ public class ChatDispatcherTests
     }
 
     [Fact]
-    public void FallbackUsesNamesElseEveryone()
+    public void PromptShowsTheConversation()
     {
-        var cmd = new ChatCommand("P", null, "Volkov, go to engine", new[] { 1, 2, 3 }, true);
-        Assert.Equal(new[] { "Max Volkov" }, ChatDispatcher.Fallback(cmd, Roster).Select(r => r.Name));
-        Assert.Equal(3, ChatDispatcher.Fallback(cmd with { Text = "everyone hold" }, Roster).Count);
+        var p = ChatDispatcher.UserPrompt(new ChatCommand("Daniil", "Captain", "и скажи, что там", new[] { 1 }, false), Roster,
+            new[] { "(1 min ago) Daniil (player) -> Max Volkov: \"Макс, проверь шкаф\"", "(30 s ago) Max Volkov: \"Иду\"" });
+        Assert.Contains("Recent conversation", p);
+        Assert.Contains("Daniil (player) -> Max Volkov", p);
+        Assert.True(p.IndexOf("Recent conversation") < p.IndexOf("Message from"));
     }
 
-    [Theory]
-    [InlineData("Максим, к реактору", "Max Volkov")]       // 'Максим' is not 'Max' (maxim vs max): no name, so the reactor job goes to
-                                                           // the most suitable bot (no engineer here: a mechanic), not to everyone
-    [InlineData("всем стоять", "")]                        // everybody
-    [InlineData("Олег, проверь насосы", "Oleg Sidorov")]
-    [InlineData("Олегу передай: насосы", "Oleg Sidorov")]
-    [InlineData("Иван и Олег, за мной", "Ivan Petrov,Oleg Sidorov")]
-    [InlineData("Volkov to engine", "Max Volkov")]
-    [InlineData("Волков, в машинное", "Max Volkov")]
-    public void FallbackMatchesNamesAcrossAlphabets(string text, string expected)
+    [Fact]
+    public void UnsureMessageLetsEachBotDecide()
     {
-        var cmd = new ChatCommand("P", null, text, new[] { 1, 2, 3 }, true);
-        var r = ChatDispatcher.Fallback(cmd, Roster).Select(x => x.Name).ToList();
-        Assert.Equal(expected == "" ? Roster.Select(x => x.Name).ToList() : expected.Split(',').ToList(), r);
+        var t = ChatDispatcher.FormatUnsure(new ChatCommand("Daniil", null, "ну что там?", new[] { 1, 2 }, true), Roster[0]);
+        Assert.Contains("\"ну что там?\"", t);
+        Assert.Contains("only if it is meant for you", t);
+        Assert.Contains("carry_on", t);
     }
 
     [Fact]

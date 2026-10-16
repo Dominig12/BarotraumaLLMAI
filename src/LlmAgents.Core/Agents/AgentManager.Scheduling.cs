@@ -199,6 +199,7 @@ public sealed partial class AgentManager
         obs.PlayerOrders = orders.Select(o => o.Text).ToList();
         obs.Inbox = agent.DrainInbox();
         obs.Notes = agent.Notes(now);
+        obs.Conversation = ConversationFor(agent, now);
         obs.LastActionResults = agent.TakeResults();
         obs.EarlierOrders = agent.PastOrders.Select(p => $"({ModStatus.Ago(now - p.At)}) {p.Text}").ToList();
         if (agent.AiControl) obs.Control = $"FULL AI CONTROL (given by {agent.ControlBy ?? "a player"})";

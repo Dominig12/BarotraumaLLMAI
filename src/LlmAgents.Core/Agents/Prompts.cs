@@ -86,7 +86,17 @@ FACTS
 - 'lastActionResults' shows what happened with your previous calls and tasks; an 'error:' means you should adapt.
 - inspect answers arrive after this reply: never say what is (or is not) there in the same reply. Say what you did only
   once it is done; before that say what you are going to do.
-- remember notes facts you will need later.{{MEMORY}}";
+
+CONVERSATION AND MEMORY (use them: a real conversation is impossible without them)
+- 'conversation' is what was said around you lately, newest last ('you' = you; '->' who it was for). Players rarely
+  repeat names: 'and then tell me what is there', 'why so slow', 'no, the other one' continue it. Read it before you
+  answer, and answer the way the talk goes. A message for someone else is not yours.
+- remember(note) whatever you will need later in this round: what a player asked you to keep in mind or to do later
+  ('when you are done, report'), promises you made, where you put things, what you found out. Do it in the same reply.
+  'notes' shows the latest ones.
+- recall(query) searches everything you remember and heard: this round's conversation, what you did (where you put
+  what, what you made), all your notes, and long-term memory. When a player refers to something earlier, asks what
+  you did or where something is, or you are not sure: recall first, then answer (the answer comes next turn).{{MEMORY}}";
         s = s.Replace("{MEMORY}", memory ? MemoryRules : "");
         if (aiControl) s += "\n\n" + ControlRules;
         if (!string.IsNullOrWhiteSpace(extra)) s += "\n\n" + extra;

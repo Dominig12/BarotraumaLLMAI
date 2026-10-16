@@ -192,11 +192,11 @@ public sealed partial class GameAdapter
             // loose on the floor, or directly in a cabinet / locker / crate of that room (not inside a gun or a machine)
             var items = Item.ItemList.Where(i => !i.Removed && i.GetRootInventoryOwner() is not Character
                     && (i.Container == null ? i.ParentInventory == null && i.CurrentHull == hull
-                                            : i.Container.CurrentHull == hull && IsStorage(i.Container)))
+                                            : i.Container.CurrentHull == hull && (IsStorage(i.Container) || InMachineOutput(i))))
                 .ToList();
             return (items, person != null ? $"{RoomId(hull)} (where {person.Name} is)" : RoomId(hull));
         }
-        var (containers, where) = ContainersAt(c, f);
+        var (containers, where) = ContainersAt(c, f, outputs: true);
         if (containers.Count == 0) return null;
         return (containers.SelectMany(ic => ic.Inventory.AllItems).ToList(), where);
     }
@@ -228,7 +228,7 @@ public sealed partial class GameAdapter
         var free = items.Where(i => ItemQueries.IsAvailableTo(i, c)).ToList();
         if (free.Count == 0) return $"in {where}: nothing you can take";
         var parts = free.GroupBy(i => i.Container).OrderBy(g => g.Key == null ? 1 : 0).Take(5)
-            .Select(g => $"{(g.Key != null ? g.Key.Name : "on the floor")}: {Contents(g, c, max: 6)}");
+            .Select(g => $"{(g.Key != null ? g.Key.Name + (InMachineOutput(g.First()) ? " (output)" : "") : "on the floor")}: {Contents(g, c, max: 6)}");
         return $"in {where}: {string.Join("; ", parts)}. take_item(item=..., from=\"{where.Split(" (where")[0]}\") takes them";
     }
 
@@ -293,21 +293,24 @@ public sealed partial class GameAdapter
         var (fabricator, recipe, error) = Crafting.Find(c, query);
         if (error != null) return error;
         var stock = Crafting.Stock(c, fabricator);
+        // amount = items wanted; one craft can make several (harpoons: 6)
+        int runs = Crafting.Runs(recipe!, amount);
+        amount = runs;
         var missing = Crafting.Missing(recipe!, stock, amount);
         if (missing.Count == 0) return StartTask(c, new CraftTask(c, ai, fabricator!, recipe!, amount));
 
         var missingText = string.Join(", ", missing.Select(m => $"{m.Req.FirstMatchingPrefab?.Name.Value ?? "?"} x{m.Missing}"));
         var (plan, problem) = Crafting.SalvagePlan(c, recipe!, stock, amount);
         if (!salvage)
-            return $"error: cannot make {recipe!.DisplayName.Value} x{amount}: missing {missingText}. " +
+            return $"error: cannot make {recipe!.DisplayName.Value} x{amount * Crafting.Yield(recipe!)} ({amount} craft(s)): missing {missingText}. " +
                    (plan != null
                        ? $"It can be salvaged: deconstruct {string.Join(", ", plan.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))} — call craft again with salvage=true to do it all."
                        : $"No scrap aboard gives it ({problem}). inspect(kind='recipe') shows other ways.");
         if (plan == null) return $"error: cannot make {recipe!.DisplayName.Value}: missing {missingText}, and salvaging is not enough: {problem}";
         if (plan.Count == 0) return StartTask(c, new CraftTask(c, ai, fabricator!, recipe!, amount));
         var f = fabricator!; var r = recipe!;
-        return StartTask(c, new SalvageAndCraftTask(c, ai, plan, () => new CraftTask(c, ai, f, r, amount), $"{r.DisplayName.Value} x{amount}")) +
-               $"; will first deconstruct {string.Join(", ", plan.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))}";
+        return StartTask(c, new SalvageAndCraftTask(c, ai, plan, () => new CraftTask(c, ai, f, r, amount), $"{r.DisplayName.Value} x{amount * Crafting.Yield(r)}")) +
+               $" ({runs} craft(s), {runs * Crafting.Yield(r)} items)" + $"; will first deconstruct {string.Join(", ", plan.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))}";
     }
 
     public string Deconstruct(int botId, string query, string? from = null)
@@ -357,13 +360,24 @@ public sealed partial class GameAdapter
     const int MaxDeconstructBatch = 12;
 
     /// <summary>Storage containers by name or room ("cabinet", "шкаф", "Электрика [h140]", "шкаф в Электрика [h140]").</summary>
-    (List<ItemContainer> Containers, string Where) ContainersAt(Character c, string from)
+    /// <summary>In what a fabricator made or a deconstructor gave: products wait there to be taken.</summary>
+    internal static bool InMachineOutput(Item i)
+    {
+        if (i.Container is not { } m || i.ParentInventory == null) return false;
+        return m.GetComponent<Fabricator>()?.OutputContainer?.Inventory == i.ParentInventory
+            || m.GetComponent<Deconstructor>()?.OutputContainer?.Inventory == i.ParentInventory;
+    }
+
+    /// <param name="outputs">also fabricators and deconstructors by name, meaning their output (to take products from)</param>
+    (List<ItemContainer> Containers, string Where) ContainersAt(Character c, string from, bool outputs = false)
     {
         var storages = Item.ItemList
             .Where(i => i.Submarine == c.Submarine && !i.Removed && i.GetRootInventoryOwner() is not Character)
-            .Select(i => (item: i, ic: i.GetComponent<ItemContainer>()))
-            .Where(t => t.ic != null && t.item.GetComponent<Fabricator>() == null && t.item.GetComponent<Deconstructor>() == null
-                        && t.item.GetComponent<Reactor>() == null && t.item.GetComponent<Turret>() == null)
+            .Select(i => (item: i, ic: outputs && (i.GetComponent<Fabricator>()?.OutputContainer ?? i.GetComponent<Deconstructor>()?.OutputContainer) is { } o
+                ? o : i.GetComponent<ItemContainer>()))
+            .Where(t => t.ic != null && (outputs && (t.item.GetComponent<Fabricator>() != null || t.item.GetComponent<Deconstructor>() != null)
+                        || t.item.GetComponent<Fabricator>() == null && t.item.GetComponent<Deconstructor>() == null
+                        && t.item.GetComponent<Reactor>() == null && t.item.GetComponent<Turret>() == null))
             .ToList();
 
         var hull = from.Contains("[h") ? ResolveRoom(from) : ResolveRoom(from.Trim());

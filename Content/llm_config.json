@@ -1,5 +1,5 @@
 {
-  "configVersion": 2,
+  "configVersion": 3,
   "enabled": true,
   "defaultProvider": "local",
   "fallbackProvider": "local",
@@ -23,7 +23,7 @@
     "planStepTimeoutSeconds": 90,
     "maxMessagesPerMinute": 3,
     "historyTurns": 10,
-    "maxNotes": 5,
+    "maxNotes": 12,
     "syncOrdersToClients": true,
     "showBotMessagesInChat": true,
     "maxChatEchoPerMinute": 6,
@@ -112,11 +112,11 @@
     "provider": "",
     "prefix": "",
     "allowSpectators": true,
-    "directIfSingleListener": true,
     "maxQueue": 10,
     "maxAgeSeconds": 30,
-    "dispatchWaitSeconds": 6,
-    "ruleRouting": true,
+    "dispatchWaitSeconds": 12,
+    "conversationMinutes": 5,
+    "conversationLines": 12,
     "confirmToSender": true
   },
   "memory": {

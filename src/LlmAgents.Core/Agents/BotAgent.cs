@@ -234,11 +234,22 @@ public sealed class BotAgent
         lock (sync)
         {
             notes.Add((Tools.Clip(note, MaxNoteLength), at));
-            while (notes.Count > Math.Max(1, max)) notes.RemoveAt(0);
+            while (notes.Count > Math.Max(1, max))
+            {
+                // out of the prompt, not out of memory: recall still finds it
+                oldNotes.Add(notes[0]);
+                notes.RemoveAt(0);
+            }
+            while (oldNotes.Count > 200) oldNotes.RemoveAt(0);
         }
     }
 
+    readonly List<(string Text, double At)> oldNotes = new();
+
     public List<string> Notes() { lock (sync) return notes.Select(n => n.Text).ToList(); }
+
+    /// <summary>Every note of this round, also the ones no longer shown, oldest first.</summary>
+    public List<(string Text, double At)> AllNotes() { lock (sync) return oldNotes.Concat(notes).ToList(); }
 
     /// <summary>Notes for the model, older ones with their age.</summary>
     public List<string> Notes(double now)

@@ -235,6 +235,14 @@ internal static class Crafting
     // ------------------------------------------------------------------ texts for inspect
 
     /// <summary>inspect(kind='recipes'): what can be made, "can make now" first.</summary>
+    /// <summary>How many items one craft makes (harpoons: 6).</summary>
+    public static int Yield(FabricationRecipe r) => Math.Max(1, r.Amount);
+
+    /// <summary>Crafts needed for this many items.</summary>
+    public static int Runs(FabricationRecipe r, int items) => LlmAgents.Agents.ItemRules.CraftRuns(items, Yield(r));
+
+    static string PerCraft(FabricationRecipe r) => Yield(r) > 1 ? $" (x{Yield(r)} per craft)" : "";
+
     public static string RecipeList(Character c, string filter)
     {
         var all = Recipes(c);
@@ -256,9 +264,9 @@ internal static class Crafting
             var similar = Similar(all.Select(t => t.Recipe.TargetItem), filter, 6);
             return $"no recipe matches '{filter}'" + (similar.Count > 0 ? $"; similar: {string.Join(", ", similar.Select(Label))}" : "");
         }
-        var ready = rows.Where(t => t.missing.Count == 0).Select(t => Label(t.Recipe.TargetItem)).ToList();
+        var ready = rows.Where(t => t.missing.Count == 0).Select(t => Label(t.Recipe.TargetItem) + PerCraft(t.Recipe)).ToList();
         var notReady = rows.Where(t => t.missing.Count > 0)
-            .Select(t => $"{Label(t.Recipe.TargetItem)} (missing {string.Join(", ", t.missing.Select(m => $"{m.Req.FirstMatchingPrefab?.Name.Value ?? "?"} x{m.Missing}"))})")
+            .Select(t => $"{Label(t.Recipe.TargetItem)}{PerCraft(t.Recipe)} (missing {string.Join(", ", t.missing.Select(m => $"{m.Req.FirstMatchingPrefab?.Name.Value ?? "?"} x{m.Missing}"))})")
             .ToList();
         var text = (ready.Count > 0 ? $"CAN MAKE NOW ({ready.Count}): {string.Join("; ", ready.Take(25))}{(ready.Count > 25 ? "; ..." : "")}. " : "Nothing can be made from what is aboard right now. ")
                  + (notReady.Count > 0 ? $"NEED MATERIALS ({notReady.Count}): {string.Join("; ", notReady.Take(10))}{(notReady.Count > 10 ? "; ..." : "")}." : "");
@@ -272,7 +280,7 @@ internal static class Crafting
         var stock = Stock(c, f);
         var parts = r.RequiredItems.Select(q => $"{IngredientName(q)} x{q.Amount} (have {Have(q, stock)})");
         var skills = r.RequiredSkills.Length > 0 ? "; skills: " + string.Join(", ", r.RequiredSkills.Select(s => $"{s.Identifier} {s.Level:0}")) : "";
-        var text = $"{Label(r.TargetItem)} at {f.Item.Name}: needs {string.Join(", ", parts)}{skills}; time {r.RequiredTime:0}s. ";
+        var text = $"{Label(r.TargetItem)} at {f.Item.Name}: makes {Yield(r)} per craft; needs {string.Join(", ", parts)}{skills}; time {r.RequiredTime:0}s. ";
         var missing = Missing(r, stock);
         if (missing.Count == 0) return text + "All ingredients available.";
         var notes = new List<string>();

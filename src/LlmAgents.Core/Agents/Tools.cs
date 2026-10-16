@@ -65,8 +65,9 @@ public static class Tools
 
     public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipes", "recipe", "salvage", "orders", "inventory", "tools" };
 
-    public const int MaxCraftAmount = 10;
+    public const int MaxCraftAmount = 24;
     public const int MaxTakeCount = 8;
+    public const int MaxMoveCount = 32;
 
     /// <summary>Vanilla order priorities: 1..3, 3 = most important.</summary>
     public const int TopPriority = 3;
@@ -246,12 +247,15 @@ public static class Tools
                    Arg("from", "Optional: a container, a room id or a crew member's name (their room)", required: false)),
             ToolKind.Task, ToolGroup.Core, c => c.Need(c.Str("item"), "item",
                 v => c.Game.TakeItem(c.Id, v, c.Int("count", 1, 1, MaxTakeCount, "amount"), c.Str("from")))) with { MovesOn = true },
-        T("move_item", "Carry an item into a container, to a room, or to a crew member; to='its place' = where it belongs.",
-            Schema(Arg("item", "Item (yours or on the sub)"), Arg("to", "Container name, room id, crew member or 'its place'")),
+        T("move_item", "Carry items into a container, to a room, or to a crew member; to='its place' = where they belong. "
+            + "Moves the whole stack (all of that item you carry, or all in the same cabinet or machine output) in your pockets, unless count is given.",
+            Schema(Arg("item", "Item (yours or on the sub)"), Arg("to", "Container name, room id, crew member or 'its place'"),
+                   Arg("count", $"How many, 1-{MaxMoveCount}; default: the whole stack", required: false, type: "integer")),
             ToolKind.Task, ToolGroup.Core, c =>
             {
                 var item = c.Str("item"); var to = c.Str("to");
-                return string.IsNullOrEmpty(item) || string.IsNullOrEmpty(to) ? "error: 'item' and 'to' are required" : c.Game.MoveItem(c.Id, item!, to!);
+                return string.IsNullOrEmpty(item) || string.IsNullOrEmpty(to) ? "error: 'item' and 'to' are required"
+                    : c.Game.MoveItem(c.Id, item!, to!, c.Int("count", 0, 0, MaxMoveCount));
             }) with { MovesOn = true },
         T("unequip", "Take off a worn or held item into your inventory.", Schema(Arg("item", "Item you wear or hold")), ToolKind.Order, ToolGroup.Inventory,
             c => c.Need(c.Str("item"), "item", v => c.Game.Unequip(c.Id, v))),
@@ -282,8 +286,10 @@ public static class Tools
         // ---- jobs
         T("refuel_reactor", "Bring a fuel rod and load it into the reactor (replaces a spent one).", NoArgs(), ToolKind.Task, ToolGroup.Crafting,
             c => c.Game.RefuelReactor(c.Id)) with { MovesOn = true },
-        T("craft", "Make an item at a fabricator. Exact name or [id] from inspect(kind='recipes'); salvage=true first breaks down scrap for missing materials.",
-            Schema(Arg("item", "Name or [id] from the recipes"), Arg("amount", $"1-{MaxCraftAmount}, default 1", required: false, type: "integer"),
+        T("craft", "Make an item at a fabricator. Exact name or [id] from inspect(kind='recipes'); salvage=true first breaks down scrap for missing materials. "
+            + "Products stay in the fabricator's output: bring them with move_item.",
+            Schema(Arg("item", "Name or [id] from the recipes"),
+                   Arg("amount", $"How many items, 1-{MaxCraftAmount}, default 1 (one craft may make several: 'x6 per craft')", required: false, type: "integer"),
                    Arg("salvage", "Deconstruct scrap for missing materials first", required: false, type: "boolean")),
             ToolKind.Task, ToolGroup.Crafting, c => c.Need(c.Str("item"), "item",
                 v => c.Game.Craft(c.Id, v, c.Int("amount", 1, 1, MaxCraftAmount), c.Bool("salvage") == true))) with { MovesOn = true },
@@ -302,6 +308,11 @@ public static class Tools
             ToolKind.Task, ToolGroup.Combat, c => c.Need(c.Str("target", "enemy") ?? "nearest", "target", v => c.Game.Attack(c.Id, v, c.Str("weapon", "tool", "item")))) with { MovesOn = true },
 
         // ---- lookups
+        T("recall", "Search what you remember (answer next turn): this round's conversation, what you did and where you put things, your notes, "
+            + "and long-term facts, past rounds, relationships and what players want. Use it when a player refers to something earlier "
+            + "('there', 'like I said', 'the thing from before') or before you say you do not know.",
+            Schema(Arg("query", "Words to look for (a name, an item, a room, a topic); empty = the latest of everything", required: false)),
+            ToolKind.Lookup, ToolGroup.Core, c => c.Mgr.Recall(c.Agent, c.Str("query", "about", "text"))),
         T("inspect", "Look something up (answer next turn). kind: patient (injuries, medicine; no query = all hurt), items (where; query = room id or name: what is there), "
             + "recipes (what can be made; optional filter), recipe (one item), salvage (what gives a material), orders (all game orders), inventory (your slots, contents, charge), tools (help for one tool).",
             Schema(Arg("kind", "What", en: InspectKinds.ToArray()), Arg("query", "Name, item, room, material or filter", required: false)),

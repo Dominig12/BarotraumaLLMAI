@@ -34,7 +34,8 @@ def latin(s: str) -> str:
 
 def route(prompt: str) -> list[str]:
     """Диспетчер чата: имена из ростера, упомянутые в сообщении; иначе по профессии; иначе все."""
-    message = prompt.split('"')[1].lower() if '"' in prompt else prompt.lower()
+    tail = prompt[prompt.index("Message from"):] if "Message from" in prompt else prompt
+    message = tail.split('"')[1].lower() if '"' in tail else tail.lower()
     roster = []
     for line in prompt.splitlines():
         if line.startswith("- ") and "| job:" in line:

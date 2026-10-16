@@ -83,7 +83,7 @@ public sealed class FakeGame : IGameApi
     public string Treat(int botId, string target, string? item) => Act(botId, $"treat {target}{(item != null ? " with " + item : "")}", "ok, started");
     public string Unequip(int botId, string item) => Act(botId, $"unequip {item}");
     public string Drop(int botId, string item) => Act(botId, $"drop {item}");
-    public string MoveItem(int botId, string item, string to) => Act(botId, $"move {item} -> {to}", "ok, started");
+    public string MoveItem(int botId, string item, string to, int count = 0) => Act(botId, $"move {item} -> {to}" + (count > 0 ? $" x{count}" : ""), "ok, started");
     public string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority) =>
         Act(botId, $"order {orderId}" + (option != null ? ":" + option : "") + (target != null ? $" @{target}" : "") + $" [p{priority}]");
     public string PutIn(int botId, string item, string into) => Act(botId, $"put {item} into {into}", "ok, started: put " + item);
@@ -159,6 +159,18 @@ public static class Fixtures
         const string marker = "Observation:\n";
         int i = user.IndexOf(marker, System.StringComparison.Ordinal);
         return i >= 0 ? user.Substring(i + marker.Length) : user;
+    }
+
+    /// <summary>A stand-in for the dispatcher model in tests: the roster names that appear in the message, else nobody.</summary>
+    public static string DispatchByName(string prompt)
+    {
+        var message = prompt.Contains("Message from") ? prompt[prompt.IndexOf("Message from")..] : prompt;
+        var quoted = message.Split('"').Skip(1).FirstOrDefault() ?? "";
+        var names = prompt.Split('\n').Where(l => l.StartsWith("- ") && l.Contains(" | job: ")).Select(l => l[2..].Split(" | ")[0]).ToList();
+        var text = Translit.ToLatin(quoted.ToLowerInvariant());
+        var hit = names.Where(n => text.Contains(Translit.ToLatin(n.Split(' ')[0].ToLowerInvariant())[..3])).ToList();
+        var arr = new System.Text.Json.Nodes.JsonArray(hit.Select(h => (System.Text.Json.Nodes.JsonNode)System.Text.Json.Nodes.JsonValue.Create(h)!).ToArray());
+        return OpenAiToolResponse((ChatDispatcher.ToolName, new System.Text.Json.Nodes.JsonObject { ["recipients"] = arr }.ToJsonString()));
     }
 
     public static string OpenAiToolResponse(params (string Name, string ArgsJson)[] calls)

@@ -263,7 +263,7 @@ public sealed class SettingsServiceTests
         Assert.Equal("global.decisionIntervalSeconds = 12", svc.HandleCommand("!llm set global.decisionIntervalSeconds 12", true));
         Assert.Equal(12, editor.Settings.Global.DecisionIntervalSeconds);
         Assert.Equal("global.maxNotes = 4", svc.HandleCommand("!llm set maxNotes 4", true)); // short key
-        Assert.Contains("от 1 до 20", svc.HandleCommand("!llm set maxNotes 99", true));
+        Assert.Contains("от 1 до 40", svc.HandleCommand("!llm set maxNotes 99", true));
         Assert.Equal("bots.autonomy = order", svc.HandleCommand("!llm set bots.autonomy \"По приказу\"", true));
         Assert.Equal("enabled = false", svc.HandleCommand("!llm set enabled нет", true));
         Assert.StartsWith("Нет такого ключа", svc.HandleCommand("!llm set nope 1", true));

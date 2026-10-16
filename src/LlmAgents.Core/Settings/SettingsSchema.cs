@@ -115,7 +115,7 @@ public static class SettingsSchema
         Add(F(General, "Набор инструментов", FieldType.Enum, V(s.Bots.ToolSelection), "bots", "toolSelection"),
             "Авто: в запрос идут инструменты, нужные по профессии и обстановке (меньше токенов, малые модели ошибаются реже); остальные перечислены одной строкой и тоже работают.",
             options: new() { "auto", "all" }, labels: new() { "Авто", "Все" }, group: Plans);
-        Add(F(General, "Заметок на раунд", FieldType.Int, V(g.MaxNotes), "global", "maxNotes"), min: 1, max: 20, group: Plans);
+        Add(F(General, "Заметок в промпте", FieldType.Int, V(g.MaxNotes), "global", "maxNotes"), "Сколько последних заметок remember видно в каждом запросе; более старые находит recall.", min: 1, max: 40, group: Plans);
 
         Add(F(General, "Язык речи ботов", FieldType.String, V(s.Bots.SpeechLanguage), "bots", "speechLanguage"),
             "Например Russian или English. Пусто = на языке игроков.", group: Speech);
@@ -237,14 +237,14 @@ public static class SettingsSchema
         Add(F(ChatAndMemory, "Префикс приказов", FieldType.String, V(c.Prefix), "chat", "prefix"), "Пусто = любое сообщение может быть приказом.", group: "Чат");
         Add(F(ChatAndMemory, "Модель-диспетчер", FieldType.Enum, V(c.Provider), "chat", "provider"), options: optionalProviders, labels: optionalProviderLabels, group: "Чат");
         Add(F(ChatAndMemory, "Зрители командуют ботами", FieldType.Bool, V(c.AllowSpectators), "chat", "allowSpectators"), group: "Чат");
-        Add(F(ChatAndMemory, "Услышал один бот → без диспетчера", FieldType.Bool, V(c.DirectIfSingleListener), "chat", "directIfSingleListener"), group: "Чат");
-        Add(F(ChatAndMemory, "Понятные приказы без диспетчера", FieldType.Bool, V(c.RuleRouting), "chat", "ruleRouting"),
-            "Имя бота, «все»/«экипаж», профессия («механики»), общий приказ («наденьте костюмы», «все ко мне») распределяются сразу, без запроса к модели. " +
-            "Диспетчер нужен только неясным сообщениям.", group: "Чат");
         Add(F(ChatAndMemory, "Подтверждать игроку", FieldType.Bool, V(c.ConfirmToSender), "chat", "confirmToSender"),
             "Личное сообщение отправителю: кто получил приказ, что его никто не услышал или что модель не смогла его выполнить.", group: "Чат");
         Add(F(ChatAndMemory, "Ждать диспетчера, с", FieldType.Float, V(c.DispatchWaitSeconds), "chat", "dispatchWaitSeconds"),
-            "Если для диспетчера нет свободного запроса так долго, приказ получают боты по именам в тексте (или все, кто слышал).", 1, 60, group: "Чат");
+            "Кому сообщение, решает модель-диспетчер (она видит недавний разговор). Если ответа нет так долго, сообщение получают все, кто слышал, " +
+            "с пометкой «возможно, не тебе», и каждый бот решает сам.", 1, 60, group: "Чат");
+        Add(F(ChatAndMemory, "Разговор в памяти, мин", FieldType.Float, V(c.ConversationMinutes), "chat", "conversationMinutes"),
+            "Сколько последних минут разговора видят диспетчер и боты: так понятно, кому адресовано сообщение без имени и о чём «там», «это».", 0, 60, group: "Чат");
+        Add(F(ChatAndMemory, "Строк разговора в запросе", FieldType.Int, V(c.ConversationLines), "chat", "conversationLines"), min: 0, max: 40, group: "Чат");
         var m = s.Memory;
         Add(F(ChatAndMemory, "Долговременная память", FieldType.Bool, V(m.Enabled), "memory", "enabled"), group: "Память");
         Add(F(ChatAndMemory, "Итог раунда через LLM", FieldType.Bool, V(m.RoundSummary), "memory", "roundSummary"), group: "Память");

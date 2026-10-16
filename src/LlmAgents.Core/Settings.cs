@@ -11,7 +11,7 @@ public sealed class ModSettings
 {
     /// <summary>Version of the file's layout. Older files get their untouched old defaults upgraded (see ConfigEditor).</summary>
     public int ConfigVersion { get; set; } = CurrentConfigVersion;
-    public const int CurrentConfigVersion = 2;
+    public const int CurrentConfigVersion = 3;
     public bool Enabled { get; set; } = true;
     public string DefaultProvider { get; set; } = "local";
     public string FallbackProvider { get; set; } = "";
@@ -132,6 +132,7 @@ public sealed class ModSettings
         if (Bots.ControlDecisionIntervalSeconds <= 0) throw new InvalidDataException("bots.controlDecisionIntervalSeconds must be > 0");
         if (Global.MaxIdleIntervalSeconds <= 0) throw new InvalidDataException("global.maxIdleIntervalSeconds must be > 0");
         if (Chat.DispatchWaitSeconds <= 0) throw new InvalidDataException("chat.dispatchWaitSeconds must be > 0");
+        if (Chat.ConversationMinutes < 0 || Chat.ConversationLines < 0) throw new InvalidDataException("chat.conversationMinutes and conversationLines must be >= 0");
         if (Global.MaxPlanSeconds <= 0) throw new InvalidDataException("global.maxPlanSeconds must be > 0");
         if (Global.PlanStepTimeoutSeconds <= 0) throw new InvalidDataException("global.planStepTimeoutSeconds must be > 0");
     }
@@ -188,7 +189,7 @@ public sealed class GlobalSettings
     public double MaxPlanSeconds { get; set; } = 180;
     /// <summary>A go_to_room step that has not arrived after this long stops the plan.</summary>
     public double PlanStepTimeoutSeconds { get; set; } = 90;
-    public int MaxNotes { get; set; } = 5;
+    public int MaxNotes { get; set; } = 12;
     public string LogFile { get; set; } = "llm_agents.log";
     public bool LogPrompts { get; set; } = true;
     /// <summary>Also log the model's raw text next to the parsed calls (useful when tuning a local model).</summary>
@@ -226,16 +227,16 @@ public sealed class ChatSettings
     public string Prefix { get; set; } = "";
     /// <summary>Players without a character (spectators, a host watching) can command every bot.</summary>
     public bool AllowSpectators { get; set; } = true;
-    /// <summary>If only one bot could hear the message, skip the dispatcher and give it to that bot.</summary>
-    public bool DirectIfSingleListener { get; set; } = true;
     public int MaxQueue { get; set; } = 10;
     /// <summary>Messages that could not be dispatched within this time (limits, outage) are dropped.</summary>
     public double MaxAgeSeconds { get; set; } = 30;
-    /// <summary>If the dispatcher gets no LLM slot this soon, the order is routed by names (or to everyone who heard it).</summary>
-    public double DispatchWaitSeconds { get; set; } = 6;
-    /// <summary>Route clear cases without the LLM dispatcher: a bot's name, "all"/"все", a job ("механики"),
-    /// a plural command. Only unclear messages go to the dispatcher.</summary>
-    public bool RuleRouting { get; set; } = true;
+    /// <summary>If the dispatcher gets no answer this soon (no free request, provider down, a reply it could not read),
+    /// every bot that heard the message gets it, marked as maybe not meant for it: each bot's model decides.</summary>
+    public double DispatchWaitSeconds { get; set; } = 12;
+    /// <summary>How far back the conversation goes that the dispatcher and the bots see.</summary>
+    public double ConversationMinutes { get; set; } = 5;
+    /// <summary>At most this many lines of it in a request.</summary>
+    public int ConversationLines { get; set; } = 12;
     /// <summary>The sender gets a private note: who took the order, that nobody heard it, or that a model failed.</summary>
     public bool ConfirmToSender { get; set; } = true;
 }

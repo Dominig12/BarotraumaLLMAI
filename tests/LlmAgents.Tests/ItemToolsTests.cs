@@ -27,7 +27,7 @@ public class ItemToolsTests
     [InlineData("equip", "{\"item\":\"diving suit\"}", "1:equip diving suit")]
     [InlineData("refuel_reactor", "{}", "1:refuel")]
     [InlineData("craft", "{\"item\":\"fuel rod\"}", "1:craft fuel rod x1")]
-    [InlineData("craft", "{\"item\":\"bandage\",\"amount\":50}", "1:craft bandage x10")]
+    [InlineData("craft", "{\"item\":\"bandage\",\"amount\":50}", "1:craft bandage x24")]
     [InlineData("craft", "{\"item\":\"bandage\",\"amount\":\"3\"}", "1:craft bandage x3")]
     [InlineData("deconstruct", "{\"item\":\"old wrench\"}", "1:deconstruct old wrench")]
     [InlineData("treat", "{\"target\":\"Mose Giorgio\"}", "1:treat Mose Giorgio")]
@@ -35,6 +35,8 @@ public class ItemToolsTests
     [InlineData("unequip", "{\"item\":\"welding tool\"}", "1:unequip welding tool")]
     [InlineData("drop", "{\"item\":\"empty tank\"}", "1:drop empty tank")]
     [InlineData("move_item", "{\"item\":\"bandage\",\"to\":\"Mose Giorgio\"}", "1:move bandage -> Mose Giorgio")]
+    [InlineData("move_item", "{\"item\":\"harpoon\",\"to\":\"Daniil\",\"count\":6}", "1:move harpoon -> Daniil x6")]
+    [InlineData("move_item", "{\"item\":\"steel\",\"to\":\"cabinet\",\"count\":99}", "1:move steel -> cabinet x32")]
     [InlineData("keep_gear", "{\"on\":true}", "1:keepgear True")]
     [InlineData("keep_gear", "{\"on\":\"off\"}", "1:keepgear False")]
     public void MapsToGame(string tool, string args, string expected)

@@ -19,7 +19,7 @@ public sealed partial class AgentManager
         if (autoGoal is { } goal) agent.SetGoal(goal.Text, now, goal.Source, goal.Player);
         bool keep = calls.Any(c => c.Name == "keep_plan");
         var steps = calls.Select(c => new PlanStep(c, authority)).ToList();
-        bool lookup = calls.Any(c => c.Name == "inspect");
+        bool lookup = calls.Any(c => Tools.Def(c.Name)?.Kind == ToolKind.Lookup);
 
         if (!Settings.Global.SequentialActions)
         {
@@ -311,6 +311,7 @@ public sealed partial class AgentManager
         game.BeginCommand(agent.Id, step.Authority);
         agent.UsedTool(step.Call.Name, clock());
         var result = Tools.Execute(step.Call, agent, game, this);
+        NoteSpeech(agent, step.Call, result);
         var line = $"{step.Call.Name}({Tools.ArgsToString(step.Call)}) -> {result}";
         if (step.Call.Name != "keep_plan") agent.RecordResult(line);
         if (!TalkTools.Contains(step.Call.Name) && result.StartsWith("ok") && !result.Contains("already"))
@@ -321,7 +322,7 @@ public sealed partial class AgentManager
             agent.BatchErrors.Add(line);
         }
         // the round log feeds the end-of-round summary: keep what matters, skip routine noise
-        if (step.Call.Name is not ("inspect" or "remember" or "return_to_default" or "wait" or "keep_gear" or "forget" or "keep_plan" or "set_goal")
+        if (step.Call.Name is not ("inspect" or "recall" or "remember" or "return_to_default" or "wait" or "keep_gear" or "forget" or "keep_plan" or "set_goal")
             && !result.Contains("already")) agent.LogEvent(line);
         Log.Info($"[{agent.Name}] {line}");
         return result;

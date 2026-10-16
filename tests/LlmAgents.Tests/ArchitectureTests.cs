@@ -249,6 +249,14 @@ public class ItemRulesTests
     }
 
     [Theory]
+    [InlineData(1, 6, 1)]     // one harpoon asked: one craft, six come out
+    [InlineData(6, 6, 1)]
+    [InlineData(7, 6, 2)]
+    [InlineData(3, 1, 3)]
+    [InlineData(0, 1, 1)]
+    public void Craft_runs_count_items_not_crafts(int items, int perCraft, int runs) => Assert.Equal(runs, ItemRules.CraftRuns(items, perCraft));
+
+    [Theory]
     [InlineData("ballast flora", true)]
     [InlineData("Балластная флора", true)]
     [InlineData("побеги в балласте", true)]

@@ -96,7 +96,7 @@ public static class Director
 
     /// <summary>The user message: why now, the submarine, the crew, earlier decisions.</summary>
     public static string Summary(IReadOnlyList<DirectorEvent> why, IReadOnlyList<DirectedBot> bots, IReadOnlyList<string> notes,
-        IReadOnlyList<string> results, double now)
+        IReadOnlyList<string> results, double now, IReadOnlyList<string>? talk = null)
     {
         var sb = new StringBuilder();
         sb.Append("Why you are asked now:\n");
@@ -163,6 +163,11 @@ public static class Director
             else if (HasNoWork(a, o)) sb.Append("; NO WORK");
             if (b.NotAssignable != null) sb.Append(" — NOT ASSIGNABLE: ").Append(b.NotAssignable);
             sb.Append('\n');
+        }
+        if (talk is { Count: > 0 })
+        {
+            sb.Append("\nRecent conversation (players' orders go to the bots themselves; plan around them):\n");
+            foreach (var l in talk) sb.Append("- ").Append(l).Append('\n');
         }
         if (notes.Count > 0)
         {

@@ -37,6 +37,52 @@ public sealed partial class AgentManager
         return view.IsEmpty ? null : view;
     }
 
+    /// <summary>recall(query): what the bot heard, did and knows, best matches first.</summary>
+    public string Recall(BotAgent agent, string? query)
+    {
+        double now = clock();
+        var items = new List<(string Source, string Text, double Age)>();
+        foreach (var l in conversation.All.Where(l => l.HeardByBot(agent.Id)))
+            items.Add(("talk", ConversationLog.Format(l, now, agent.Name), now - l.At));
+        foreach (var (text, at) in agent.AllNotes())
+            items.Add(("note", text, double.IsNaN(at) ? 1e6 : now - at));
+        var log = agent.RoundLog();
+        for (int i = 0; i < log.Count; i++) items.Add(("done", log[i], 1e5 + (log.Count - i)));   // no times: order only
+        if (MemoryOn && memory.Bot(agent.Name) is { } m)
+        {
+            foreach (var f in m.Facts) items.Add(("fact", f, 2e6));
+            foreach (var j in m.Journal) items.Add(("past round", j, 3e6));
+            foreach (var (person, rel) in m.Relationships) items.Add(("relationship", $"{person}: {rel.Feeling}" + (rel.Note.Length > 0 ? " - " + rel.Note : ""), 2e6));
+        }
+        if (MemoryOn)
+            foreach (var p in memory.Read(d => d.Players.SelectMany(kv => kv.Value.Select(v => $"{kv.Key}: {v}")).ToList()))
+                items.Add(("player wants", p, 2e6));
+        return RecallText(items, query);
+    }
+
+    /// <summary>The search behind recall: word stems, any alphabet; the latest first among equal matches.</summary>
+    public static string RecallText(List<(string Source, string Text, double Age)> items, string? query)
+    {
+        if (items.Count == 0) return "you remember nothing yet this round";
+        static string Stem(string w) { w = Translit.ToLatin(w.ToLowerInvariant()); return w.Length > 5 ? w[..5] : w; }
+        static IEnumerable<string> Words(string s) =>
+            s.Split(new[] { ' ', ',', '.', '!', '?', ':', ';', '"', '\'', '(', ')', '[', ']', '-', '«', '»', '/' }, StringSplitOptions.RemoveEmptyEntries)
+             .Where(w => w.Length >= 3).Select(Stem);
+        List<(string Source, string Text, double Age)> pick;
+        if (string.IsNullOrWhiteSpace(query))
+            pick = items.OrderBy(i => i.Age).Take(10).ToList();
+        else
+        {
+            var q = Words(query).Distinct().ToList();
+            if (q.Count == 0) q = new List<string> { Stem(query.Trim()) };
+            pick = items.Select(i => (i, score: Words(i.Text).Distinct().Count(q.Contains)))
+                .Where(t => t.score > 0).OrderByDescending(t => t.score).ThenBy(t => t.i.Age).Take(10).Select(t => t.i).ToList();
+            if (pick.Count == 0) return $"nothing about '{query}' in what you remember; try other words, or recall() for the latest";
+        }
+        var text = string.Join("\n", pick.Select(i => $"[{i.Source}] {i.Text}"));
+        return Tools.Clip(text, Tools.MaxInspectLength);
+    }
+
     public string Remember(BotAgent agent, string note, bool longTerm)
     {
         agent.AddNote(note, Settings.Global.MaxNotes, clock());

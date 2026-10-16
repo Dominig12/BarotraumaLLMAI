@@ -134,18 +134,21 @@ public sealed class ConfigEditor
         }
     }
 
-    /// <summary>Old default values replaced by better ones in configVersion 2 (event-driven bots, longer plans).
-    /// Only values still equal to the old default are changed: anything a user set stays.</summary>
-    static readonly (string Path, JsonNode Old, JsonNode New)[] DefaultsV2 =
+    /// <summary>Old default values replaced by better ones: configVersion 2 (event-driven bots, longer plans), 3 (the
+    /// dispatcher waits longer now that no rules route chat; more notes, since memory is a working tool). Only values
+    /// still equal to the old default are changed, and only by versions newer than the file: anything a user set stays.</summary>
+    static readonly (int Version, string Path, JsonNode Old, JsonNode New)[] Defaults =
     {
-        ("global.decisionIntervalSeconds", 10, 60),
-        ("global.minSecondsBetweenCallsPerBot", 4, 3),
-        ("global.maxActionsPerDecision", 3, 6),
-        ("global.historyTurns", 6, 10),
-        ("global.maxIdleIntervalSeconds", 60, 300),
-        ("bots.autonomy", "always", "events"),
-        ("bots.controlDecisionIntervalSeconds", 6, 20),
-        ("providers.*.maxOutputTokens", 300, 800),
+        (3, "chat.dispatchWaitSeconds", 6, 12),
+        (3, "global.maxNotes", 5, 12),
+        (2, "global.decisionIntervalSeconds", 10, 60),
+        (2, "global.minSecondsBetweenCallsPerBot", 4, 3),
+        (2, "global.maxActionsPerDecision", 3, 6),
+        (2, "global.historyTurns", 6, 10),
+        (2, "global.maxIdleIntervalSeconds", 60, 300),
+        (2, "bots.autonomy", "always", "events"),
+        (2, "bots.controlDecisionIntervalSeconds", 6, 20),
+        (2, "providers.*.maxOutputTokens", 300, 800),
     };
 
     /// <summary>
@@ -161,8 +164,9 @@ public sealed class ConfigEditor
         if (version >= ModSettings.CurrentConfigVersion) return changed;
 
         var copy = (JsonObject)JsonNode.Parse(root.ToJsonString(), NodeOptions)!;
-        foreach (var (path, old, @new) in DefaultsV2)
+        foreach (var (since, path, old, @new) in Defaults)
         {
+            if (version >= since) continue;
             var parts = path.Split('.');
             IEnumerable<(JsonObject Obj, string Label)> owners;
             if (parts[0] == "providers")

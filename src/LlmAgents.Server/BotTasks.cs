@@ -42,6 +42,7 @@ internal abstract class BotTask
     {
         if (Bot.IsDead || Bot.Removed) return Finish("failed: you died");
         if (Bot.IsIncapacitated) return null;
+        TrackMovement();
         if (Timing.TotalTime - StartedAt > TimeoutSeconds) return Finish($"failed: took too long ({Step})");
         try
         {
@@ -73,6 +74,7 @@ internal abstract class BotTask
         ClearObjective();
         objective = o;
         objectiveDone = objectiveFailed = false;
+        ResetStall();
         o.Completed += () => objectiveDone = true;
         o.Abandoned += () => objectiveFailed = true;
         Ai.ObjectiveManager.SetForcedOrder(o);
@@ -89,6 +91,34 @@ internal abstract class BotTask
         if (objective != null && Ai.ObjectiveManager.ForcedOrder == objective) Ai.ObjectiveManager.ClearForcedOrder();
         objective = null;
     }
+
+    Vector2 lastPos;
+    double lastMovedAt = Timing.TotalTime;
+
+    void TrackMovement()
+    {
+        if (Vector2.DistanceSquared(Bot.WorldPosition, lastPos) > 40f * 40f || objective == null)
+        {
+            lastPos = Bot.WorldPosition;
+            lastMovedAt = Timing.TotalTime;
+        }
+    }
+
+    /// <summary>The bot has not moved for this long while an objective runs: vanilla pathing gave up without saying so
+    /// (a target behind a wall or above the last waypoint: the bot just stands next to something else).</summary>
+    protected bool Stalled(double seconds = 6) => objective != null && Timing.TotalTime - lastMovedAt > seconds;
+
+    /// <summary>Restarts the stall clock (after a new objective, when standing still is expected).</summary>
+    protected void ResetStall()
+    {
+        lastPos = Bot.WorldPosition;
+        lastMovedAt = Timing.TotalTime;
+    }
+
+    /// <summary>Into the bot's pockets, not its hands: Any slots first, the hands only if nothing else is free.</summary>
+    protected bool Pocket(Item item) =>
+        Bot.Inventory.TryPutItem(item, Bot, new List<InvSlotType> { InvSlotType.Any })
+        || Bot.Inventory.TryPutItem(item, Bot, CharacterInventory.AnySlot);
 
     protected AIObjectiveGoTo GoTo(ISpatialEntity target, float closeEnough = 100f) =>
         new(target, Bot, Ai.ObjectiveManager, repeat: false, getDivingGearIfNeeded: true, closeEnough: closeEnough);
@@ -227,7 +257,8 @@ internal sealed class TakeItemsTask : BotTask
         if (current != null)
         {
             bool lost = current.Removed || (current.GetRootInventoryOwner() is Character owner && owner != Bot);
-            if (lost || ObjectiveFailed || (ObjectiveDone && current.GetRootInventoryOwner() != Bot))
+            if (!lost && Stalled(8) && IsNear(current, 250f) && Pocket(current)) { got.Add(current); current = null; ClearObjective(); return null; }
+            if (lost || ObjectiveFailed || Stalled(20) || (ObjectiveDone && current.GetRootInventoryOwner() != Bot))
             {
                 ClearObjective();
                 tried.Add(current);
@@ -248,6 +279,8 @@ internal sealed class TakeItemsTask : BotTask
             }
             if (next.GetRootInventoryOwner() == Bot) { got.Add(next); continue; }
             if (!HasRoom(next)) { full = true; return Report(); }
+            // the rest of a stack in the cabinet it is standing at: straight into the pockets, no walk per item
+            if (IsNear(next, 150f) && Pocket(next)) { got.Add(next); continue; }
             current = next;
             Run(Get(current), $"getting {current.Name} from {ItemQueries.Where(current, Bot)} ({got.Count + 1}/{wanted})");
             return null;
@@ -574,7 +607,8 @@ internal sealed class CraftTask : BotTask
     readonly List<string> unreachableWhere = new();
     double startedFabricatingAt;
     protected override double TimeoutSeconds => 120 + 120 * amount;
-    public override string Name => $"craft {recipe.DisplayName.Value} x{amount} ({made} done)";
+    int Yield => Crafting.Yield(recipe);
+    public override string Name => $"craft {recipe.DisplayName.Value} x{amount * Yield} ({made * Yield} done)";
 
     public CraftTask(Character bot, HumanAIController ai, Fabricator fabricator, FabricationRecipe recipe, int amount) : base(bot, ai)
     {
@@ -583,13 +617,31 @@ internal sealed class CraftTask : BotTask
         this.amount = amount;
     }
 
+    int walkTries;
+
+    /// <summary>null = at the fabricator; "" = still walking; anything else = the failure report.</summary>
+    string? ReachFabricator(string step)
+    {
+        if (IsNear(fabricator.Item, 180f) || Bot.CanInteractWith(fabricator.Item)) { ClearObjective(); walkTries = 0; return null; }
+        if (!HasObjective) { Run(GoTo(fabricator.Item, 50f), step); return ""; }
+        if (ObjectiveFailed || ObjectiveDone || Stalled(6))
+        {
+            // the path ends a few metres away (the machine sits behind a railing or above the last waypoint): close enough
+            if (IsNear(fabricator.Item, 450f)) { ClearObjective(); walkTries = 0; return null; }
+            ClearObjective();
+            if (++walkTries <= 2) return "";          // once more from where it stands now
+            return $"failed: cannot reach the fabricator (stuck in {(Bot.CurrentHull != null ? GameAdapter.RoomId(Bot.CurrentHull) : "?")})";
+        }
+        return "";
+    }
+
     protected override string? Update()
     {
         if (fabricator.Item.Removed) return "failed: the fabricator is gone";
 
         if (started)
         {
-            Step = $"fabricating {recipe.DisplayName.Value} ({made + 1}/{amount})";
+            Step = $"fabricating {recipe.DisplayName.Value} (craft {made + 1}/{amount})";
             if (fabricator.IsActive)
             {
                 if (Timing.TotalTime - startedFabricatingAt > recipe.RequiredTime * 4 + 30)
@@ -600,7 +652,11 @@ internal sealed class CraftTask : BotTask
             made++;
             ingredientIndex = 0;
             if (made >= amount)
-                return $"ok: made {made}x {recipe.DisplayName.Value}; it is in the fabricator's output";
+            {
+                int inOutput = fabricator.OutputContainer?.Inventory.AllItems.Count(i => i.Prefab == recipe.TargetItem) ?? 0;
+                return $"ok: made {made * Yield}x {recipe.DisplayName.Value} ({made} craft{(made > 1 ? "s" : "")}); {inOutput} in the output of {fabricator.Item.Name}" +
+                       $": take them with take_item(item=\"{recipe.TargetItem.Name.Value}\", count={Math.Max(1, inOutput)}, from=\"{fabricator.Item.Name}\") or move_item (moves the whole stack)";
+            }
         }
 
         // 1. bring every ingredient into the fabricator's input, one concrete item at a time:
@@ -642,7 +698,9 @@ internal sealed class CraftTask : BotTask
                         $"getting {name} ({ItemQueries.Where(fetching, Bot)})");
                     return null;
                 }
-                if (ObjectiveFailed)
+                // standing at the cabinet but the objective does not take it: reach in
+                if (Stalled(8) && IsNear(fetching, 250f) && Pocket(fetching)) { ClearObjective(); continue; }
+                if (ObjectiveFailed || Stalled(15))
                 {
                     // try the next one (another cabinet, another room) before giving up
                     unreachable.Add(fetching);
@@ -655,25 +713,18 @@ internal sealed class CraftTask : BotTask
                 return null;
             }
 
-            if (!HasObjective)
-            {
-                Run(new AIObjectiveContainItem(Bot, fetching, fabricator.InputContainer, Ai.ObjectiveManager) { RemoveEmpty = false },
-                    $"bringing {name} ({have}/{required.Amount}) to the fabricator");
-                return null;
-            }
-            if (ObjectiveFailed) return $"failed: could not put {name} into the fabricator (input full or unreachable?)";
-            if (ObjectiveDone) { fetching = null; ClearObjective(); continue; }  // re-check the count
-            return null;
+            // carry it there and put it in by hand: the vanilla "contain item" objective could stop a few metres short
+            // (next to a cabinet) and wait there for ever
+            var reach = ReachFabricator($"bringing {name} ({have}/{required.Amount}) to the fabricator");
+            if (reach != null) return reach.Length == 0 ? null : reach;
+            if (!input.TryPutItem(fetching, Bot)) return $"failed: could not put {name} into the fabricator (input full?)";
+            fetching = null;
+            continue;   // re-check the count
         }
 
         // 2. stand at the fabricator and start it
-        if (!IsNear(fabricator.Item, 180f))
-        {
-            if (!HasObjective) Run(GoTo(fabricator.Item, 80f), "walking to the fabricator");
-            else if (ObjectiveFailed) return "failed: cannot reach the fabricator";
-            return null;
-        }
-        ClearObjective();
+        var at = ReachFabricator("walking to the fabricator");
+        if (at != null) return at.Length == 0 ? null : at;
         fabricator.AmountToFabricate = 1;
         fabricator.amountRemaining = 1;
         fabricator.StartFabricating(recipe, Bot);
@@ -924,63 +975,99 @@ internal sealed class TreatTask : BotTask
 /// <summary>Carry an item into a container, to a room (dropped there) or into a crew member's inventory.</summary>
 internal sealed class MoveItemTask : BotTask
 {
-    Item item;
+    readonly List<Item> items;
     readonly ItemContainer? container;
     readonly Hull? room;
     readonly Character? receiver;
     readonly string destination;
     readonly FindReplacement? replace;
     readonly List<Item> tried = new();
-    bool pickedUp;
-    public override string Name => $"move {item.Name} to {destination}";
-    public override IEnumerable<Item> Claimed => new[] { item };
+    readonly HashSet<Item> failed = new();
+    readonly List<Item> delivered = new();
+    Item? fetching;
+    bool full;
+    int walkTries;
+    string label => items.Count == 0 ? "items" : items.Count == 1 ? items[0].Name : $"{items[0].Name} x{items.Count}";
+    public override string Name => $"move {label} to {destination}";
+    protected override double TimeoutSeconds => 150 + 10 * items.Count;
+    public override IEnumerable<Item> Claimed => items;
 
-    public MoveItemTask(Character bot, HumanAIController ai, Item item, ItemContainer? container, Hull? room, Character? receiver, string destination,
+    /// <param name="items">One stack (or one item): picked up into the pockets together, delivered together.</param>
+    public MoveItemTask(Character bot, HumanAIController ai, List<Item> items, ItemContainer? container, Hull? room, Character? receiver, string destination,
         FindReplacement? replace = null)
         : base(bot, ai)
     {
-        this.item = item;
+        this.items = items;
         this.container = container;
         this.room = room;
         this.receiver = receiver;
         this.destination = destination;
-        this.replace = item.GetRootInventoryOwner() == bot ? null : replace; // the bot's own item: that one, no other
+        // the bot's own item: that one, no other
+        this.replace = items.Count == 1 && items[0].GetRootInventoryOwner() != bot ? replace : null;
     }
+
+    bool Mine(Item i) => !i.Removed && i.GetRootInventoryOwner() == Bot;
+    bool Lost(Item i) => i.Removed || (i.GetRootInventoryOwner() is Character owner && owner != Bot);
 
     protected override string? Update()
     {
-        if (container != null && item.ParentInventory == container.Inventory) return $"ok: {item.Name} is in {destination}";
+        if (container != null && items.All(i => i.Removed || failed.Contains(i) || i.ParentInventory == container.Inventory))
+            return Report();
 
-        // pick it up first (the "contain item" objective gives up on items the bot cannot reach from where it stands)
-        if (item.GetRootInventoryOwner() != Bot)
+        // 1. everything into the pockets first: one trip, not one per item (the vanilla objectives carry them one by one)
+        while (!full)
         {
-            bool lost = item.Removed || (item.GetRootInventoryOwner() is Character owner && owner != Bot);
-            if (lost || ObjectiveFailed)
+            if (fetching != null && Mine(fetching)) { fetching = null; ClearObjective(); }
+            if (fetching != null && (Lost(fetching) || ObjectiveFailed || Stalled(15)))
             {
-                if (pickedUp && !lost) return $"failed: {item.Name} slipped out of your inventory";
-                if (tried.Count >= 2 || replace?.Invoke(item, tried.Append(item).ToList()) is not { } next)
-                    return lost ? $"failed: {item.Name} {(item.Removed ? "is gone" : "was taken by someone else")}" : $"failed: could not get {item.Name}";
-                tried.Add(item);
                 ClearObjective();
-                item = next;
+                var lostOne = fetching;
+                fetching = null;
+                if (replace != null && tried.Count < 2 && replace(lostOne, tried.Append(lostOne).ToList()) is { } next)
+                {
+                    tried.Add(lostOne);
+                    items[items.IndexOf(lostOne)] = next;
+                    continue;
+                }
+                failed.Add(lostOne);
+                continue;
             }
-            if (!HasObjective) Run(new AIObjectiveGetItem(Bot, item, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false }, $"getting {item.Name} from {ItemQueries.Where(item, Bot)}");
-            else if (ObjectiveDone) ClearObjective();
-            return null;
-        }
-        if (item.Removed) return $"failed: {item.Name} is gone";
-        if (!pickedUp) { pickedUp = true; ClearObjective(); }
-
-        if (container != null)
-        {
-            if (!HasObjective)
+            if (fetching != null)
             {
-                Run(new AIObjectiveContainItem(Bot, item, container, Ai.ObjectiveManager) { RemoveEmpty = false }, $"carrying {item.Name} to {destination}");
+                // standing at the cabinet but the objective does not take it: reach in
+                if (Stalled(6) && IsNear(fetching, 250f) && Pocket(fetching)) { fetching = null; ClearObjective(); continue; }
+                if (ObjectiveDone) { ClearObjective(); failed.Add(fetching); fetching = null; continue; }   // done, but not in the pockets
+                if (!HasObjective) Run(Get(fetching), Step);
                 return null;
             }
-            if (ObjectiveFailed) return $"failed: could not put {item.Name} into {destination} (full or unreachable?)";
-            if (ObjectiveDone) return item.ParentInventory == container.Inventory ? $"ok: {item.Name} is in {destination}" : $"failed: {item.Name} did not fit into {destination}";
+            var pending = items.Where(i => !Mine(i) && !failed.Contains(i) && !(container != null && i.ParentInventory == container.Inventory)).ToList();
+            if (pending.Count == 0) break;
+            foreach (var p in pending.Where(Lost).ToList()) { failed.Add(p); pending.Remove(p); }
+            if (pending.Count == 0) break;
+            var near = pending.FirstOrDefault(i => IsNear(i, 150f));
+            if (near != null)
+            {
+                if (Pocket(near)) continue;
+                full = items.Any(Mine);       // no room left: deliver what it has
+                if (!full) { failed.Add(near); continue; }
+                break;
+            }
+            fetching = pending.OrderBy(i => Vector2.DistanceSquared(i.WorldPosition, Bot.WorldPosition)).First();
+            Run(Get(fetching), $"getting {fetching.Name} from {ItemQueries.Where(fetching, Bot)} ({items.Count(Mine) + 1}/{items.Count})");
             return null;
+        }
+
+        var load = items.Where(Mine).ToList();
+        if (load.Count == 0) return Report();
+
+        // 2. to the destination, then everything at once
+        if (container != null)
+        {
+            var arrived = Arrive(container.Item, 160f, $"carrying {label} to {destination}");
+            if (arrived != null) return arrived.Length == 0 ? null : arrived;
+            foreach (var i in load)
+                if (container.Inventory.TryPutItem(i, Bot)) delivered.Add(i); else failed.Add(i);
+            return Report();
         }
 
         if (receiver != null)
@@ -988,30 +1075,62 @@ internal sealed class MoveItemTask : BotTask
             if (receiver.Removed || receiver.IsDead) return $"failed: {receiver.Name} is dead";
             if (!IsNear(receiver, 120f))
             {
-                if (!HasObjective) Run(GoTo(receiver, 60f), $"bringing {item.Name} to {receiver.Name}");
+                if (!HasObjective) Run(GoTo(receiver, 60f), $"bringing {label} to {receiver.Name}");
                 else if (ObjectiveFailed) return $"failed: cannot reach {receiver.Name}";
                 return null;
             }
             ClearObjective();
-            if (receiver.Inventory.TryPutItem(item, Bot, new List<InvSlotType> { InvSlotType.Any }))
-                return $"ok: gave {item.Name} to {receiver.Name}";
-            item.Drop(Bot);
-            return $"ok: {receiver.Name}'s inventory is full, left {item.Name} at their feet";
+            foreach (var i in load)
+            {
+                if (!receiver.Inventory.TryPutItem(i, Bot, new List<InvSlotType> { InvSlotType.Any })) i.Drop(Bot);
+                delivered.Add(i);
+            }
+            return Report();
         }
 
         if (room != null)
         {
             if (Bot.CurrentHull != room)
             {
-                if (!HasObjective) Run(GoTo(room, 80f), $"carrying {item.Name} to {GameAdapter.RoomId(room)}");
+                if (!HasObjective) Run(GoTo(room, 80f), $"carrying {label} to {GameAdapter.RoomId(room)}");
                 else if (ObjectiveFailed) return $"failed: cannot reach {GameAdapter.RoomId(room)}";
                 else if (ObjectiveDone && Bot.CurrentHull != room) return $"failed: did not get into {GameAdapter.RoomId(room)}";
                 return null;
             }
             ClearObjective();
-            item.Drop(Bot);
-            return $"ok: left {item.Name} in {GameAdapter.RoomId(room)}";
+            foreach (var i in load) { i.Drop(Bot); delivered.Add(i); }
+            return Report();
         }
         return "failed: no destination";
+    }
+
+    AIObjectiveGetItem Get(Item i) => new(Bot, i, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false };
+
+    /// <summary>null = there; "" = walking; else the failure.</summary>
+    string? Arrive(Item target, float near, string step)
+    {
+        if (IsNear(target, near) || Bot.CanInteractWith(target)) { ClearObjective(); return null; }
+        if (!HasObjective) { Run(GoTo(target, 60f), step); return ""; }
+        if (ObjectiveFailed || ObjectiveDone || Stalled(6))
+        {
+            if (IsNear(target, 400f)) { ClearObjective(); return null; }   // the path ends a little short of it
+            ClearObjective();
+            return ++walkTries <= 2 ? "" : $"failed: cannot reach {destination}";
+        }
+        return "";
+    }
+
+    string Report()
+    {
+        var where = receiver != null ? $"gave to {receiver.Name}" : container != null ? $"in {destination}" : $"left in {destination}";
+        var inPlace = container != null ? items.Where(i => !i.Removed && i.ParentInventory == container.Inventory).ToList() : delivered;
+        string Count(IEnumerable<Item> l) => string.Join(", ", l.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"));
+        if (inPlace.Count == 0)
+            return $"failed: could not move {label} ({(full ? "your inventory is full" : failed.Count > 0 ? "could not get it or it did not fit" : "nothing to move")})";
+        var notDone = items.Where(i => !inPlace.Contains(i)).ToList();
+        var r = receiver != null ? $"ok: gave {Count(inPlace)} to {receiver.Name}" : $"ok: {Count(inPlace)} {where}";
+        if (notDone.Count > 0)
+            r += $"; {notDone.Count} not moved ({(full ? "inventory full" : "out of reach or did not fit")}){(notDone.Any(Mine) ? ", still in your inventory" : "")}";
+        return r;
     }
 }

@@ -140,20 +140,21 @@ public class Log3FixesTests
     }
 
     [Fact]
-    public async Task OrderIsRoutedByNamesWhenTheDispatcherGetsNoSlot()
+    public async Task OrderGoesToEveryListenerWhenTheDispatcherGetsNoSlot()
     {
         game.AddBot(1, "Ann", "mechanic").AddBot(2, "Bob", "engineer");
         // two requests in total: the bots' first looks use them up, the dispatcher never gets a slot
-        var settings = Fixtures.Settings(@", ""dailyRequestBudget"": 2", extraRoot: "\"chat\": { \"ruleRouting\": false },");
+        var settings = Fixtures.Settings(@", ""dailyRequestBudget"": 2");
         var handler = new FakeHandler(_ => (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("wait", "{}"))));
         var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
         for (int i = 0; i < 5; i++) { mgr.Update(); await mgr.WhenIdle(); clock.Advance(0.5); }
         mgr.SubmitChat(new ChatCommand("Daniil", null, "Bob, разбери сварочный аппарат", new[] { 1, 2 }, true));
-        for (int i = 0; i < 20; i++) { mgr.Update(); await mgr.WhenIdle(); clock.Advance(0.5); }
+        for (int i = 0; i < 30; i++) { mgr.Update(); await mgr.WhenIdle(); clock.Advance(0.5); }
 
         Assert.Equal(0, mgr.PendingChatCount);
-        Assert.True(mgr.GetAgent(2)!.HasPlayerOrder);   // delivered (no slot to act on it yet), not dropped
-        Assert.False(mgr.GetAgent(1)!.HasPlayerOrder);
+        // delivered (no slot to act on it yet), not dropped; no rule guesses from the name: both heard it, each will decide
+        Assert.True(mgr.GetAgent(2)!.HasPlayerOrder);
+        Assert.True(mgr.GetAgent(1)!.HasPlayerOrder);
     }
 
     [Fact]

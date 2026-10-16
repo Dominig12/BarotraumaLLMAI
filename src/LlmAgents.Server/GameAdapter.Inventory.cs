@@ -51,11 +51,38 @@ public sealed partial class GameAdapter
         return $"ok, dropped {item.Name}";
     }
 
-    public string MoveItem(int botId, string query, string to)
+    public const int MaxMoveStack = 32;
+
+    /// <summary>The item and the rest of its stack: all of that item the bot carries, or all in the same cabinet or machine
+    /// output (or lying loose next to it). count &gt; 0 = that many, nearest first.</summary>
+    List<Item> StackOf(Character c, Item item, int count)
+    {
+        int max = count > 0 ? Math.Min(count, MaxMoveStack) : MaxMoveStack;
+        IEnumerable<Item> same;
+        if (item.GetRootInventoryOwner() == c)
+            same = Carried(c).Where(i => i.Prefab == item.Prefab && !c.HasEquippedItem(i));
+        else if (item.ParentInventory != null)
+            same = item.ParentInventory.AllItems.Where(i => i.Prefab == item.Prefab);
+        else
+            same = Item.ItemList.Where(i => !i.Removed && i.Prefab == item.Prefab && i.ParentInventory == null && i.CurrentHull == item.CurrentHull
+                                            && Vector2.Distance(i.WorldPosition, item.WorldPosition) < 200f);
+        var claimed = ClaimedByOthers(c);
+        var list = new List<Item> { item };
+        list.AddRange(same.Where(i => i != item && !claimed.Contains(i) && ItemQueries.IsAvailableTo(i, c)).Take(max - 1));
+        if (count > list.Count)
+        {
+            // asked for more than one stack holds: the nearest others of the same item
+            list.AddRange(ItemQueries.Find(c, item.Prefab.Identifier.Value, i => i.Prefab == item.Prefab && i.GetRootInventoryOwner() != c, claimed)
+                .Where(i => !list.Contains(i)).Take(count - list.Count));
+        }
+        return list;
+    }
+
+    public string MoveItem(int botId, string query, string to, int count = 0)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
         // "to me" / "себе" / its own name: pick it up into the inventory
-        if (ItemWords.IsSelf(to, c.Name)) return TakeItem(botId, query, 1);
+        if (ItemWords.IsSelf(to, c.Name)) return TakeItem(botId, query, count > 0 ? count : 1);
 
         // what it carries first, but not the diving suit it has to keep on: then a spare one from the sub
         bool Locked(Item i) => i.HasTag(Tags.HeavyDivingGear) && c.HasEquippedItem(i) && GearLock.IsLocked(c) && !PlayerSaidSo(c);
@@ -65,22 +92,23 @@ public sealed partial class GameAdapter
         if (item == null)
             return carried != null ? "error: your diving gear is locked (danger or keep_gear) and there is no spare one aboard" : NotFound(c, query);
         var replace = Replacer(c);
+        var stack = StackOf(c, item, count);
 
         // "на место" / "away": where it belongs (onto the same items first)
         if (ItemWords.IsItsPlace(to))
         {
             var place = StoragePlanner.Choose(c, item, new HashSet<Item>());
             if (place == null) return $"error: no fitting place for {item.Name} on the sub; name a container or a room";
-            return StartTask(c, new MoveItemTask(c, ai, item, place.Container, null, null, StoragePlanner.Describe(place.Container), replace));
+            return StartTask(c, new MoveItemTask(c, ai, stack, place.Container, null, null, StoragePlanner.Describe(place.Container), replace));
         }
 
         // a crew member?
         var receiver = FindCrew(to, c, includeSelf: false);
-        if (receiver != null) return StartTask(c, new MoveItemTask(c, ai, item, null, null, receiver, receiver.Name, replace));
+        if (receiver != null) return StartTask(c, new MoveItemTask(c, ai, stack, null, null, receiver, receiver.Name, replace));
 
         // a room?
         var hull = to.Contains("[h") ? ResolveRoom(to) : null;
-        if (hull != null) return StartTask(c, new MoveItemTask(c, ai, item, null, hull, null, RoomId(hull), replace));
+        if (hull != null) return StartTask(c, new MoveItemTask(c, ai, stack, null, hull, null, RoomId(hull), replace));
 
         // a container on the sub that accepts the item
         var container = Item.ItemList
@@ -93,10 +121,10 @@ public sealed partial class GameAdapter
             .ThenBy(t => Vector2.DistanceSquared(t.i.WorldPosition, c.WorldPosition))
             .FirstOrDefault();
         if (container.ic != null)
-            return StartTask(c, new MoveItemTask(c, ai, item, container.ic, null, null, $"{container.i.Name} in {(container.i.CurrentHull != null ? RoomId(container.i.CurrentHull) : "?")}", replace));
+            return StartTask(c, new MoveItemTask(c, ai, stack, container.ic, null, null, $"{container.i.Name} in {(container.i.CurrentHull != null ? RoomId(container.i.CurrentHull) : "?")}", replace));
 
         hull = ResolveRoom(to);
-        if (hull != null) return StartTask(c, new MoveItemTask(c, ai, item, null, hull, null, RoomId(hull), replace));
+        if (hull != null) return StartTask(c, new MoveItemTask(c, ai, stack, null, hull, null, RoomId(hull), replace));
         return $"error: '{to}' is not a crew member, a room id or a container that can hold {item.Name} (to take it yourself: take_item)";
     }
 

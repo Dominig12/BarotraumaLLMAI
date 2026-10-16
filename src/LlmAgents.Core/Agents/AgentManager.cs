@@ -121,6 +121,7 @@ public sealed partial class AgentManager : IDisposable
         agentsCreated = 0;
         nextTick = double.NegativeInfinity;
         ResetDirector();
+        conversation.Clear();
     }
 
     // ---------------------------------------------------------------- game thread

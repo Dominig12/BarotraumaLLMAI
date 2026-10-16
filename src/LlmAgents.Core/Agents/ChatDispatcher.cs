@@ -11,11 +11,11 @@ namespace LlmAgents.Agents;
 public sealed record ChatCommand(string SenderName, string? SenderJob, string Text, IReadOnlyList<int> ListenerIds, bool ViaRadio, string? SenderRoom = null);
 
 /// <summary>One bot as the dispatcher sees it.</summary>
-public sealed record RosterEntry(int Id, string Name, string Job, string? Room, string CurrentOrder);
+public sealed record RosterEntry(int Id, string Name, string Job, string? Room, string CurrentOrder, string? Goal = null);
 
 /// <summary>
-/// Step 1 of a chat order: an LLM decides which AI crew members the message is meant for.
-/// Step 2 (in AgentManager): every recipient gets the order and handles it with its own LLM call.
+/// Step 1 of a chat message: a model decides which AI crew members it is meant for, seeing the recent conversation.
+/// Step 2 (in AgentManager): every recipient gets it and handles it with its own model.
 /// </summary>
 public static class ChatDispatcher
 {
@@ -52,20 +52,31 @@ Rules:
 - A plural command with no addressee (Russian verbs ending in -те: 'разберите', 'идите', 'несите'; 'guys', 'ребята', 'все за мной')
   -> everybody, or everybody whose job fits the task.
 - The sender is a human player and is never in the roster. 'me', 'мне', 'ко мне', 'за мной' mean the sender.
+- Use the recent conversation. A message without a name usually continues it: a follow-up ('и потом скажи, что там',
+  'ты чего копаешься', 'нет, другой', 'а теперь...') goes to the crew member the sender was just talking with (who got
+  their last message or answered them), unless the content clearly means someone else. 'там', 'это', 'он' refer to it.
+- An answer to a question a crew member asked the sender goes to that crew member.
 - A greeting or small talk to everyone ('привет всем', 'hi all') -> only ONE crew member answers (the captain if present).
 - 'someone' / 'кто-нибудь' or an order with no addressee -> the single most suitable crew member for the task (right job, nearby, not busy).
 - Plain chatter, jokes, or messages clearly for other humans -> empty recipients.
 - Only use names that are in the roster.";
 
-    public static string UserPrompt(ChatCommand cmd, IReadOnlyList<RosterEntry> roster)
+    public static string UserPrompt(ChatCommand cmd, IReadOnlyList<RosterEntry> roster, IReadOnlyList<string>? conversation = null)
     {
         var sb = new StringBuilder();
+        if (conversation is { Count: > 0 })
+        {
+            sb.Append("Recent conversation (newest last; '->' = who it was for):\n");
+            foreach (var l in conversation) sb.Append("- ").Append(l).Append('\n');
+            sb.Append('\n');
+        }
         sb.Append("Message from ").Append(cmd.SenderName);
         if (!string.IsNullOrEmpty(cmd.SenderJob)) sb.Append(" (").Append(cmd.SenderJob).Append(')');
         sb.Append(cmd.ViaRadio ? " over the radio" : " out loud").Append(":\n\"").Append(cmd.Text).Append("\"\n\nRoster (AI crew who heard it):\n");
         foreach (var r in roster)
             sb.Append("- ").Append(r.Name).Append(" | job: ").Append(r.Job)
-              .Append(" | room: ").Append(r.Room ?? "outside").Append(" | current order: ").Append(r.CurrentOrder).Append('\n');
+              .Append(" | room: ").Append(r.Room ?? "outside").Append(" | current order: ").Append(r.CurrentOrder)
+              .Append(r.Goal != null ? " | working on: " + Tools.Clip(r.Goal, 120) : "").Append('\n');
         return sb.ToString();
     }
 
@@ -106,11 +117,15 @@ Rules:
 
     static bool IsEveryone(string s) => Everyone.Any(e => s.Equals(e, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>
-    /// Used when the dispatcher LLM is unavailable: names mentioned in the text; an order for everybody to all who
-    /// heard it; a one-person job to the most suitable bot (see <see cref="ChatRouter.Fallback"/>).
-    /// </summary>
-    public static List<RosterEntry> Fallback(ChatCommand cmd, IReadOnlyList<RosterEntry> roster) => ChatRouter.Fallback(cmd, roster);
+    /// <summary>What every listener gets when the dispatcher could not tell who a message is for.</summary>
+    public static string FormatUnsure(ChatCommand cmd, RosterEntry me)
+    {
+        var who = cmd.SenderJob != null ? $"{cmd.SenderName} ({cmd.SenderJob})" : cmd.SenderName;
+        var where = cmd.SenderRoom != null ? $", in {cmd.SenderRoom}" : "";
+        return $"{who}{(cmd.ViaRadio ? " on radio" : "")}{where}: \"{cmd.Text}\" ('me' = {cmd.SenderName}) [heard by everyone nearby; " +
+               "it is not clear who it is for: look at 'conversation'. Answer or act only if it is meant for you (your name, your job, " +
+               "or it continues your talk with them); otherwise carry_on and leave it to the others]";
+    }
 
     /// <summary>Text the recipient bot sees in 'playerOrders'.</summary>
     public static string FormatOrder(ChatCommand cmd, IReadOnlyList<RosterEntry> recipients, RosterEntry me)

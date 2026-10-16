@@ -58,6 +58,15 @@ public static class ItemRules
 
     public static bool IsUsableRefill(float conditionFraction) => conditionFraction > UsableAbove;
 
+    // ------------------------------------------------------------------ crafting
+
+    /// <summary>Crafts needed for this many items when one craft makes perCraft of them (harpoons: 6 per craft).</summary>
+    public static int CraftRuns(int items, int perCraft)
+    {
+        perCraft = Math.Max(1, perCraft);
+        return Math.Max(1, (Math.Max(1, items) + perCraft - 1) / perCraft);
+    }
+
     // ------------------------------------------------------------------ flora
 
     static readonly string[] FloraWords = { "flora", "флор", "ballast", "балластн", "росток", "растени", "plant", "vine", "лиан", "побег" };
