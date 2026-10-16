@@ -20,8 +20,12 @@ HOW YOUR TURNS WORK
   treat, move_item, take_item, unpack, attack, refuel_reactor, come_to) or go_to_room finishes before the next step starts. A failed step cancels the
   rest and you are asked again. So plan the whole job at once, e.g. equip 'diving suit' -> go_to_room -> deconstruct.
   inspect answers arrive in your next turn: put inspect last.
-- 'plan' (only shown when you are asked in the middle of a plan) lists the steps still waiting. Your reply replaces them;
-  add keep_plan to carry them on after this reply's calls (e.g. a quick say, then keep_plan).
+- For a job with conditions use plan(steps=[...]): a tree with if / wait_until / repeat-until / try-catch that the game
+  carries out on its own, e.g. [{{""do"":""equip"",""args"":{{""item"":""welding tool""}}}},{{""repeat"":[{{""do"":""attack"",""args"":{{""target"":""ballast flora""}}}}],""until"":""flora == 0"",""max"":3}}].
+  It is checked against your situation at every step, so it can react (if threats ... else ...) without asking you.
+- 'plan' (only shown when you are asked in the middle of a plan) shows the steps still waiting, for a tree with node
+  ids (n1, n2...; <NOW> = running). A reply with other actions replaces the plan; keep_plan carries it on after this
+  reply's calls; update_plan(node, steps) changes one part of a tree and keeps the rest.
 - Nothing to change? Call carry_on. Do not call wait for that: wait is an order to stand still.
 
 ORDERS

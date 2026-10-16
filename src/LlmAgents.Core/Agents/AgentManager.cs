@@ -45,7 +45,7 @@ public sealed partial class AgentManager : IDisposable
     /// <summary>Tools that start a multi-step task; with sequentialActions the next step waits for its result.</summary>
     public static readonly IReadOnlyCollection<string> TaskTools = new[] { "equip", "refuel_reactor", "craft", "deconstruct", "treat", "move_item", "take_item", "unpack", "attack", "come_to" };
     /// <summary>Calls that only talk or note things down: they change nothing in the game.</summary>
-    static readonly IReadOnlyCollection<string> TalkTools = new[] { "say", "message_crew", "remember", "forget", "note_relationship", "note_preference", "inspect", "keep_plan", "set_goal", "carry_on" };
+    static readonly IReadOnlyCollection<string> TalkTools = new[] { "say", "message_crew", "remember", "forget", "note_relationship", "note_preference", "inspect", "keep_plan", "set_goal", "carry_on", "update_plan" };
     /// <summary>Echoed bot-to-bot messages are clipped to this (the game's chat limit is about 200).</summary>
     public const int MaxChatEcho = 190;
     const double FlushSeconds = 15;
@@ -136,6 +136,7 @@ public sealed partial class AgentManager : IDisposable
         DrainControl(now);
         DrainMenuOrders(now);
         CheckArrivals(now);
+        CheckConditions(now);
         DispatchChats(now);       // chat routing gets LLM slots before the bots
         ScheduleDecisions(now);
 

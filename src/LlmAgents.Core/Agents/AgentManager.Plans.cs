@@ -29,6 +29,67 @@ public sealed partial class AgentManager
             return;
         }
 
+        // a plan with conditions: "plan" writes the tree, "update_plan" changes a part of it
+        var planCall = calls.FirstOrDefault(c => c.Name == "plan");
+        var updates = calls.Where(c => c.Name == "update_plan").ToList();
+        if (planCall == null && updates.Count > 0 && agent.Tree != null)
+        {
+            foreach (var u in updates)
+            {
+                var node = Tools.Str(u.Arguments, "node") ?? Tools.Str(u.Arguments, "id") ?? "";
+                var err = agent.Tree.Replace(node.Trim(), u.Arguments["steps"], PlanToolNames);
+                var line = $"update_plan(node={node}) -> {(err == null ? "ok, plan now: " + agent.Tree.Describe(300) : "error: " + err)}";
+                agent.RecordResult(line);
+                Log.Info($"[{agent.Name}] {line}");
+                if (err != null) { agent.AddError(line); agent.BatchErrors.Add(line); }
+            }
+            foreach (var step in steps.Where(s => s.Call.Name != "update_plan")) Run(agent, step);
+            agent.PlanReviewed = false;
+            if (agent.Waiting == PlanWait.Condition) agent.Waiting = PlanWait.None;   // the wait may be gone: look again
+            if (Advance(agent, now) && !agent.Busy) PlanFinished(agent, "plan done", now);
+            return;
+        }
+        if (planCall != null)
+        {
+            // the reply's other calls become steps of the tree, in their place
+            var all = new System.Text.Json.Nodes.JsonArray();
+            foreach (var c in calls.Where(c => c.Name != "update_plan" && c.Name != "keep_plan"))
+            {
+                if (c.Name == "plan")
+                {
+                    var s = c.Arguments["steps"] ?? c.Arguments["plan"] ?? c.Arguments["tree"];
+                    if (s is System.Text.Json.Nodes.JsonArray arr) foreach (var n in arr) all.Add(n?.DeepClone());
+                    else if (s != null) all.Add(s.DeepClone());
+                }
+                else all.Add(new System.Text.Json.Nodes.JsonObject { ["do"] = c.Name, ["args"] = c.Arguments.DeepClone() });
+            }
+            PlanTree tree;
+            try { tree = PlanTree.Build(all, PlanToolNames); }
+            catch (FormatException e)
+            {
+                var line = "plan -> error: " + e.Message + ". Nothing was done; send the plan again, fixed";
+                agent.RecordResult(line);
+                agent.AddError(line);
+                Log.Info($"[{agent.Name}] {line}");
+                if (agent.ErrorStreak == 0)
+                {
+                    agent.ErrorStreak = 1;
+                    agent.AddEvent(EventKind.TaskFailed, "your plan could not be read: " + Tools.Clip(e.Message, 160), now);
+                }
+                return;
+            }
+            if (agent.Busy) Log.Info($"[{agent.Name}] new plan replaces: {agent.PlanText()}");
+            agent.ClearPlan();
+            agent.Tree = tree;
+            agent.TreeAuthority = authority;
+            agent.PlanStartedAt = now;
+            agent.BatchErrors.Clear();
+            agent.ErrorStreak = 0;
+            Log.Info($"[{agent.Name}] plan: {tree.Describe(500)}");
+            if (Advance(agent, now) && !agent.Busy) PlanFinished(agent, "plan done", now);
+            return;
+        }
+
         if (keep && agent.Busy)
         {
             // a word in between (say, message...), then the old plan goes on
@@ -60,10 +121,65 @@ public sealed partial class AgentManager
     /// <returns>false = a step failed (the bot was told and will think again), so the plan is not "done".</returns>
     bool Advance(BotAgent agent, double now)
     {
-        while (agent.Waiting == PlanWait.None && agent.Plan.Count > 0)
+        while (agent.Waiting == PlanWait.None && (agent.Plan.Count > 0 || agent.Tree != null))
         {
+            if (agent.Plan.Count == 0)
+            {
+                // the tree decides what comes next (conditions are checked against the bot's situation right now)
+                var next = agent.Tree!.Next(ConditionContext(agent, now));
+                switch (next)
+                {
+                    case PlanTree.ActAction a:
+                        agent.Plan.Add(new PlanStep(a.Call, agent.TreeAuthority, a.NodeId));
+                        continue;
+                    case PlanTree.WaitAction w:
+                        agent.Waiting = PlanWait.Condition;
+                        agent.WaitingSince = now;
+                        agent.WaitDeadline = now + w.Node.Timeout;
+                        agent.NextConditionCheckAt = now + 1;
+                        agent.PlanHadWait = true;
+                        return true;
+                    case PlanTree.FailedAction f:
+                        StopPlan(agent, f.Reason, now);
+                        return false;
+                    default:
+                        agent.Tree = null;   // done
+                        return true;
+                }
+            }
             var step = agent.Plan[0];
             agent.Plan.RemoveAt(0);
+            if (step.Node != null && agent.Tree != null)
+            {
+                if (agent.TravelPending && MovesOn(step.Call.Name)) { game.EndTravel(agent.Id); agent.TravelPending = false; }
+                var r = Run(agent, step);
+                if (r.StartsWith("error"))
+                {
+                    if (agent.Tree.Report(false, r) is { } why)
+                    {
+                        StopPlan(agent, $"step {step.Node} {step.Call.Name} failed: {Tools.Clip(why, 120)}", now);
+                        return false;
+                    }
+                    continue;   // a "try" caught it
+                }
+                if (TaskTools.Contains(step.Call.Name) && r.StartsWith("ok, started"))
+                {
+                    agent.Waiting = PlanWait.Task;
+                    agent.WaitingSince = now;
+                    agent.PlanHadWait = true;
+                    agent.TaskTool = step.Call.Name;
+                }
+                else if (step.Call.Name == "go_to_room" && r.StartsWith("ok") && !r.Contains("already"))
+                {
+                    agent.Waiting = PlanWait.Arrival;
+                    agent.WaitRoom = ArrivalRoom(r) ?? Tools.Str(step.Call.Arguments, "room");
+                    agent.WaitingSince = now;
+                    agent.NextArrivalCheckAt = now;
+                    agent.PlanHadWait = true;
+                }
+                else agent.Tree.Report(true, r);
+                continue;
+            }
             var result = Run(agent, step);
             if (result.StartsWith("error"))
             {
@@ -92,6 +208,49 @@ public sealed partial class AgentManager
             }
         }
         return true;
+    }
+
+    /// <summary>Tools a plan tree may contain.</summary>
+    static readonly IReadOnlyCollection<string> PlanToolNames = Tools.All.Select(t => t.Name).ToHashSet();
+
+    IConditionContext ConditionContext(BotAgent agent, double now)
+    {
+        Observation o;
+        try { o = game.Observe(agent.Id); }
+        catch { o = agent.LastObservation ?? new Observation(); }
+        return new PlanConditions.ObservationContext(o, now - agent.PlanStartedAt, agent.Tree?.LastOk, agent.Tree?.LastResult, agent.Waiting == PlanWait.Task);
+    }
+
+    /// <summary>wait_until steps of plan trees: go on when the condition comes true, fail the step after its timeout.</summary>
+    void CheckConditions(double now)
+    {
+        foreach (var agent in agents.Values)
+        {
+            if (agent.Waiting != PlanWait.Condition || agent.Tree == null || now < agent.NextConditionCheckAt) continue;
+            agent.NextConditionCheckAt = now + 1.0;
+            if (!game.IsAlive(agent.Id)) { agent.ClearPlan(); continue; }
+            var next = agent.Tree.Next(ConditionContext(agent, now));   // a met condition moves on by itself
+            if (next is PlanTree.WaitAction && now < agent.WaitDeadline) continue;
+            agent.Waiting = PlanWait.None;
+            if (next is PlanTree.WaitAction w)
+            {
+                if (agent.Tree.Report(false, $"waited {w.Node.Timeout:0}s, but '{w.Node.Cond.Text}' did not come true") is { } why)
+                {
+                    StopPlan(agent, why, now);
+                    continue;
+                }
+                if (Advance(agent, now) && !agent.Busy) PlanFinished(agent, "plan done", now);
+                continue;
+            }
+            // the tree already gave the next thing to do: carry it out
+            switch (next)
+            {
+                case PlanTree.ActAction a: agent.Plan.Add(new PlanStep(a.Call, agent.TreeAuthority, a.NodeId)); break;
+                case PlanTree.FailedAction f: StopPlan(agent, f.Reason, now); continue;
+                default: agent.Tree = null; break;
+            }
+            if (Advance(agent, now) && !agent.Busy) PlanFinished(agent, "plan done", now);
+        }
     }
 
     void StopPlan(BotAgent agent, string why, double now)
@@ -189,14 +348,31 @@ public sealed partial class AgentManager
                 var room = agent.WaitRoom;
                 agent.Waiting = PlanWait.None;
                 agent.WaitRoom = null;
+                if (agent.Tree != null)
+                {
+                    // in a tree the next steps are not known yet: the "stay here" order goes once one takes the bot elsewhere
+                    agent.TravelPending = true;
+                    agent.Tree.Report(true, $"arrived in {room}");
+                }
                 // the room was only on the way to the next job: its "stay here" order would pull the bot back
                 // there after the job and keep it from its other orders
-                if (agent.Plan.Any(s => MovesOn(s.Call.Name))) game.EndTravel(agent.Id);
+                else if (agent.Plan.Any(s => MovesOn(s.Call.Name))) game.EndTravel(agent.Id);
                 if (Advance(agent, now) && !agent.Busy) PlanFinished(agent, $"arrived in {room}", now);
             }
             else if (now - agent.WaitingSince > Settings.Global.PlanStepTimeoutSeconds)
             {
-                StopPlan(agent, $"did not reach {agent.WaitRoom} in {Settings.Global.PlanStepTimeoutSeconds:0}s", now);
+                var why = $"did not reach {agent.WaitRoom} in {Settings.Global.PlanStepTimeoutSeconds:0}s";
+                if (agent.Tree != null)
+                {
+                    agent.Waiting = PlanWait.None;
+                    agent.WaitRoom = null;
+                    if (agent.Tree.Report(false, why) == null)
+                    {
+                        if (Advance(agent, now) && !agent.Busy) PlanFinished(agent, why, now);
+                        continue;
+                    }
+                }
+                StopPlan(agent, why, now);
             }
         }
     }
@@ -212,6 +388,18 @@ public sealed partial class AgentManager
             bool failed = r.Text.Contains("failed") || r.Text.Contains("cancelled");
             if (failed) agent.AddError(r.Text);
             Log.Info($"[{agent.Name}] {r.Text}");
+            if (agent.Waiting == PlanWait.Task && agent.Tree != null)
+            {
+                agent.Waiting = PlanWait.None;
+                if (agent.Tree.Report(!failed, r.Text) is { } why)
+                {
+                    StopPlan(agent, "a task failed: " + Tools.Clip(why, 120), now);
+                    agent.TaskTool = null;
+                    continue;
+                }
+                if (Advance(agent, now) && !agent.Busy) PlanFinished(agent, r.Text, now);
+                continue;
+            }
             if (agent.Waiting == PlanWait.Task)
             {
                 agent.Waiting = PlanWait.None;

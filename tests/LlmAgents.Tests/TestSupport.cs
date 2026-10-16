@@ -49,6 +49,7 @@ public sealed class FakeGame : IGameApi
             CurrentOrder = src.CurrentOrder, Doing = src.Doing, Rooms = src.Rooms.ToList(), Crew = src.Crew.ToList(),
             Gear = src.Gear, Submarine = src.Submarine, CurrentTask = src.CurrentTask,
             Threats = src.Threats.ToList(), Leaks = src.Leaks.ToList(), Inventory = src.Inventory.ToList(),
+            Equipped = src.Equipped.ToList(), Infestations = src.Infestations.ToList(), Marks = src.Marks.ToList(),
         };
     }
 

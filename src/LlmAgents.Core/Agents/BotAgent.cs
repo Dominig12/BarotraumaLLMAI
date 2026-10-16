@@ -13,9 +13,10 @@ namespace LlmAgents.Agents;
 public sealed record PendingOrder(string Text, bool Authority, string? From = null);
 
 /// <summary>One step of a multi-step reply. Authority = the reply carried out a human player's order.</summary>
-public sealed record PlanStep(ToolCall Call, bool Authority);
+/// <param name="Node">id of the plan-tree node this step comes from (null = a plain plan)</param>
+public sealed record PlanStep(ToolCall Call, bool Authority, string? Node = null);
 
-public enum PlanWait { None, Task, Arrival }
+public enum PlanWait { None, Task, Arrival, Condition }
 
 /// <summary>What the bot is working toward. Source: "player Daniil", "you", "Rosendo (in command)"...
 /// Player: the human player who gave the order (told when it is done or failed).</summary>
@@ -297,8 +298,18 @@ public sealed class BotAgent
     /// <summary>The previous reply had errors and the bot was asked again; one retry, no loops.</summary>
     public int ErrorStreak { get; set; }
 
+    /// <summary>A plan with conditions (the model's "plan" call); its steps go through <see cref="Plan"/> one by one.</summary>
+    public PlanTree? Tree { get; set; }
+    /// <summary>The steps of the tree carry the authority of the reply that set it.</summary>
+    public bool TreeAuthority { get; set; }
+    /// <summary>wait_until: give up at this time.</summary>
+    public double WaitDeadline { get; set; }
+    public double NextConditionCheckAt { get; set; }
+    /// <summary>A tree's go_to_room arrived: its "stay there" order goes when the next step takes the bot elsewhere.</summary>
+    public bool TravelPending { get; set; }
+
     /// <summary>Carrying out a plan or waiting for a task: no new decision unless something important happens.</summary>
-    public bool Busy => Plan.Count > 0 || Waiting != PlanWait.None;
+    public bool Busy => Plan.Count > 0 || Waiting != PlanWait.None || Tree != null;
 
     public string? PlanText()
     {
@@ -306,6 +317,12 @@ public sealed class BotAgent
         var parts = new List<string>();
         if (Waiting == PlanWait.Task) parts.Add("now: waiting for the current task");
         else if (Waiting == PlanWait.Arrival) parts.Add($"now: walking to {WaitRoom}");
+        else if (Waiting == PlanWait.Condition) parts.Add("now: waiting for a condition");
+        if (Tree != null)
+        {
+            parts.Add("tree: " + Tree.Describe());
+            return string.Join("; ", parts);
+        }
         parts.AddRange(Plan.Select((p, i) => $"{i + 1}. {p.Call.Name}({Tools.ArgsToString(p.Call)})"));
         return string.Join("; ", parts);
     }
@@ -313,6 +330,8 @@ public sealed class BotAgent
     public void ClearPlan()
     {
         Plan.Clear();
+        Tree = null;
+        TravelPending = false;
         Waiting = PlanWait.None;
         WaitRoom = null;
         PlanReviewed = false;

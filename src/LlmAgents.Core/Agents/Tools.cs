@@ -54,6 +54,7 @@ public static class Tools
         foreach (var (name, type, desc, en, required) in props)
         {
             var o = new JsonObject { ["type"] = type, ["description"] = desc };
+            if (type == "array") o["items"] = new JsonObject { ["type"] = "object" };
             if (en != null) o["enum"] = new JsonArray(en.Select(e => (JsonNode)JsonValue.Create(e)).ToArray());
             p[name] = o;
             if (required) req.Add(name);
@@ -98,6 +99,17 @@ public static class Tools
         new("set_goal", "Set what you are trying to achieve over the next minutes (e.g. 'craft 3 bandages for Ivan', 'keep the reactor fuelled'). It is shown to you every turn as 'goal', so you don't lose track between small steps. done=true when it is achieved or no longer needed.",
             Schema(("goal", "string", "The goal, one short sentence (leave out with done=true)", null, false),
                    ("done", "boolean", "true = the goal is achieved or dropped", null, false))),
+        new("plan", "A plan with conditions, carried out without asking you again until it is done or fails: a JSON array of steps. "
+            + "Step kinds: {\"do\":\"<tool>\",\"args\":{...}}; {\"if\":\"<condition>\",\"then\":[...],\"else\":[...]}; "
+            + "{\"wait_until\":\"<condition>\",\"timeout\":60}; {\"repeat\":[...],\"until\":\"<condition>\",\"max\":3}; "
+            + "{\"try\":[...],\"catch\":[...]} (a failed step inside try runs catch instead of failing the plan). "
+            + "Conditions: health, oxygen, room_water, room_fire, threats, leaks, flora, reactor, reactor_fuel, sub_oxygen, injured, time, task, last_ok, last_failed, marked; "
+            + "in_room('X'), has('item'), wearing('item'), order('id'), threat('kind'), water('room'), fires('room'), near('name'), result('text'); "
+            + "with < > <= >= == !=, and, or, not. Replaces the current plan. Use it for jobs with 'if'/'until'/'in case of'; plain call lists still work for simple jobs.",
+            Schema(("steps", "array", "The steps (see above)", null, true))),
+        new("update_plan", "Change part of the running plan: the node with this id ('plan' shows ids like n3) is replaced by the new steps (if it is running, the new steps run instead). The rest goes on.",
+            Schema(("node", "string", "Node id from 'plan', e.g. 'n3'", null, true),
+                   ("steps", "array", "New steps for that node, same format as in plan", null, true))),
         new("keep_plan", "Only when 'plan' is shown: keep carrying out those planned steps after the other calls of this reply. Without it, this reply replaces them.", NoArgs()),
         new("return_to_default", "Drop your orders and let your normal instincts take over. Use when nothing special is needed.", NoArgs()),
         new("say", "Say something out loud in the game chat (players see it). Keep it short and in character.",
@@ -241,6 +253,10 @@ public static class Tools
                             string.IsNullOrWhiteSpace(option) ? null : option!.Trim().ToLowerInvariant(),
                             string.IsNullOrWhiteSpace(target) ? null : target, Priority(a));
                     });
+                case "plan":
+                case "update_plan":
+                    // carried out by the agent manager as a whole (see ApplyPlan); here only without sequential actions
+                    return "error: plans with conditions need global.sequentialActions on";
                 case "return_to_default":
                     return game.Dismiss(agent.Id);
                 case "set_goal":
