@@ -91,9 +91,10 @@ public sealed class MemoryStore
         }
     }
 
-    MemoryFile? Load()
+    MemoryFile? Load() => Load(FilePath);
+
+    static MemoryFile? Load(string? path)
     {
-        var path = FilePath;
         if (path == null || !File.Exists(path)) return null;
         try
         {
@@ -132,18 +133,40 @@ public sealed class MemoryStore
         var path = FilePath;
         dirty = false;
         if (path == null) return;
+        if (!Save(data, path)) dirty = true; // try again at the next flush
+    }
+
+    static bool Save(MemoryFile file, string path)
+    {
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             var tmp = path + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(data, Json), new UTF8Encoding(false));
+            File.WriteAllText(tmp, JsonSerializer.Serialize(file, Json), new UTF8Encoding(false));
             if (File.Exists(path)) File.Replace(tmp, path, null);
             else File.Move(tmp, path);
+            return true;
         }
         catch (Exception e)
         {
-            dirty = true; // try again at the next flush
             Log.Warn($"could not save memory to {path}: {e.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>A change to the memory of a given campaign. A round summary arrives seconds after the round ended,
+    /// when the store may already have opened the next campaign: it still goes to the one it belongs to.</summary>
+    public void ChangeIn(string scope, Action<MemoryFile> f)
+    {
+        lock (sync)
+        {
+            if (SafeName(scope) == Scope) { f(data); dirty = true; return; }
+            var path = folder == null || scope.Length == 0 ? null : Path.Combine(folder, SafeName(scope) + ".json");
+            if (path == null) return;
+            var other = Load(path) ?? new MemoryFile();
+            Normalize(other);
+            f(other);
+            Save(other, path);
         }
     }
 
@@ -164,7 +187,9 @@ public sealed class MemoryStore
         }
     }
 
-    BotMemory BotLocked(string name, string job)
+    BotMemory BotLocked(string name, string job) => BotIn(data, name, job);
+
+    static BotMemory BotIn(MemoryFile data, string name, string job)
     {
         if (!data.Bots.TryGetValue(name, out var b))
             data.Bots[name] = b = new BotMemory { Name = name, Job = job };
@@ -203,16 +228,22 @@ public sealed class MemoryStore
         return n;
     }
 
-    public void AddJournal(string bot, string job, string entry, int max, bool countRound) => Change(d =>
+    public void AddJournal(string bot, string job, string entry, int max, bool countRound, string? scope = null)
     {
-        var b = BotLocked(bot, job);
+        Action<MemoryFile> f = d => AddJournalTo(d, bot, job, entry, max, countRound);
+        if (scope == null) Change(f); else ChangeIn(scope, f);
+    }
+
+    static void AddJournalTo(MemoryFile d, string bot, string job, string entry, int max, bool countRound)
+    {
+        var b = BotIn(d, bot, job);
         if (countRound) b.Rounds++;
         if (!string.IsNullOrWhiteSpace(entry))
         {
             b.Journal.Add(Tools.Clip(entry.Trim(), MaxJournalLength));
             while (b.Journal.Count > Math.Max(1, max)) b.Journal.RemoveAt(0);
         }
-    });
+    }
 
     public void SetRelationship(string bot, string job, string person, string feeling, string note, int max) => Change(d =>
     {

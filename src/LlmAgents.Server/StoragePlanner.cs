@@ -20,7 +20,6 @@ namespace LlmAgents;
 internal static class StoragePlanner
 {
     const float UnitsPerMeter = 100f;
-    const int MinScore = 15;
 
     static readonly ItemGroup[] Groups = (ItemGroup[])Enum.GetValues(typeof(ItemGroup));
 
@@ -43,23 +42,16 @@ internal static class StoragePlanner
             var ic = i.GetComponent<ItemContainer>();
             if (ic == null || !ic.Inventory.CanBePut(item)) continue;
 
-            int score; string why;
             var held = ic.Inventory.AllItems.ToList();
-            if (held.Any(x => x.Prefab == item.Prefab)) { score = 100; why = "with the same items"; }
-            else if (groups.Count > 0 && held.Any(x => GroupsOf(x.Prefab).Overlaps(groups))) { score = 40; why = "with similar items"; }
-            else
-            {
-                bool preferred = item.Prefab.IsContainerPreferred(item, ic, out _, out bool secondary);
-                if (preferred && !secondary) { score = 30; why = "its usual place"; }
-                else if (preferred) { score = 15; why = "a fitting place"; }
-                else continue;
-            }
-            if (i.GetComponent<Pickable>() != null) score -= 20;     // a crate on the floor: only if nothing fixed fits
-            if (score < MinScore) continue;
+            bool same = held.Any(x => x.Prefab == item.Prefab);
+            bool similar = !same && groups.Count > 0 && held.Any(x => GroupsOf(x.Prefab).Overlaps(groups));
+            bool preferred = false, secondary = false;
+            if (!same && !similar) preferred = item.Prefab.IsContainerPreferred(item, ic, out _, out secondary);
+            if (ItemRules.StorageScore(same, similar, preferred, secondary, i.GetComponent<Pickable>() != null) is not { } s) continue;
 
             float meters = Vector2.Distance(i.WorldPosition, c.WorldPosition) / UnitsPerMeter;
-            float value = score - Math.Min(meters * 0.3f, 25f);
-            if (value > bestValue) { bestValue = value; best = new Choice(ic, score, why); }
+            float value = ItemRules.StorageValue(s.Score, meters);
+            if (value > bestValue) { bestValue = value; best = new Choice(ic, s.Score, s.Why); }
         }
         return best;
     }

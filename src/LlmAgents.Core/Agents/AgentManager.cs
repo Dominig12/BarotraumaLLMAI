@@ -43,9 +43,9 @@ public sealed partial class AgentManager : IDisposable
     int agentsCreated; // staggers the first look of bots at round start
 
     /// <summary>Tools that start a multi-step task; with sequentialActions the next step waits for its result.</summary>
-    public static readonly IReadOnlyCollection<string> TaskTools = new[] { "equip", "refuel_reactor", "craft", "deconstruct", "treat", "move_item", "take_item", "unpack", "attack", "put_in", "refill", "tidy_inventory", "come_to" };
+    public static IReadOnlyCollection<string> TaskTools => Tools.TaskTools;
     /// <summary>Calls that only talk or note things down: they change nothing in the game.</summary>
-    static readonly IReadOnlyCollection<string> TalkTools = new[] { "say", "message_crew", "remember", "forget", "note_relationship", "note_preference", "inspect", "keep_plan", "set_goal", "carry_on", "update_plan" };
+    static IReadOnlyCollection<string> TalkTools => Tools.PassiveTools;
     /// <summary>Echoed bot-to-bot messages are clipped to this (the game's chat limit is about 200).</summary>
     public const int MaxChatEcho = 190;
     const double FlushSeconds = 15;
@@ -85,6 +85,7 @@ public sealed partial class AgentManager : IDisposable
         if (newRouter != null)
         {
             var old = router;
+            newRouter.CarryOver(old);
             router = newRouter;
             // give in-flight requests time to finish before their HTTP clients go away
             Task.Delay(TimeSpan.FromSeconds(180)).ContinueWith(_ => { try { old.Dispose(); } catch { } }, TaskScheduler.Default);
@@ -236,8 +237,8 @@ public sealed partial class AgentManager : IDisposable
         double now = clock();
         var bots = agents.Values.OrderBy(a => a.Name).Select(a =>
         {
-            Observation? o = null;
-            try { if (game.IsAlive(a.Id)) o = game.Observe(a.Id); } catch { /* status must never fail */ }
+            BotBrief? o = null;
+            try { if (game.IsAlive(a.Id)) o = game.Brief(a.Id); } catch { /* status must never fail */ }
             return new BotStatus(a.Id, a.Name, a.Job, ProviderFor(a), a.AiControl, personas.PromptFor(a.Name) != null,
                 o?.CurrentOrder ?? "?", o?.CurrentTask, a.LastDecision,
                 double.IsNaN(a.LastDecisionAt) ? null : now - a.LastDecisionAt, a.RecentErrors(), a.Pending, a.Decisions,

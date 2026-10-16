@@ -9,6 +9,10 @@ $out = Join-Path $root "dist\LlmAgents"
 if (Test-Path $out) { Remove-Item -Recurse -Force $out }
 New-Item -ItemType Directory -Force $out | Out-Null
 Copy-Item -Recurse (Join-Path $root "Content\*") $out
+# the version lives in Directory.Build.props only
+$version = ([xml](Get-Content -Raw (Join-Path $root "Directory.Build.props"))).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+$filelist = Join-Path $out "filelist.xml"
+(Get-Content -Raw $filelist) -replace 'modversion="[^"]*"', "modversion=""$version""" | Set-Content -NoNewline -Encoding UTF8 $filelist
 foreach ($p in "Windows", "Linux", "OSX") {
     dotnet build (Join-Path $root "src\LlmAgents.Server\LlmAgents.Server.csproj") -c Release "-p:GamePlatform=$p" -v q -nologo
     if ($LASTEXITCODE -ne 0) { throw "build failed for $p" }

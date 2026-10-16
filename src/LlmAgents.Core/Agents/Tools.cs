@@ -7,6 +7,45 @@ using LlmAgents.Llm;
 
 namespace LlmAgents.Agents;
 
+/// <summary>What a tool does to the bot's plan: talk changes nothing in the game, a task runs for a while and
+/// reports back, an order hands the vanilla AI a job, a plan tool is about plans themselves.</summary>
+public enum ToolKind { Talk, Lookup, Memory, Order, Task, Plan }
+
+/// <summary>Which tools a request carries. Core is always there; the others when the bot's job or situation needs
+/// them (<see cref="ToolSelection"/>), so a small local model is not handed 40 schemas every time.</summary>
+[Flags]
+public enum ToolGroup
+{
+    Core = 1, Orders = 2, Items = 4, Inventory = 8, Crafting = 16, Medical = 32, Combat = 64, Plans = 128, Memory = 256, Command = 512,
+}
+
+/// <summary>Everything about one tool in one place: what the model sees, how it runs, how the plan treats it.</summary>
+public sealed record ToolDef(string Name, string Description, JsonObject Schema, ToolKind Kind, ToolGroup Group, Func<ToolContext, string> Run)
+{
+    /// <summary>Only for bots under full AI control.</summary>
+    public bool ControlOnly { get; init; }
+    /// <summary>Takes the bot elsewhere or gives it other work (a go_to_room before it was only the way there).</summary>
+    public bool MovesOn { get; init; }
+    public ToolSpec Spec { get; } = new(Name, Description, Schema);
+}
+
+/// <summary>A call being carried out (game thread).</summary>
+public sealed record ToolContext(ToolCall Call, BotAgent Agent, IGameApi Game, AgentManager Mgr)
+{
+    public JsonObject A => Call.Arguments;
+    public string? Str(string key) => Tools.Str(A, key);
+    public string? Str(params string[] keys) => keys.Select(k => Tools.Str(A, k)).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+    public bool? Bool(string key) => Tools.Bool(A, key);
+    public int Priority => Tools.Priority(A);
+    public int Int(string key, int fallback, int min, int max, params string[] more)
+    {
+        var s = Str(new[] { key }.Concat(more).ToArray());
+        return Math.Clamp(int.TryParse(s, out var n) ? n : fallback, min, max);
+    }
+    public string Need(string? v, string name, Func<string, string> f) => string.IsNullOrEmpty(v) ? $"error: missing '{name}'" : f(v!);
+    public int Id => Agent.Id;
+}
+
 /// <summary>Tool schemas shown to the LLM and the executor that maps calls onto IGameApi. Whitelist only.</summary>
 public static class Tools
 {
@@ -24,7 +63,7 @@ public static class Tools
 
     public static readonly IReadOnlyList<string> OperateRoles = new[] { "reactor", "navigation", "weapons", "pumps" };
 
-    public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipes", "recipe", "salvage", "orders", "inventory" };
+    public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipes", "recipe", "salvage", "orders", "inventory", "tools" };
 
     public const int MaxCraftAmount = 10;
     public const int MaxTakeCount = 8;
@@ -40,12 +79,11 @@ public static class Tools
         ["operate_reactor"] = "operatereactor", ["steer"] = "steer", ["operate_weapons"] = "operateweapons", ["pump_water"] = "pumpwater",
     }.Concat(SimpleOrders).GroupBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().Value, StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Tools offered only to bots under full AI control.</summary>
-    public static readonly IReadOnlyCollection<string> ControlOnlyTools = new[] { "order_crew" };
-
     public const int MaxSayLength = 160;
     public const int MaxMessageLength = 300;
     public const int MaxInspectLength = 1400;
+
+    // ---------------------------------------------------------------------------------------------- schemas
 
     static JsonObject Schema(params (string Name, string Type, string Desc, string[]? Enum, bool Required)[] props)
     {
@@ -65,127 +103,260 @@ public static class Tools
     static JsonObject NoArgs() => new() { ["type"] = "object", ["properties"] = new JsonObject() };
 
     static readonly (string, string, string, string[]?, bool) PriorityArg =
-        ("priority", "integer", "1-3, default 3 = do this first. Your other orders at this priority or lower move one step down (max 3 orders, the lowest is dropped). Lower = only when more important orders have nothing to do", null, false);
+        ("priority", "integer", "1-3, default 3 = first. Your other orders move one step down (max 3)", null, false);
 
     static JsonObject OrderArgs(params (string Name, string Type, string Desc, string[]? Enum, bool Required)[] props) =>
         Schema(props.Append(PriorityArg).ToArray());
 
-    public static readonly IReadOnlyList<ToolSpec> All = new List<ToolSpec>
+    static (string, string, string, string[]?, bool) Arg(string name, string desc, bool required = true, string type = "string", string[]? en = null) =>
+        (name, type, desc, en, required);
+
+    static ToolDef T(string name, string desc, JsonObject schema, ToolKind kind, ToolGroup group, Func<ToolContext, string> run) =>
+        new(name, desc, schema, kind, group, run);
+
+    static ToolDef SimpleOrder(string name, string desc) =>
+        T(name, desc, OrderArgs(), ToolKind.Order, ToolGroup.Orders, c => c.Game.SimpleOrder(c.Id, name, c.Priority)) with { MovesOn = name != "wait" };
+
+    // ---------------------------------------------------------------------------------------------- the tools
+
+    public static readonly IReadOnlyList<ToolDef> Defs = new List<ToolDef>
     {
-        new("go_to_room", "Walk to a room of the submarine and stay there. Use a room id exactly as listed in 'rooms'.",
-            OrderArgs(("room", "string", "Room id from the 'rooms' list, e.g. \"Engine Room [h57]\"", null, true))),
-        new("follow", "Follow a crew member (a player or another bot).",
-            OrderArgs(("target", "string", "Crew member name from 'crew'", null, true))),
-        new("come_to", "Go to a crew member wherever they are now (keeps up if they move) and stay with them for a while; then the order is over and you are told so. Use for 'come to me', 'ко мне', 'сюда', 'all to me'. Better than go_to_room, which sends you to a room they may already have left.",
-            Schema(("target", "string", "Crew member name from 'crew' (the player who called)", null, true))),
-        new("fix_leaks", "Weld hull breaches / leaks anywhere on the sub.", OrderArgs()),
-        new("repair_systems", "Repair damaged devices and machinery.", OrderArgs()),
-        new("extinguish_fires", "Put out fires.", OrderArgs()),
-        new("fight_intruders", "Fight hostile creatures or intruders aboard.", OrderArgs()),
-        new("rescue_injured", "Treat injured crew and carry unconscious crew to safety.", OrderArgs()),
-        new("clean_up", "Tidy up loose items.", OrderArgs()),
-        new("operate", "Take a station and operate it.",
-            OrderArgs(("role", "string", "Station to operate", OperateRoles.ToArray(), true),
-                   ("option", "string", "Optional mode: reactor 'powerup'|'shutdown'; pumps 'pumpout'|'pumpin'", null, false))),
-        new("give_order", "Give yourself ANY order of the game by its id, also the ones without their own tool: repairmechanical, repairelectrical, chargebatteries, loaditems, deconstructitems, assaultenemy, steer (navigation modes), operateweapons, pumpwater, report orders (reportfire, reportbreach, reportintruders, reportbrokendevices, requestfirstaid)... inspect(kind='orders') lists every order of this game with its options and targets.",
-            OrderArgs(("order", "string", "Order id, e.g. 'repairelectrical', 'chargebatteries', 'loaditems'", null, true),
-                   ("option", "string", "Optional mode from inspect(kind='orders'), e.g. steer 'navigatetactical', pumpwater 'pumpin'", null, false),
-                   ("target", "string", "Optional: which device or room (a name or a room id); default the nearest free one", null, false))),
-        new("wait", "An order to stop and stay where you are (until another order). Not for 'nothing to do': use carry_on for that.", OrderArgs()),
-        new("carry_on", "Change nothing: keep doing what you are doing (your orders and tasks go on). Use when nothing needs to change.", NoArgs()),
-        new("set_order_priority", "Reorder your current orders ('currentOrder' shows them as name [pN]). 3 = most important. 0 = drop that order.",
-            Schema(("order", "string", "The order as shown in currentOrder (e.g. 'fixleaks', 'operatereactor') or the tool name (e.g. 'fix_leaks', 'reactor')", null, true),
-                   ("priority", "integer", "0-3", null, true))),
-        new("set_goal", "Set what you are trying to achieve over the next minutes (e.g. 'craft 3 bandages for Ivan', 'keep the reactor fuelled'). It is shown to you every turn as 'goal', so you don't lose track between small steps. done=true when it is achieved or no longer needed.",
-            Schema(("goal", "string", "The goal, one short sentence (leave out with done=true)", null, false),
-                   ("done", "boolean", "true = the goal is achieved or dropped", null, false))),
-        new("plan", "A plan with conditions, carried out without asking you again until it is done or fails: a JSON array of steps. "
-            + "Step kinds: {\"do\":\"<tool>\",\"args\":{...}}; {\"if\":\"<condition>\",\"then\":[...],\"else\":[...]}; "
-            + "{\"wait_until\":\"<condition>\",\"timeout\":60}; {\"repeat\":[...],\"until\":\"<condition>\",\"max\":3}; "
-            + "{\"try\":[...],\"catch\":[...]} (a failed step inside try runs catch instead of failing the plan). "
+        // ---- moving and orders
+        T("go_to_room", "Walk to a room and stay there. Room id exactly as in 'rooms'.",
+            OrderArgs(Arg("room", "Room id from 'rooms', e.g. \"Engine Room [h57]\"")), ToolKind.Order, ToolGroup.Core,
+            c => c.Need(c.Str("room"), "room", v => c.Game.GoToRoom(c.Id, v, c.Priority))) with { MovesOn = true },
+        T("follow", "Follow a crew member.",
+            OrderArgs(Arg("target", "Crew member name from 'crew'")), ToolKind.Order, ToolGroup.Core,
+            c => c.Need(c.Str("target"), "target", v => c.Game.Follow(c.Id, v, c.Priority))) with { MovesOn = true },
+        T("come_to", "Go to a crew member wherever they are now and stay a while, then the order is over ('come to me', 'ко мне', 'сюда').",
+            Schema(Arg("target", "Crew member name (the one who called)")), ToolKind.Task, ToolGroup.Core,
+            c => c.Need(c.Str("target"), "target", v => c.Game.ComeTo(c.Id, v))) with { MovesOn = true },
+        SimpleOrder("fix_leaks", "Weld hull breaches anywhere on the sub."),
+        SimpleOrder("repair_systems", "Repair damaged devices and machinery."),
+        SimpleOrder("extinguish_fires", "Put out fires."),
+        SimpleOrder("fight_intruders", "Fight hostile creatures or intruders aboard."),
+        SimpleOrder("rescue_injured", "Treat injured crew, carry the unconscious to safety."),
+        SimpleOrder("clean_up", "Tidy up loose items."),
+        SimpleOrder("wait", "Order to stand still here. Not for 'nothing to do' (that is carry_on)."),
+        T("operate", "Take a free station and operate it.",
+            OrderArgs(Arg("role", "Station", en: OperateRoles.ToArray()),
+                      Arg("option", "Optional mode: reactor powerup|shutdown; pumps pumpout|pumpin", required: false)),
+            ToolKind.Order, ToolGroup.Orders, c => c.Need(c.Str("role"), "role", v =>
+            {
+                var role = v.ToLowerInvariant();
+                if (!OperateRoles.Contains(role)) return $"error: role must be one of {string.Join(", ", OperateRoles)}";
+                var option = c.Str("option");
+                return c.Game.Operate(c.Id, role, string.IsNullOrEmpty(option) ? null : option!.ToLowerInvariant(), c.Priority);
+            })) with { MovesOn = true },
+        T("give_order", "Give yourself ANY order of the game by id: repairelectrical, repairmechanical, chargebatteries, loaditems, deconstructitems, assaultenemy, steer modes, reports (reportfire, reportbreach, requestfirstaid)... inspect(kind='orders') lists them.",
+            OrderArgs(Arg("order", "Order id, e.g. 'repairelectrical'"),
+                      Arg("option", "Optional mode, e.g. steer 'navigatetactical'", required: false),
+                      Arg("target", "Optional device or room; default the nearest free one", required: false)),
+            ToolKind.Order, ToolGroup.Orders, c => c.Need(c.Str("order", "id", "name"), "order", v =>
+            {
+                var option = c.Str("option");
+                var target = c.Str("target");
+                return c.Game.GiveOrder(c.Id, v.Trim().ToLowerInvariant(), option?.Trim().ToLowerInvariant(), target, c.Priority);
+            })) with { MovesOn = true },
+        T("set_order_priority", "Reorder your orders ('currentOrder' shows name [pN]). 3 = most important, 0 = drop it.",
+            Schema(Arg("order", "As in currentOrder (e.g. 'fixleaks') or the tool name"), Arg("priority", "0-3", type: "integer")),
+            ToolKind.Order, ToolGroup.Orders, c => c.Need(c.Str("order"), "order", v =>
+            {
+                var p = c.Str("priority");
+                if (p == null || !int.TryParse(p, out var n) || n < 0 || n > TopPriority) return $"error: priority must be 0-{TopPriority}";
+                return c.Game.SetOrderPriority(c.Id, v, n);
+            })),
+        T("return_to_default", "Drop your orders, let your normal instincts take over.", NoArgs(), ToolKind.Order, ToolGroup.Core,
+            c => c.Game.Dismiss(c.Id)) with { MovesOn = true },
+
+        // ---- talking, goals, plans
+        T("carry_on", "Change nothing: your orders and tasks go on.", NoArgs(), ToolKind.Talk, ToolGroup.Core, _ => "ok"),
+        T("say", "Say something in the game chat (players see it). Short, in character.",
+            Schema(Arg("text", $"What to say (max {MaxSayLength} chars)")), ToolKind.Talk, ToolGroup.Core,
+            c => c.Need(c.Str("text"), "text", v => { c.Game.Speak(c.Id, Clip(v, MaxSayLength)); return "ok"; })),
+        T("message_crew", "Message to AI crew members (their inbox; players hear it on the radio). To a human player it is just said to them.",
+            Schema(Arg("to", "Name, a job (e.g. 'mechanic') or 'all'"), Arg("text", "Message")), ToolKind.Talk, ToolGroup.Core,
+            c =>
+            {
+                var to = c.Str("to"); var text = c.Str("text");
+                return string.IsNullOrEmpty(to) || string.IsNullOrEmpty(text) ? "error: 'to' and 'text' are required" : c.Mgr.DeliverMessage(c.Agent, to!, Clip(text!, MaxMessageLength));
+            }),
+        T("set_goal", "Set what you work toward over the next minutes; shown as 'goal' every turn. done=true when achieved.",
+            Schema(Arg("goal", "One short sentence (leave out with done=true)", required: false), Arg("done", "true = achieved or dropped", required: false, type: "boolean")),
+            ToolKind.Talk, ToolGroup.Core, c =>
+            {
+                if (c.Bool("done") == true || string.IsNullOrWhiteSpace(c.Str("goal")))
+                {
+                    var old = c.Agent.Goal;
+                    c.Agent.SetGoal(null, c.Mgr.Now);
+                    return old == null ? "ok (no goal)" : "ok, goal finished: " + old;
+                }
+                c.Agent.SetGoal(c.Str("goal"), c.Mgr.Now);
+                return "ok, goal: " + c.Agent.Goal;
+            }),
+        T("plan", "A plan with conditions, run without asking you again until done or failed: an array of steps. "
+            + "{\"do\":\"<tool>\",\"args\":{...}}; {\"if\":\"<cond>\",\"then\":[...],\"else\":[...]}; {\"wait_until\":\"<cond>\",\"timeout\":60}; "
+            + "{\"repeat\":[...],\"until\":\"<cond>\",\"max\":3}; {\"try\":[...],\"catch\":[...]}. "
             + "Conditions: health, oxygen, room_water, room_fire, threats, leaks, flora, reactor, reactor_fuel, sub_oxygen, injured, time, task, last_ok, last_failed, marked; "
             + "in_room('X'), has('item'), wearing('item'), order('id'), threat('kind'), water('room'), fires('room'), near('name'), result('text'); "
-            + "with < > <= >= == !=, and, or, not. Replaces the current plan. Use it for jobs with 'if'/'until'/'in case of'; plain call lists still work for simple jobs.",
-            Schema(("steps", "array", "The steps (see above)", null, true))),
-        new("update_plan", "Change part of the running plan: the node with this id ('plan' shows ids like n3) is replaced by the new steps (if it is running, the new steps run instead). The rest goes on.",
-            Schema(("node", "string", "Node id from 'plan', e.g. 'n3'", null, true),
-                   ("steps", "array", "New steps for that node, same format as in plan", null, true))),
-        new("keep_plan", "Only when 'plan' is shown: keep carrying out those planned steps after the other calls of this reply. Without it, this reply replaces them.", NoArgs()),
-        new("return_to_default", "Drop your orders and let your normal instincts take over. Use when nothing special is needed.", NoArgs()),
-        new("say", "Say something out loud in the game chat (players see it). Keep it short and in character.",
-            Schema(("text", "string", $"What to say (max {MaxSayLength} chars)", null, true))),
-        new("message_crew", "Message to other AI crew members, for coordination. It lands in their inbox; human players also hear it on the radio, so keep it short and in character. Addressed to a human player, it is simply said to them over the radio (same as say).",
-            Schema(("to", "string", "Crew member name, a job (all AI crew with that job, e.g. 'mechanic'), or 'all'", null, true), ("text", "string", "Message", null, true))),
-        new("remember", "Save a short note to your memory. Normal notes last this round; long_term notes are kept across rounds (shown in 'memory.facts').",
-            Schema(("note", "string", "One short sentence", null, true),
-                   ("long_term", "boolean", "true = keep it for future rounds (important lasting facts only)", null, false))),
-        new("forget", "Remove long-term facts that are no longer true.",
-            Schema(("text", "string", "Part of the fact to remove", null, true))),
-        new("note_relationship", "Remember how you feel about a crew member (kept across rounds). Update it when something important happens between you.",
-            Schema(("person", "string", "Crew member name", null, true),
-                   ("feeling", "string", "Your attitude", Memory.MemoryStore.Feelings.ToArray(), true),
-                   ("note", "string", "Why, in a few words (e.g. 'saved me from a crawler')", null, true))),
-        new("note_preference", "Remember what a human player likes or wants from the crew (kept across rounds, shared with the whole AI crew), e.g. 'wants short radio reports', 'reactor at 50%'.",
-            Schema(("player", "string", "Player name", null, true),
-                   ("preference", "string", "The preference, one short sentence", null, true))),
-        new("order_crew", "FULL AI CONTROL ONLY: give an order to other AI crew members. They must follow it like an order from a player. Speak it in the chat too.",
-            Schema(("to", "string", "Crew member name, a job (e.g. 'mechanic') or 'all'", null, true),
-                   ("order", "string", "The order, short and concrete (what, where, priority)", null, true))),
+            + "< > <= >= == !=, and, or, not. Replaces the current plan.",
+            Schema(("steps", "array", "The steps", null, true)), ToolKind.Plan, ToolGroup.Plans,
+            _ => "error: plans with conditions need global.sequentialActions on"),
+        T("update_plan", "Replace one node of the running plan ('plan' shows ids like n3) with new steps; the rest goes on.",
+            Schema(Arg("node", "Node id, e.g. 'n3'"), ("steps", "array", "New steps, as in plan", null, true)), ToolKind.Plan, ToolGroup.Plans,
+            _ => "error: plans with conditions need global.sequentialActions on"),
+        T("keep_plan", "Only when 'plan' is shown: carry it on after this reply's other calls.", NoArgs(), ToolKind.Plan, ToolGroup.Core,
+            c => c.Agent.Busy ? "ok, continuing the plan" : "ok (no plan left)"),
 
-        // ---- items and machinery (multi-step tasks; the result is reported in lastActionResults when done)
-        new("equip", "Take an item from the sub (or your inventory) and equip / wear it, e.g. a diving suit, a weapon, a welding tool, a headset.",
-            Schema(("item", "string", "Item name or [id], or a plain word, e.g. 'diving suit', 'harpoon gun', 'welding tool', 'weapon'", null, true))),
-        new("refuel_reactor", "Bring a fuel rod to the reactor and load it (replaces a spent rod). Use when reactor fuel is low or the reactor is at 0%.",
-            NoArgs()),
-        new("craft", "Gather the ingredients and make an item at a fabricator (medicine, ammo, tools...). Do NOT guess names: first inspect(kind='recipes') to see what this sub can make, then use the exact name or [id] from that list. If materials are missing, the result says which scrap gives them; salvage=true breaks that scrap down in the deconstructor first and then crafts.",
-            Schema(("item", "string", "Exact name or [id] from inspect(kind='recipes')", null, true),
-                   ("amount", "integer", $"How many (1-{MaxCraftAmount}, default 1)", null, false),
-                   ("salvage", "boolean", "true = deconstruct scrap aboard for missing materials first (never touches medicine, weapons, diving gear, fuel rods or equipped items)", null, false))),
-        new("deconstruct", "Bring an item to the deconstructor and break it down into materials (waits until it is done). inspect(kind='salvage', query=<material>) shows which items give a material.",
-            Schema(("item", "string", "Item name or [id] (the nearest matching loose/stored item is used); 'all' together with 'from' = everything in that container/room", null, true),
-                   ("from", "string", "Optional: a container (e.g. 'cabinet', 'шкаф') or a room id; only items there are taken", null, false))),
-        new("treat", "Treat a wounded crew member (or yourself) with medicine. Without 'item' the cheapest treatment that is good enough is chosen, so precious medicine is not wasted.",
-            Schema(("target", "string", "Crew member name, or 'me'", null, true),
-                   ("item", "string", "Optional: a specific medical item to use, e.g. 'bandage'", null, false))),
-        new("unequip", "Take off a worn item or put a held item away into your inventory (it stays with you).",
-            Schema(("item", "string", "Item you wear or hold", null, true))),
-        new("drop", "Drop an item from your inventory on the floor here.",
-            Schema(("item", "string", "Item in your inventory", null, true))),
-        new("take_item", "Pick items up from the sub into your own inventory to carry them (not equipped): medicine for the wounded, spare tools, ammo, a spare suit for someone. A kind of items works too ('medical', 'ammo', 'tools', 'diving gear') and takes a mix.",
-            Schema(("item", "string", "Item name or [id], or a kind: 'medical', 'ammo', 'tools', 'weapons', 'diving gear', 'oxygen'", null, true),
-                   ("count", "integer", $"How many (1-{MaxTakeCount}, default 1)", null, false),
-                   ("from", "string", "Optional: where from - a container ('medical cabinet'), a room id, or a crew member's name (= the room they are in, for 'take these from here')", null, false))),
-        new("attack", "Attack with a tool or weapon of your choice. target='ballast flora' burns the flora (see 'infestations') with a welding tool or a flamer: the bot takes the tool and fuel, goes to the root and burns branches on the way. Or a creature / intruder from 'threats' (name or kind), with weapon = what to fight with (e.g. 'harpoon gun').",
-            Schema(("target", "string", "'ballast flora' (optionally with a room id), a threat from 'threats', or 'nearest'", null, true),
-                   ("weapon", "string", "Optional: the tool or weapon to use, e.g. 'welding tool', 'flamer', 'harpoon gun', 'stun baton'", null, false))),
-        new("put_in", "Load an item into something you carry: welding fuel into the welding tool, an oxygen tank into the diving suit or mask, ammo or a magazine into a gun, a battery into a flashlight, bandages into a medkit or toolbelt. Gets the item from the sub if needed; a used-up one comes out into your inventory.",
-            Schema(("item", "string", "What to load, e.g. 'welding fuel', 'oxygen tank', 'revolver rounds', 'battery cell'", null, true),
-                   ("into", "string", "What you carry that takes it, e.g. 'welding tool', 'diving suit', 'revolver', 'toolbelt'", null, true))),
-        new("refill", "Refill what you carry: everything with used-up or missing fuel, oxygen, battery or ammo (or only the item named) gets a full one from the sub.",
-            Schema(("item", "string", "Optional: only this item, e.g. 'welding tool', 'diving suit'", null, false))),
-        new("tidy_inventory", "Put away what you carry but do not wear or hold, each item where it belongs (onto the same items first). Free slots for the job.",
-            Schema(("keep", "string", "Optional: things to keep, comma separated, e.g. 'bandage, welding fuel'", null, false))),
-        new("unpack", "Empty a crate or container and put everything where it belongs on the sub: onto the same items first (stacks save space), then next to similar items, then their usual places. A crate is carried along. Items with no fitting place stay in it. The result lists what went where.",
-            Schema(("container", "string", "The crate or container: a name ('metal crate'), 'marked' (the one a player marked), or a room id", null, true),
-                   ("carry", "boolean", "Carry the crate along (default true); false = walk back and forth", null, false))),
-        new("move_item", "Carry an item somewhere: into a container (cabinet, locker...), to a room (left on the floor), or hand it to a crew member; to='its place' puts it where it belongs. To keep it yourself use take_item.",
-            Schema(("item", "string", "Item to carry (yours or one on the sub)", null, true),
-                   ("to", "string", "A container name (e.g. 'medical cabinet', 'locker'), a room id from 'rooms', or a crew member name", null, true))),
-        new("keep_gear", "Lock or unlock your diving gear. While locked you never take the diving suit/mask off by yourself, even in dry rooms. Turn it on before or during combat and whenever the hull may be breached.",
-            Schema(("on", "boolean", "true = keep it on, false = normal behaviour", null, true))),
-        new("inspect", "Look something up; the answer appears in lastActionResults next turn. kind: patient (injuries and suitable medicine; no query = everyone hurt), items (where items are and how many; query = a room id or a crew member's name: what is in that room), recipes (what the fabricators here can make, what can be made right now; query = optional filter like 'medical', 'ammo', or a material), recipe (one item: ingredients, what is missing and where to get it), salvage (query = a material: which items aboard break down into it; query = an item: what it breaks down into; no query = scrap aboard), orders (every order of the game: id, options, targets aboard; query = optional filter), inventory (your slots, what is inside tools and bags, charge, free space, what needs refilling).",
-            Schema(("kind", "string", "What to look up", InspectKinds.ToArray(), true),
-                   ("query", "string", "Crew member (patient), item or room (items), item (recipe, salvage), material (salvage), or filter (recipes); optional for patient, recipes, salvage", null, false))),
+        // ---- memory
+        T("remember", "Note for later; long_term = kept across rounds ('memory.facts').",
+            Schema(Arg("note", "One short sentence"), Arg("long_term", "true = keep for future rounds", required: false, type: "boolean")),
+            ToolKind.Memory, ToolGroup.Memory, c => c.Need(c.Str("note"), "note", v => c.Mgr.Remember(c.Agent, v, c.Bool("long_term") == true))),
+        T("forget", "Remove long-term facts that are no longer true.", Schema(Arg("text", "Part of the fact")), ToolKind.Memory, ToolGroup.Memory,
+            c => c.Need(c.Str("text"), "text", v => c.Mgr.Forget(c.Agent, v))),
+        T("note_relationship", "Remember how you feel about a crew member (kept across rounds).",
+            Schema(Arg("person", "Name"), Arg("feeling", "Attitude", en: Memory.MemoryStore.Feelings.ToArray()), Arg("note", "Why, a few words")),
+            ToolKind.Memory, ToolGroup.Memory, c =>
+            {
+                var person = c.Str("person");
+                var feeling = c.Str("feeling")?.ToLowerInvariant();
+                if (string.IsNullOrEmpty(person)) return "error: missing 'person'";
+                if (feeling == null || !Memory.MemoryStore.Feelings.Contains(feeling)) return $"error: feeling must be one of {string.Join(", ", Memory.MemoryStore.Feelings)}";
+                return c.Mgr.NoteRelationship(c.Agent, person!, feeling, c.Str("note") ?? "");
+            }),
+        T("note_preference", "Remember what a human player wants from the crew (kept across rounds, shared by the AI crew).",
+            Schema(Arg("player", "Player name"), Arg("preference", "One short sentence")), ToolKind.Memory, ToolGroup.Memory, c =>
+            {
+                var player = c.Str("player"); var pref = c.Str("preference");
+                return string.IsNullOrEmpty(player) || string.IsNullOrEmpty(pref) ? "error: 'player' and 'preference' are required" : c.Mgr.NotePreference(c.Agent, player!, pref!);
+            }),
+        T("order_crew", "FULL AI CONTROL ONLY: a binding order to other AI crew members (say it in chat too).",
+            Schema(Arg("to", "Name, a job or 'all'"), Arg("order", "Short and concrete")), ToolKind.Order, ToolGroup.Command, c =>
+            {
+                var to = c.Str("to"); var order = c.Str("order");
+                return string.IsNullOrEmpty(to) || string.IsNullOrEmpty(order) ? "error: 'to' and 'order' are required" : c.Mgr.OrderCrew(c.Agent, to!, Clip(order!, MaxMessageLength));
+            }) with { ControlOnly = true },
+
+        // ---- items (multi-step tasks report their result in lastActionResults)
+        T("equip", "Take an item and wear / hold it: diving suit, weapon, welding tool...",
+            Schema(Arg("item", "Name, [id] or plain word ('diving suit', 'weapon')")), ToolKind.Task, ToolGroup.Core,
+            c => c.Need(c.Str("item"), "item", v => c.Game.Equip(c.Id, v))) with { MovesOn = true },
+        T("take_item", "Pick items up into your inventory to carry: medicine, spare tools, ammo. A kind ('medical', 'tools', 'ammo') takes a mix.",
+            Schema(Arg("item", "Name, [id] or a kind"), Arg("count", $"1-{MaxTakeCount}, default 1", required: false, type: "integer"),
+                   Arg("from", "Optional: a container, a room id or a crew member's name (their room)", required: false)),
+            ToolKind.Task, ToolGroup.Core, c => c.Need(c.Str("item"), "item",
+                v => c.Game.TakeItem(c.Id, v, c.Int("count", 1, 1, MaxTakeCount, "amount"), c.Str("from")))) with { MovesOn = true },
+        T("move_item", "Carry an item into a container, to a room, or to a crew member; to='its place' = where it belongs.",
+            Schema(Arg("item", "Item (yours or on the sub)"), Arg("to", "Container name, room id, crew member or 'its place'")),
+            ToolKind.Task, ToolGroup.Core, c =>
+            {
+                var item = c.Str("item"); var to = c.Str("to");
+                return string.IsNullOrEmpty(item) || string.IsNullOrEmpty(to) ? "error: 'item' and 'to' are required" : c.Game.MoveItem(c.Id, item!, to!);
+            }) with { MovesOn = true },
+        T("unequip", "Take off a worn or held item into your inventory.", Schema(Arg("item", "Item you wear or hold")), ToolKind.Order, ToolGroup.Inventory,
+            c => c.Need(c.Str("item"), "item", v => c.Game.Unequip(c.Id, v))),
+        T("drop", "Drop an item from your inventory here.", Schema(Arg("item", "Item in your inventory")), ToolKind.Order, ToolGroup.Inventory,
+            c => c.Need(c.Str("item"), "item", v => c.Game.Drop(c.Id, v))),
+        T("put_in", "Load something into an item you carry: fuel into the welding tool, a tank into the suit, ammo into a gun, a battery into a flashlight.",
+            Schema(Arg("item", "What to load"), Arg("into", "What you carry that takes it")), ToolKind.Task, ToolGroup.Inventory, c =>
+            {
+                var item = c.Str("item"); var into = c.Str("into", "to", "container");
+                return string.IsNullOrEmpty(item) || string.IsNullOrEmpty(into) ? "error: 'item' and 'into' are required" : c.Game.PutIn(c.Id, item!, into!);
+            }),
+        T("refill", "Refill what you carry: used-up fuel, oxygen, batteries, ammo (or only the item named).",
+            Schema(Arg("item", "Optional: only this item", required: false)), ToolKind.Task, ToolGroup.Inventory,
+            c => c.Game.Refill(c.Id, c.Str("item", "target"))),
+        T("tidy_inventory", "Put away what you carry but do not wear or hold, each where it belongs.",
+            Schema(Arg("keep", "Optional: things to keep, comma separated", required: false)), ToolKind.Task, ToolGroup.Inventory,
+            c => c.Game.TidyInventory(c.Id, c.Str("keep"))) with { MovesOn = true },
+        T("unpack", "Empty a crate or container and put everything where it belongs (onto the same items first). The result lists what went where.",
+            Schema(Arg("container", "Name, 'marked' or a room id"), Arg("carry", "Carry the crate (default true)", required: false, type: "boolean")),
+            ToolKind.Task, ToolGroup.Items, c => c.Need(c.Str("container", "item", "from"), "container", v => c.Game.Unpack(c.Id, v, c.Bool("carry") != false))) with { MovesOn = true },
+        T("keep_gear", "Lock (true) or unlock your diving gear: while locked you never take it off by yourself. On in combat or when breaches are likely.",
+            Schema(Arg("on", "true = keep it on", type: "boolean")), ToolKind.Order, ToolGroup.Core, c =>
+            {
+                var on = c.Bool("on");
+                return on == null ? "error: 'on' must be true or false" : c.Game.KeepGear(c.Id, on.Value);
+            }),
+
+        // ---- jobs
+        T("refuel_reactor", "Bring a fuel rod and load it into the reactor (replaces a spent one).", NoArgs(), ToolKind.Task, ToolGroup.Crafting,
+            c => c.Game.RefuelReactor(c.Id)) with { MovesOn = true },
+        T("craft", "Make an item at a fabricator. Exact name or [id] from inspect(kind='recipes'); salvage=true first breaks down scrap for missing materials.",
+            Schema(Arg("item", "Name or [id] from the recipes"), Arg("amount", $"1-{MaxCraftAmount}, default 1", required: false, type: "integer"),
+                   Arg("salvage", "Deconstruct scrap for missing materials first", required: false, type: "boolean")),
+            ToolKind.Task, ToolGroup.Crafting, c => c.Need(c.Str("item"), "item",
+                v => c.Game.Craft(c.Id, v, c.Int("amount", 1, 1, MaxCraftAmount), c.Bool("salvage") == true))) with { MovesOn = true },
+        T("deconstruct", "Break an item down in the deconstructor. 'all' with 'from' = everything there; 'marked' = what players marked.",
+            Schema(Arg("item", "Name, [id], 'all' or 'marked'"), Arg("from", "Optional container or room id", required: false)),
+            ToolKind.Task, ToolGroup.Crafting, c => c.Need(c.Str("item"), "item", v => c.Game.Deconstruct(c.Id, v, c.Str("from")))) with { MovesOn = true },
+        T("treat", "Treat a wounded crew member (or 'me'). Without 'item' the cheapest good-enough medicine.",
+            Schema(Arg("target", "Name or 'me'"), Arg("item", "Optional medicine", required: false)), ToolKind.Task, ToolGroup.Medical,
+            c => c.Need(c.Str("target"), "target", v =>
+            {
+                var target = v.Equals("me", StringComparison.OrdinalIgnoreCase) || v.Equals("self", StringComparison.OrdinalIgnoreCase) ? c.Agent.Name : v;
+                return c.Game.Treat(c.Id, target, c.Str("item"));
+            })) with { MovesOn = true },
+        T("attack", "Attack with a tool or weapon: target='ballast flora' burns it with a welding tool or flamer; or a threat from 'threats', weapon = what to fight with.",
+            Schema(Arg("target", "'ballast flora', a threat or 'nearest'"), Arg("weapon", "Optional tool or weapon", required: false)),
+            ToolKind.Task, ToolGroup.Combat, c => c.Need(c.Str("target", "enemy") ?? "nearest", "target", v => c.Game.Attack(c.Id, v, c.Str("weapon", "tool", "item")))) with { MovesOn = true },
+
+        // ---- lookups
+        T("inspect", "Look something up (answer next turn). kind: patient (injuries, medicine; no query = all hurt), items (where; query = room id or name: what is there), "
+            + "recipes (what can be made; optional filter), recipe (one item), salvage (what gives a material), orders (all game orders), inventory (your slots, contents, charge), tools (help for one tool).",
+            Schema(Arg("kind", "What", en: InspectKinds.ToArray()), Arg("query", "Name, item, room, material or filter", required: false)),
+            ToolKind.Lookup, ToolGroup.Core, c =>
+            {
+                var kind = c.Str("kind")?.ToLowerInvariant();
+                var query = c.Str("query");
+                if (kind == null || !InspectKinds.Contains(kind)) return $"error: kind must be one of {string.Join(", ", InspectKinds)}";
+                if (kind == "tools") return ToolHelp(query);
+                if (string.IsNullOrEmpty(query) && kind is "items" or "recipe") return "error: missing 'query' (what to look up)";
+                return Clip(c.Game.Inspect(c.Id, kind, query ?? ""), MaxInspectLength);
+            }),
     };
+
+    static readonly Dictionary<string, ToolDef> ByName = Defs.ToDictionary(d => d.Name, StringComparer.OrdinalIgnoreCase);
+
+    public static ToolDef? Def(string name) => ByName.TryGetValue(name, out var d) ? d : null;
+
+    public static readonly IReadOnlyList<ToolSpec> All = Defs.Select(d => d.Spec).ToList();
+
+    /// <summary>Tools offered only to bots under full AI control.</summary>
+    public static readonly IReadOnlyCollection<string> ControlOnlyTools = Defs.Where(d => d.ControlOnly).Select(d => d.Name).ToList();
+
+    /// <summary>Tools that start a multi-step task; with sequentialActions the next step waits for its result.</summary>
+    public static readonly IReadOnlyCollection<string> TaskTools = Defs.Where(d => d.Kind == ToolKind.Task).Select(d => d.Name).ToHashSet();
+
+    /// <summary>Calls that change nothing in the game (talk, notes, lookups, plan bookkeeping).</summary>
+    public static readonly IReadOnlyCollection<string> PassiveTools =
+        Defs.Where(d => d.Kind is ToolKind.Talk or ToolKind.Lookup or ToolKind.Memory || d.Name is "keep_plan" or "update_plan")
+            .Select(d => d.Name).ToHashSet();
+
+    public static bool MovesOn(string tool) => Def(tool)?.MovesOn == true;
+
+    /// <summary>"inspect(kind='tools', query='craft')": the full description and arguments of one tool (or the list).</summary>
+    public static string ToolHelp(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || Def(name!) is not { } d)
+            return "tools: " + string.Join(", ", Defs.Where(x => !x.ControlOnly).Select(x => x.Name)) + ". Ask with query=<tool name> for details.";
+        var args = d.Schema["properties"] is JsonObject p
+            ? string.Join("; ", p.Select(kv => $"{kv.Key}: {(string?)kv.Value?["description"]}"))
+            : "";
+        return $"{d.Name}: {d.Description}" + (args.Length > 0 ? $" Args: {args}" : "");
+    }
 
     public static IReadOnlyList<ToolSpec> Filtered(ICollection<string> allowed) => For(allowed, aiControl: true);
 
-    /// <summary>Tools for one bot: the allowed list, without the control-only tools unless it is under full AI control.</summary>
-    public static IReadOnlyList<ToolSpec> For(ICollection<string> allowed, bool aiControl, bool memory = true) =>
-        All.Where(t => allowed.Count == 0 || allowed.Contains(t.Name, StringComparer.OrdinalIgnoreCase))
-           .Where(t => aiControl || !ControlOnlyTools.Contains(t.Name))
-           .Where(t => memory || t.Name is not ("forget" or "note_relationship" or "note_preference"))
-           .ToList();
+    /// <summary>Tools for one bot: the allowed list, without the control-only tools unless it is under full AI control,
+    /// and only the given groups (all when null).</summary>
+    public static IReadOnlyList<ToolSpec> For(ICollection<string> allowed, bool aiControl, bool memory = true, ToolGroup? groups = null) =>
+        Defs.Where(t => allowed.Count == 0 || allowed.Contains(t.Name, StringComparer.OrdinalIgnoreCase))
+            .Where(t => aiControl || !t.ControlOnly)
+            .Where(t => memory || t.Group != ToolGroup.Memory || t.Name == "remember")
+            .Where(t => groups == null || (groups.Value & t.Group) != 0 || (t.ControlOnly && aiControl))
+            .Select(t => t.Spec)
+            .ToList();
 
     /// <summary>Reads the optional priority argument: 1..3, default 3.</summary>
     public static int Priority(JsonObject a, int fallback = TopPriority)
@@ -199,7 +370,7 @@ public static class Tools
             ? Math.Clamp((int)Math.Round(d), 1, TopPriority) : fallback;
     }
 
-    static bool? Bool(JsonObject a, string key) => Str(a, key)?.ToLowerInvariant() switch
+    public static bool? Bool(JsonObject a, string key) => Str(a, key)?.ToLowerInvariant() switch
     {
         "true" or "on" or "1" or "yes" => true,
         "false" or "off" or "0" or "no" => false,
@@ -218,7 +389,7 @@ public static class Tools
                 {
                     var t = Unquote(s.Trim());
                     // models write item=None / target=null for "no value"
-                    return t.Equals("none", StringComparison.OrdinalIgnoreCase) || t.Equals("null", StringComparison.OrdinalIgnoreCase) ? null : t;
+                    return t.Length == 0 || t.Equals("none", StringComparison.OrdinalIgnoreCase) || t.Equals("null", StringComparison.OrdinalIgnoreCase) ? null : t;
                 }
                 return v.ToJsonString().Trim('"').Trim();
             }
@@ -227,186 +398,14 @@ public static class Tools
         catch { return null; }
     }
 
-    /// <summary>Runs on the game thread. Never throws.</summary>
+    /// <summary>Runs on the game thread. Never throws. Every tool runs, also one not offered in this request.</summary>
     public static string Execute(ToolCall call, BotAgent agent, IGameApi game, AgentManager mgr)
     {
         try
         {
-            var a = call.Arguments;
-            if (SimpleOrders.ContainsKey(call.Name)) return game.SimpleOrder(agent.Id, call.Name, Priority(a));
-
-            switch (call.Name)
-            {
-                case "go_to_room":
-                    return Need(Str(a, "room"), "room", v => game.GoToRoom(agent.Id, v, Priority(a)));
-                case "come_to":
-                    return Need(Str(a, "target"), "target", v => game.ComeTo(agent.Id, v));
-                case "follow":
-                    return Need(Str(a, "target"), "target", v => game.Follow(agent.Id, v, Priority(a)));
-                case "operate":
-                    return Need(Str(a, "role"), "role", v =>
-                    {
-                        var role = v.ToLowerInvariant();
-                        if (!OperateRoles.Contains(role)) return $"error: role must be one of {string.Join(", ", OperateRoles)}";
-                        var option = Str(a, "option");
-                        return game.Operate(agent.Id, role, string.IsNullOrEmpty(option) ? null : option!.ToLowerInvariant(), Priority(a));
-                    });
-                case "give_order":
-                    return Need(Str(a, "order") ?? Str(a, "id") ?? Str(a, "name"), "order", v =>
-                    {
-                        var option = Str(a, "option");
-                        var target = Str(a, "target");
-                        return game.GiveOrder(agent.Id, v.Trim().ToLowerInvariant(),
-                            string.IsNullOrWhiteSpace(option) ? null : option!.Trim().ToLowerInvariant(),
-                            string.IsNullOrWhiteSpace(target) ? null : target, Priority(a));
-                    });
-                case "plan":
-                case "update_plan":
-                    // carried out by the agent manager as a whole (see ApplyPlan); here only without sequential actions
-                    return "error: plans with conditions need global.sequentialActions on";
-                case "return_to_default":
-                    return game.Dismiss(agent.Id);
-                case "set_goal":
-                {
-                    if (Bool(a, "done") == true || string.IsNullOrWhiteSpace(Str(a, "goal")))
-                    {
-                        var old = agent.Goal;
-                        agent.SetGoal(null, mgr.Now);
-                        return old == null ? "ok (no goal)" : "ok, goal finished: " + old;
-                    }
-                    agent.SetGoal(Str(a, "goal"), mgr.Now);
-                    return "ok, goal: " + agent.Goal;
-                }
-                case "carry_on":
-                    return "ok";
-                case "keep_plan":
-                    return agent.Busy ? "ok, continuing the plan" : "ok (no plan left)";
-                case "say":
-                    return Need(Str(a, "text"), "text", v =>
-                    {
-                        game.Speak(agent.Id, Clip(v, MaxSayLength));
-                        return "ok";
-                    });
-                case "message_crew":
-                {
-                    var to = Str(a, "to");
-                    var text = Str(a, "text");
-                    if (string.IsNullOrEmpty(to) || string.IsNullOrEmpty(text)) return "error: 'to' and 'text' are required";
-                    return mgr.DeliverMessage(agent, to!, Clip(text!, MaxMessageLength));
-                }
-                case "set_order_priority":
-                    return Need(Str(a, "order"), "order", v =>
-                    {
-                        var p = Str(a, "priority");
-                        if (p == null || !int.TryParse(p, out var n) || n < 0 || n > TopPriority) return $"error: priority must be 0-{TopPriority}";
-                        return game.SetOrderPriority(agent.Id, v, n);
-                    });
-                case "remember":
-                    return Need(Str(a, "note"), "note", v => mgr.Remember(agent, v, Bool(a, "long_term") == true));
-                case "forget":
-                    return Need(Str(a, "text"), "text", v => mgr.Forget(agent, v));
-                case "note_relationship":
-                {
-                    var person = Str(a, "person");
-                    var feeling = Str(a, "feeling")?.ToLowerInvariant();
-                    if (string.IsNullOrEmpty(person)) return "error: missing 'person'";
-                    if (feeling == null || !Memory.MemoryStore.Feelings.Contains(feeling))
-                        return $"error: feeling must be one of {string.Join(", ", Memory.MemoryStore.Feelings)}";
-                    return mgr.NoteRelationship(agent, person!, feeling, Str(a, "note") ?? "");
-                }
-                case "note_preference":
-                {
-                    var player = Str(a, "player");
-                    var pref = Str(a, "preference");
-                    if (string.IsNullOrEmpty(player) || string.IsNullOrEmpty(pref)) return "error: 'player' and 'preference' are required";
-                    return mgr.NotePreference(agent, player!, pref!);
-                }
-                case "order_crew":
-                {
-                    var to = Str(a, "to");
-                    var order = Str(a, "order");
-                    if (string.IsNullOrEmpty(to) || string.IsNullOrEmpty(order)) return "error: 'to' and 'order' are required";
-                    return mgr.OrderCrew(agent, to!, Clip(order!, MaxMessageLength));
-                }
-                case "equip":
-                    return Need(Str(a, "item"), "item", v => game.Equip(agent.Id, v));
-                case "refuel_reactor":
-                    return game.RefuelReactor(agent.Id);
-                case "craft":
-                    return Need(Str(a, "item"), "item", v =>
-                    {
-                        int amount = int.TryParse(Str(a, "amount"), out var n) ? n : 1;
-                        return game.Craft(agent.Id, v, Math.Clamp(amount, 1, MaxCraftAmount), Bool(a, "salvage") == true);
-                    });
-                case "deconstruct":
-                    return Need(Str(a, "item"), "item", v => game.Deconstruct(agent.Id, v, Str(a, "from")));
-                case "treat":
-                    return Need(Str(a, "target"), "target", v =>
-                    {
-                        var item = Str(a, "item");
-                        var target = v.Equals("me", StringComparison.OrdinalIgnoreCase) || v.Equals("self", StringComparison.OrdinalIgnoreCase) ? agent.Name : v;
-                        return game.Treat(agent.Id, target, string.IsNullOrEmpty(item) ? null : item);
-                    });
-                case "unequip":
-                    return Need(Str(a, "item"), "item", v => game.Unequip(agent.Id, v));
-                case "drop":
-                    return Need(Str(a, "item"), "item", v => game.Drop(agent.Id, v));
-                case "take_item":
-                    return Need(Str(a, "item"), "item", v =>
-                    {
-                        int count = int.TryParse(Str(a, "count") ?? Str(a, "amount"), out var n) ? n : 1;
-                        var from = Str(a, "from");
-                        return game.TakeItem(agent.Id, v, Math.Clamp(count, 1, MaxTakeCount), string.IsNullOrWhiteSpace(from) ? null : from);
-                    });
-                case "attack":
-                    return Need(Str(a, "target") ?? Str(a, "enemy") ?? "nearest", "target", v =>
-                    {
-                        var weapon = Str(a, "weapon") ?? Str(a, "tool") ?? Str(a, "item");
-                        return game.Attack(agent.Id, v, string.IsNullOrWhiteSpace(weapon) ? null : weapon);
-                    });
-                case "put_in":
-                {
-                    var item = Str(a, "item");
-                    var into = Str(a, "into") ?? Str(a, "to") ?? Str(a, "container");
-                    if (string.IsNullOrEmpty(item) || string.IsNullOrEmpty(into)) return "error: 'item' and 'into' are required";
-                    return game.PutIn(agent.Id, item!, into!);
-                }
-                case "refill":
-                {
-                    var item = Str(a, "item") ?? Str(a, "target");
-                    return game.Refill(agent.Id, string.IsNullOrWhiteSpace(item) ? null : item);
-                }
-                case "tidy_inventory":
-                {
-                    var keep = Str(a, "keep");
-                    return game.TidyInventory(agent.Id, string.IsNullOrWhiteSpace(keep) ? null : keep);
-                }
-                case "unpack":
-                    return Need(Str(a, "container") ?? Str(a, "item") ?? Str(a, "from"), "container", v => game.Unpack(agent.Id, v, Bool(a, "carry") != false));
-                case "move_item":
-                {
-                    var item = Str(a, "item");
-                    var to = Str(a, "to");
-                    if (string.IsNullOrEmpty(item) || string.IsNullOrEmpty(to)) return "error: 'item' and 'to' are required";
-                    return game.MoveItem(agent.Id, item!, to!);
-                }
-                case "keep_gear":
-                {
-                    var on = Bool(a, "on");
-                    if (on == null) return "error: 'on' must be true or false";
-                    return game.KeepGear(agent.Id, on.Value);
-                }
-                case "inspect":
-                {
-                    var kind = Str(a, "kind")?.ToLowerInvariant();
-                    var query = Str(a, "query");
-                    if (kind == null || !InspectKinds.Contains(kind)) return $"error: kind must be one of {string.Join(", ", InspectKinds)}";
-                    if (string.IsNullOrEmpty(query) && kind is "items" or "recipe") return "error: missing 'query' (what to look up)";
-                    return Clip(game.Inspect(agent.Id, kind, query ?? ""), MaxInspectLength);
-                }
-                default:
-                    return $"error: unknown tool '{call.Name}'";
-            }
+            var def = Def(call.Name);
+            if (def == null) return $"error: unknown tool '{call.Name}'";
+            return def.Run(new ToolContext(call, agent, game, mgr));
         }
         catch (Exception e)
         {
@@ -422,7 +421,4 @@ public static class Tools
 
     public static string ArgsToString(ToolCall c) =>
         string.Join(", ", c.Arguments.Select(kv => $"{kv.Key}={kv.Value?.ToJsonString(new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping })}"));
-
-    static string Need(string? v, string name, Func<string, string> f) =>
-        string.IsNullOrEmpty(v) ? $"error: missing '{name}'" : f(v!);
 }

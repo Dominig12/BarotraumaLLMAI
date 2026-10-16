@@ -7,6 +7,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/dist/LlmAgents"
 rm -rf "$OUT"; mkdir -p "$OUT"
 cp -r "$ROOT"/Content/. "$OUT"/
+# the version lives in Directory.Build.props only
+VERSION="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' "$ROOT/Directory.Build.props" | head -1)"
+sed -i.bak "s/modversion=\"[^\"]*\"/modversion=\"$VERSION\"/" "$OUT/filelist.xml" && rm -f "$OUT/filelist.xml.bak"
 for P in Windows Linux OSX; do
   dotnet build "$ROOT/src/LlmAgents.Server/LlmAgents.Server.csproj" -c Release -p:GamePlatform=$P -v q -nologo
   mkdir -p "$OUT/bin/Server/$P"

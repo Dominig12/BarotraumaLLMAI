@@ -215,9 +215,14 @@ public sealed partial class AgentManager
 
     IConditionContext ConditionContext(BotAgent agent, double now)
     {
+        // the situation check looks every second anyway: a fresh observation from it is as good as a new one
         Observation o;
-        try { o = game.Observe(agent.Id); }
-        catch { o = agent.LastObservation ?? new Observation(); }
+        if (agent.LastObservation != null && now - agent.LastObservationAt < 1.0) o = agent.LastObservation;
+        else
+        {
+            try { o = game.Observe(agent.Id); }
+            catch { o = agent.LastObservation ?? new Observation(); }
+        }
         return new PlanConditions.ObservationContext(o, now - agent.PlanStartedAt, agent.Tree?.LastOk, agent.Tree?.LastResult, agent.Waiting == PlanWait.Task);
     }
 
@@ -294,6 +299,7 @@ public sealed partial class AgentManager
     string Run(BotAgent agent, PlanStep step)
     {
         game.BeginCommand(agent.Id, step.Authority);
+        agent.UsedTool(step.Call.Name, clock());
         var result = Tools.Execute(step.Call, agent, game, this);
         var line = $"{step.Call.Name}({Tools.ArgsToString(step.Call)}) -> {result}";
         if (step.Call.Name != "keep_plan") agent.RecordResult(line);
@@ -331,9 +337,7 @@ public sealed partial class AgentManager
     }
 
     /// <summary>Steps that take the bot somewhere else or give it other work (not talk, lookups or gear locks).</summary>
-    static bool MovesOn(string tool) =>
-        TaskTools.Contains(tool) || tool is "go_to_room" or "follow" or "operate" or "give_order" or "return_to_default"
-        || (Tools.SimpleOrders.ContainsKey(tool) && tool != "wait");
+    static bool MovesOn(string tool) => Tools.MovesOn(tool);
 
     /// <summary>go_to_room steps: go on with the plan once the bot is there.</summary>
     void CheckArrivals(double now)
@@ -343,7 +347,7 @@ public sealed partial class AgentManager
             if (agent.Waiting != PlanWait.Arrival || now < agent.NextArrivalCheckAt) continue;
             agent.NextArrivalCheckAt = now + 1.0;
             if (!game.IsAlive(agent.Id)) { agent.ClearPlan(); continue; }
-            if (InRoom(game.Observe(agent.Id).Room, agent.WaitRoom))
+            if (InRoom(game.RoomOf(agent.Id), agent.WaitRoom))
             {
                 var room = agent.WaitRoom;
                 agent.Waiting = PlanWait.None;

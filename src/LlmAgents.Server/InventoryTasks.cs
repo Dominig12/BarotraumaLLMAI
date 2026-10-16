@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Barotrauma;
+using LlmAgents.Agents;
 using Barotrauma.Items.Components;
 using Microsoft.Xna.Framework;
 
@@ -70,9 +71,9 @@ internal static class InventoryView
         foreach (var holder in (c.Inventory?.AllItems ?? Enumerable.Empty<Item>()).Where(i => only == null || i == only))
         {
             var ic = holder.GetComponent<ItemContainer>();
-            if (ic == null || ic.Capacity > 4 || GameAdapter.IsStorage(holder) || ic.ContainableItems == null || ic.ContainableItems.Count == 0) continue;
+            if (ic == null || !ItemRules.TakesRefills(ic.Capacity, GameAdapter.IsStorage(holder), ic.ContainableItems?.Count ?? 0)) continue;
             var inside = ic.Inventory.AllItems.ToList();
-            var spent = inside.Where(x => x.MaxCondition > 0 && Fraction(x) < 0.15f).OrderBy(Fraction).FirstOrDefault();
+            var spent = inside.Where(x => x.MaxCondition > 0 && ItemRules.IsSpent(Fraction(x))).OrderBy(Fraction).FirstOrDefault();
             if (spent != null) list.Add((holder, ic, spent));
             else if (inside.Count == 0) list.Add((holder, ic, null));
         }
@@ -82,7 +83,7 @@ internal static class InventoryView
     /// <summary>The best item on the sub (or in the inventory) to load into that slot: the same kind as before, fullest, nearest.</summary>
     public static Item? BestRefill(Character c, Item holder, ItemContainer ic, Item? old, ICollection<Item> skip) =>
         ItemQueries.Available(c)
-            .Where(i => i != holder && i != old && !skip.Contains(i) && Fraction(i) > 0.3f && ic.CanBeContained(i))
+            .Where(i => i != holder && i != old && !skip.Contains(i) && ItemRules.IsUsableRefill(Fraction(i)) && ic.CanBeContained(i))
             // loose, in the inventory or in a cabinet: not out of a machine or another tool
             .Where(i => i.Container == null || GameAdapter.IsStorage(i.Container))
             .OrderByDescending(i => old != null && i.Prefab == old.Prefab ? 1 : 0)
@@ -99,7 +100,7 @@ internal static class InventoryView
         if (!ic.CanBeContained(item)) return $"{item.Name} does not fit into {ic.Item.Name}";
         if (!ic.Inventory.CanBePut(item))
         {
-            var old = ic.Inventory.AllItems.Where(x => x.Prefab != item.Prefab || Fraction(x) < 0.15f).OrderBy(Fraction).FirstOrDefault()
+            var old = ic.Inventory.AllItems.Where(x => x.Prefab != item.Prefab || ItemRules.IsSpent(Fraction(x))).OrderBy(Fraction).FirstOrDefault()
                       ?? ic.Inventory.AllItems.OrderBy(Fraction).FirstOrDefault();
             if (old == null) return $"{ic.Item.Name} is full";
             if (!c.Inventory.TryPutItem(old, c, CharacterInventory.AnySlot)) old.Drop(c);

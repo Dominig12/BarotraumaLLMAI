@@ -80,6 +80,21 @@ public sealed class LlmGate
         }
     }
 
+    /// <summary>Takes over the requests of the last minute and today's count from the gate this one replaces (settings
+    /// were reloaded): saving the settings must not reset a daily budget or a per-minute limit.</summary>
+    public void CarryOver(LlmGate old)
+    {
+        if (ReferenceEquals(old, this)) return;
+        DateTime[] reqs; (DateTime, int)[] toks; DateTime oldDay; int oldCount;
+        lock (old.sync) { reqs = old.requests.ToArray(); toks = old.tokens.ToArray(); oldDay = old.day; oldCount = old.dayCount; }
+        lock (sync)
+        {
+            foreach (var r in reqs) requests.Enqueue(r);
+            foreach (var t in toks) tokens.Enqueue(t);
+            if (oldDay == day) dayCount += oldCount;
+        }
+    }
+
     public void ReportTokens(int count)
     {
         if (count <= 0) return;

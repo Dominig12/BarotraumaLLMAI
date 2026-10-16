@@ -215,7 +215,11 @@ public sealed partial class AgentManager
         agent.LastRequestAt = now;
         agent.LastWhy = string.Join("; ", events.Select(e => $"{EventPolicy.Label(e.Kind)}: {Tools.Clip(e.Text, 80)}"));
 
-        string user = UserMessage(obs, g.CompactObservation ? obs.ToCompactJson() : obs.ToJson());
+        ToolGroup? groups = Settings.Bots.ToolSelection == "all" ? null
+            : ToolSelection.For(agent, obs, orders.Select(o => o.Text), now, MemoryOn);
+        var tools = Tools.For(Settings.Bots.AllowedTools, agent.AiControl, MemoryOn, groups);
+        var hidden = groups == null ? null : ToolSelection.HiddenLine(tools.Select(t => t.Name).ToList(), agent.AiControl);
+        string user = UserMessage(obs, g.CompactObservation ? obs.ToCompactJson() : obs.ToJson(), hidden);
         var req = new DecisionRequest(agent, generation, now, events, orders, obs.Inbox, obs.LastActionResults,
             // compact: earlier turns are one line each; otherwise the whole old message stays in the history
             g.CompactObservation ? obs.HistorySummary() : user,
@@ -226,7 +230,6 @@ public sealed partial class AgentManager
             persona: PersonaPrompt(agent), language: Settings.Bots.SpeechLanguage);
         var history = agent.HistorySnapshot(now);
         history.Add(new LlmTurn("user", user));
-        var tools = Tools.For(Settings.Bots.AllowedTools, agent.AiControl, MemoryOn);
         var token = cts.Token;
         var r0 = router;
         int boost = agent.OutputBoost;
@@ -239,7 +242,7 @@ public sealed partial class AgentManager
             RouteResult r;
             try
             {
-                r = await r0.CompleteAsync(reservation, system, history, tools, token, boost).ConfigureAwait(false);
+                r = await r0.CompleteAsync(reservation, system, history, tools, token, boost, Tools.All).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { return; }
             catch (Exception e)
@@ -252,7 +255,7 @@ public sealed partial class AgentManager
 
     /// <summary>The user message: why the bot is asked, new orders in plain words (small models miss them inside a long
     /// JSON), then the observation.</summary>
-    static string UserMessage(Observation obs, string json)
+    static string UserMessage(Observation obs, string json, string? hiddenTools = null)
     {
         var sb = new StringBuilder();
         if (obs.Why.Count > 0)
@@ -267,6 +270,7 @@ public sealed partial class AgentManager
             foreach (var o in obs.PlayerOrders) sb.Append("- ").Append(o).Append('\n');
             sb.Append('\n');
         }
+        if (hiddenTools != null) sb.Append(hiddenTools).Append("\n\n");
         sb.Append("Observation:\n").Append(json);
         return sb.ToString();
     }

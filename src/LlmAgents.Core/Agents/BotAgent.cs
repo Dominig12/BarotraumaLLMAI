@@ -298,6 +298,17 @@ public sealed class BotAgent
     /// <summary>The previous reply had errors and the bot was asked again; one retry, no loops.</summary>
     public int ErrorStreak { get; set; }
 
+    readonly Dictionary<ToolGroup, double> usedGroups = new();
+
+    /// <summary>A tool of this group was used: the group stays in the bot's requests for a while.</summary>
+    public void UsedTool(string tool, double now)
+    {
+        if (Tools.Def(tool) is { } d) usedGroups[d.Group] = now;
+    }
+
+    public ToolGroup StickyGroups(double now) =>
+        usedGroups.Where(kv => now - kv.Value < ToolSelection.StickySeconds).Aggregate((ToolGroup)0, (acc, kv) => acc | kv.Key);
+
     /// <summary>A plan with conditions (the model's "plan" call); its steps go through <see cref="Plan"/> one by one.</summary>
     public PlanTree? Tree { get; set; }
     /// <summary>The steps of the tree carry the authority of the reply that set it.</summary>

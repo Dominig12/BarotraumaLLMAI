@@ -1,3 +1,4 @@
+using System.Linq;
 using System;
 using System.Collections.Generic;
 using System.Net;
@@ -125,6 +126,14 @@ public sealed class LlmRouter : IDisposable
     }
 
     public LlmGate GlobalGate => globalGate;
+
+    /// <summary>Carries the limits' counters over from the router this one replaces (same provider names).</summary>
+    public void CarryOver(LlmRouter old)
+    {
+        globalGate.CarryOver(old.globalGate);
+        foreach (var (name, e) in providers)
+            if (old.providers.TryGetValue(name, out var o)) e.Gate.CarryOver(o.Gate);
+    }
     public LlmGate? GateOf(string provider) => providers.TryGetValue(provider, out var e) ? e.Gate : null;
 
     List<string> Order(string preferred)
@@ -183,6 +192,19 @@ public sealed class LlmRouter : IDisposable
         return true;
     }
 
+    readonly Dictionary<string, DateTime> contextWarned = new(StringComparer.OrdinalIgnoreCase);
+
+    void WarnContext(string provider, int used, int ctx)
+    {
+        var now = utcNow();
+        lock (contextWarned)
+        {
+            if (contextWarned.TryGetValue(provider, out var at) && (now - at).TotalMinutes < 5) return;
+            contextWarned[provider] = now;
+        }
+        Log.Warn($"{provider}: the prompt used {used} of {ctx} context tokens; raise contextLength (and the server's context size) or shorten the history");
+    }
+
     /// <summary>
     /// Runs the request on the reserved provider; on error tries the fallback provider (if it has a free slot).
     /// Always releases the reservation.
@@ -190,7 +212,7 @@ public sealed class LlmRouter : IDisposable
     /// <param name="minOutputTokens">At least this many output tokens (a retry after a reply that was cut off).</param>
     public async Task<RouteResult> CompleteAsync(
         Reservation reservation, string system, IReadOnlyList<LlmTurn> turns, IReadOnlyList<ToolSpec> tools, CancellationToken ct,
-        int minOutputTokens = 0)
+        int minOutputTokens = 0, IReadOnlyList<ToolSpec>? accept = null)
     {
         var current = reservation;
         var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -203,10 +225,17 @@ public sealed class LlmRouter : IDisposable
                 var e = providers[current.Provider];
                 try
                 {
-                    var req = new LlmRequest(system, turns, tools, Math.Max(e.Config.MaxOutputTokens, minOutputTokens), e.Config.Temperature);
+                    int maxOut = Math.Max(e.Config.MaxOutputTokens, minOutputTokens);
+                    var fitted = turns.ToList();
+                    int ctx = e.Config.ContextLength;
+                    int dropped = ContextGuard.Fit(system, fitted, tools, ctx, maxOut);
+                    if (dropped > 0) Log.Info($"{current.Provider}: prompt over contextLength {ctx}, dropped {dropped} oldest history turn(s)");
+                    var req = new LlmRequest(system, fitted, tools, maxOut, e.Config.Temperature, accept);
                     var started = utcNow();
                     var res = await e.Provider.CompleteAsync(req, ct).ConfigureAwait(false);
                     e.Gate.ReportTokens(res.InputTokens + res.OutputTokens);
+                    if (ctx > 0 && res.InputTokens >= ContextGuard.WarnShare * ctx)
+                        WarnContext(current.Provider, res.InputTokens, ctx);
                     lock (e) { e.Ok++; e.TotalSeconds += Math.Max(0, (utcNow() - started).TotalSeconds); }
                     MarkHealthy(e);
                     return new RouteResult(RouteStatus.Ok, res, current.Provider, "");

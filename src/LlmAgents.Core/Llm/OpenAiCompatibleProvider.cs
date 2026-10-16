@@ -132,7 +132,7 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
 
         try
         {
-            return ParseResponse(raw, req.Tools);
+            return ParseResponse(raw, req.Understood);
         }
         catch (JsonException e)
         {
@@ -149,8 +149,8 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
         var key = cfg.ResolvedKey;
         if (!string.IsNullOrEmpty(key)) msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
         foreach (var kv in cfg.ExtraHeaders) msg.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
-        using var resp = await http.SendAsync(msg, ct).ConfigureAwait(false);
-        var text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        using var resp = await http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        var text = await resp.Content.ReadCappedAsync(ct).ConfigureAwait(false);
         return (resp.StatusCode, text);
     }
 

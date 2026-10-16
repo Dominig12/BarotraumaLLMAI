@@ -303,6 +303,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         manager = null;
         adapter = null;
         Log.Sink = null;
+        Log.Shutdown();
     }
 
     /// <summary>One memory per campaign save; everything outside campaigns shares "default".</summary>

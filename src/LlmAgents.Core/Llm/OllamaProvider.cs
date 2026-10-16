@@ -134,8 +134,8 @@ public sealed class OllamaProvider : ILlmProvider
                 Content = new StringContent(BuildBody(cfg, req).ToJsonString(), Encoding.UTF8, "application/json"),
             };
             foreach (var kv in cfg.ExtraHeaders) msg.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
-            using var resp = await http.SendAsync(msg, cts.Token).ConfigureAwait(false);
-            raw = await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
+            using var resp = await http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
+            raw = await resp.Content.ReadCappedAsync(cts.Token).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
                 var hint = resp.StatusCode == HttpStatusCode.NotFound && raw.Contains("model", StringComparison.OrdinalIgnoreCase)
@@ -148,7 +148,7 @@ public sealed class OllamaProvider : ILlmProvider
             throw new TimeoutException($"timed out after {cfg.TimeoutSeconds}s");
         }
 
-        try { return ParseResponse(raw, req.Tools); }
+        try { return ParseResponse(raw, req.Understood); }
         catch (JsonException e) { throw new FormatException("invalid JSON response: " + e.Message); }
     }
 }

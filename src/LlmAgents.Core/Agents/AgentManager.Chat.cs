@@ -105,7 +105,7 @@ public sealed partial class AgentManager
         foreach (var id in cmd.ListenerIds.Distinct())
         {
             if (!agents.TryGetValue(id, out var a) || !game.IsAlive(id)) continue;
-            var o = game.Observe(id);
+            var o = game.Brief(id);
             roster.Add(new RosterEntry(a.Id, a.Name, a.Job, o.Room, o.CurrentOrder));
         }
         return roster;

@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
+using System.Text;
+using System.Threading;
 
 namespace LlmAgents;
 
@@ -8,13 +11,22 @@ public enum LogLevel { Info, Warn, Error }
 /// <summary>
 /// Tiny static logger. The host (the server plugin, or tests) sets <see cref="Sink"/> for console output;
 /// every line also goes to <see cref="FilePath"/> if set. Never throws.
+/// File lines are queued and written by one background thread (the game thread never waits for the disk), and the
+/// file is rotated at <see cref="MaxFileBytes"/>: the old part is kept as "name.1", so a long server run cannot fill
+/// the disk.
 /// </summary>
 public static class Log
 {
-    static readonly object Lock = new();
-
     public static Action<LogLevel, string>? Sink { get; set; }
-    public static string? FilePath { get; set; }
+
+    static string? filePath;
+    public static string? FilePath
+    {
+        get => filePath;
+        set { filePath = value; EnsureWriter(); }
+    }
+
+    public static long MaxFileBytes { get; set; } = 5 * 1024 * 1024;
 
     /// <summary>Console sink only receives lines at or above this level (file gets everything).</summary>
     public static LogLevel ConsoleLevel { get; set; } = LogLevel.Warn;
@@ -23,19 +35,110 @@ public static class Log
     public static void Warn(string m) => Write(LogLevel.Warn, m);
     public static void Error(string m) => Write(LogLevel.Error, m);
 
+    const int MaxQueued = 20000;
+    static readonly BlockingCollection<(string Path, string Line)> queue = new(new ConcurrentQueue<(string, string)>());
+    static readonly object startLock = new();
+    static Thread? writer;
+    static readonly ManualResetEventSlim idle = new(true);
+
     static void Write(LogLevel level, string message)
     {
         try
         {
             if (level >= ConsoleLevel) Sink?.Invoke(level, "[LlmAgents] " + message);
-            var path = FilePath;
+            var path = filePath;
             if (path == null) return;
-            var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {level,-5} {message}{Environment.NewLine}";
-            lock (Lock) File.AppendAllText(path, line);
+            if (queue.Count >= MaxQueued) return;   // the disk cannot keep up: drop rather than eat memory
+            idle.Reset();
+            EnsureWriter();
+            queue.Add((path, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {level,-5} {message}{Environment.NewLine}"));
         }
         catch
         {
             // logging must never break the game
         }
+    }
+
+    /// <summary>Waits (up to the timeout) until queued lines are on disk: plugin unload, tests.</summary>
+    public static bool Flush(int timeoutMs = 2000)
+    {
+        if (writer == null) return true;
+        return idle.Wait(timeoutMs);
+    }
+
+    static volatile bool stopping;
+
+    /// <summary>Writes what is queued and stops the writer thread: a plugin reload must not leave a thread holding the
+    /// old assembly and the file open. The next line written starts a new one.</summary>
+    public static void Shutdown(int timeoutMs = 2000)
+    {
+        Thread? t;
+        lock (startLock) { t = writer; if (t == null) return; stopping = true; }
+        try { t.Join(timeoutMs); } catch { }
+        lock (startLock) { writer = null; stopping = false; }
+    }
+
+    static void EnsureWriter()
+    {
+        if (writer != null || filePath == null) return;
+        lock (startLock)
+        {
+            if (writer != null) return;
+            writer = new Thread(Run) { IsBackground = true, Name = "LlmAgents log" };
+            writer.Start();
+        }
+    }
+
+    static void Run()
+    {
+        StreamWriter? w = null;
+        string? openPath = null;
+        while (true)
+        {
+            (string Path, string Line) item;
+            try
+            {
+                if (!queue.TryTake(out item, stopping ? 0 : 500))
+                {
+                    w?.Flush();
+                    if (queue.Count == 0) idle.Set();
+                    if (stopping) { w?.Dispose(); return; }
+                    continue;
+                }
+            }
+            catch { continue; }
+            try
+            {
+                if (openPath != item.Path || w == null)
+                {
+                    w?.Dispose();
+                    w = Open(item.Path);
+                    openPath = item.Path;
+                }
+                if (w.BaseStream.Length >= MaxFileBytes)
+                {
+                    w.Dispose();
+                    Rotate(item.Path);
+                    w = Open(item.Path);
+                }
+                w.Write(item.Line);
+                if (queue.Count == 0) { w.Flush(); idle.Set(); }
+            }
+            catch
+            {
+                try { w?.Dispose(); } catch { }
+                w = null;
+                if (queue.Count == 0) idle.Set();
+            }
+        }
+    }
+
+    static StreamWriter Open(string path) =>
+        new(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete), new UTF8Encoding(false));
+
+    static void Rotate(string path)
+    {
+        var old = path + ".1";
+        try { if (File.Exists(old)) File.Delete(old); File.Move(path, old); } catch { /* keep appending to the big file */ }
     }
 }

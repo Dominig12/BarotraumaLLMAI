@@ -6,5 +6,9 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
+    <!-- The one place the mod version is set: the assemblies get it, ModInfo.Version reads it, and the package
+         scripts write it into filelist.xml (a test checks Content/filelist.xml matches). -->
+    <Version>0.7.0</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 </Project>

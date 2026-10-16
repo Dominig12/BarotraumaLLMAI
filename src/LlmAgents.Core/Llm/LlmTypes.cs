@@ -14,12 +14,18 @@ public sealed record ToolCall(string Name, JsonObject Arguments);
 /// <summary>Role is "user" or "assistant".</summary>
 public sealed record LlmTurn(string Role, string Text);
 
+/// <param name="Accept">Tools whose calls are understood in the reply (default: the ones sent). The mod sends a
+/// selection of its tools but carries out any of them, so a model that names a tool it was not shown is not ignored.</param>
 public sealed record LlmRequest(
     string System,
     IReadOnlyList<LlmTurn> Turns,
     IReadOnlyList<ToolSpec> Tools,
     int MaxOutputTokens,
-    double Temperature);
+    double Temperature,
+    IReadOnlyList<ToolSpec>? Accept = null)
+{
+    public IReadOnlyList<ToolSpec> Understood => Accept ?? Tools;
+}
 
 public sealed record LlmResponse(
     string Text,

@@ -1,0 +1,33 @@
+# One chat phrase per line: phrase <TAB> expected hint fragments separated by " && "; a fragment starting with "!" must NOT appear.
+# "-" alone means no hint at all. Add a line here whenever a rule is added or a phrase went wrong in a log.
+ВСЕ ЗА МНОЙ!	follow(target="Dan")
+follow me	follow(
+Иди ко мне	come_to(
+Иди сюда	come_to(
+Возьми отсюда инструменты	take_item( && from="Engine [h4]" && !come_to(
+Стой тут	wait()
+Отбой	return_to_default()
+В двигательном течь!	fix_leaks()
+Пожар в реакторной!	extinguish_fires()
+Почини насос	repair_systems()
+Садись за пушку	operate(role="weapons")
+Займись ремонтом электрики	give_order(order="repairelectrical")
+Заряди батареи	give_order(order="chargebatteries")
+Загрузи боеприпасы в пушки	give_order(order="loaditems")
+В балласте флора, выжги её сваркой	attack(target="ballast flora"
+Убей тварь	fight_intruders()
+Вылечи капитана	treat(
+Не снимай скафандр	keep_gear(on=true)
+Надень водолазный костюм	equip(item="diving suit")
+Заправь сварку	refill(
+Заправь реактор топливом	refuel_reactor() && !refill(
+Вставь баллон в сварку	put_in(
+Разгрузи инвентарь	tidy_inventory()
+Разложи ящик по местам	unpack(
+Разбери этот хлам	deconstruct(
+Скрафти аптечку	craft(
+Включи насос, откачай воду	operate(role="pumps"
+Привет всем	-
+как дела?	-
+Иди в Электрику	!repairelectrical
+Все по местам!	!unpack

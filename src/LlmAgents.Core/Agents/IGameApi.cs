@@ -17,7 +17,9 @@ public sealed record ControlEvent(int BotId, bool Granted, string By);
 public sealed record MenuOrder(int BotId, string By, string Order, bool Dismissal = false, bool PriorityOnly = false);
 
 /// <summary>
-/// Everything the agent layer needs from the game. The only real implementation is
+/// Everything the agent layer needs from the game. Newer abilities have default bodies ("not supported"), so a test
+/// fake or another backend only implements what it uses; adding a tool does not break every implementation.
+/// The only real implementation is
 /// LlmAgents.Server/GameAdapter.cs; tests use a fake. All methods are called on the game thread.
 /// Every action returns a short human-readable result ("ok ..." or "error: ...") which is
 /// fed back to the LLM in the next observation.
@@ -27,6 +29,17 @@ public interface IGameApi
     IReadOnlyList<BotHandle> GetBots();
     bool IsAlive(int botId);
     Observation Observe(int botId);
+
+    /// <summary>The room the bot is in, cheaper than a whole observation (used every second while walking).</summary>
+    string? RoomOf(int botId) => Observe(botId).Room;
+
+    /// <summary>Where the bot is and what it is doing, without building a whole observation (the status window asks
+    /// for every bot several times a second).</summary>
+    BotBrief Brief(int botId)
+    {
+        var o = Observe(botId);
+        return new BotBrief(o.Room, o.CurrentOrder, o.CurrentTask, o.Doing);
+    }
 
     /// <summary>
     /// Called before each batch of actions for a bot. playerAuthority = the decision was made to carry out
@@ -41,10 +54,10 @@ public interface IGameApi
     /// <summary>Task: walk to the person's current position, stay with them for a while, done. ("come to me")</summary>
     string ComeTo(int botId, string targetName);
     /// <summary>A go_to_room step was only on the way to the next step: drop the bot's own "stay in that room" order.</summary>
-    string EndTravel(int botId);
+    string EndTravel(int botId) => "ok";
 
     /// <summary>Any order of the game by its identifier ("repairelectrical", "chargebatteries"...); target = device or room text.</summary>
-    string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority);
+    string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority) => "error: not supported in this game backend";
 
     /// <summary>orderKey is one of <see cref="Tools.SimpleOrders"/> keys.</summary>
     string SimpleOrder(int botId, string orderKey, int priority = Tools.TopPriority);
@@ -80,21 +93,21 @@ public interface IGameApi
     /// Pick up to <paramref name="count"/> matching items into the inventory; a kind ("medical") takes a mix. Multi-step task.
     /// from = a container, a room or a crew member (the room they are in); null = anywhere, nearest first.
     /// </summary>
-    string TakeItem(int botId, string item, int count, string? from = null);
+    string TakeItem(int botId, string item, int count, string? from = null) => "error: not supported in this game backend";
     /// <summary>Attack ballast flora (burnt with a fire tool) or a creature / intruder, with a chosen tool or weapon. Multi-step task.</summary>
-    string Attack(int botId, string target, string? weapon);
+    string Attack(int botId, string target, string? weapon) => "error: not supported in this game backend";
     /// <summary>Load an item into something the bot carries (fuel into a welding tool, a tank into a suit...). Task when it must be fetched.</summary>
-    string PutIn(int botId, string item, string into);
+    string PutIn(int botId, string item, string into) => "error: not supported in this game backend";
     /// <summary>Refill what the bot carries (or one item) with full fuel, tanks, batteries, ammo. Multi-step task.</summary>
-    string Refill(int botId, string? item);
+    string Refill(int botId, string? item) => "error: not supported in this game backend";
     /// <summary>Put away what the bot carries but does not wear or hold. Multi-step task.</summary>
-    string TidyInventory(int botId, string? keep);
+    string TidyInventory(int botId, string? keep) => "error: not supported in this game backend";
     /// <summary>Empty a crate or container: every item goes where it belongs (stacks of the same items first). Multi-step task.</summary>
-    string Unpack(int botId, string container, bool carry = true);
+    string Unpack(int botId, string container, bool carry = true) => "error: not supported in this game backend";
     /// <summary>While on, the bot never takes its diving gear off by itself (except when its suit runs out of air).</summary>
     string KeepGear(int botId, bool on);
 
-    /// <summary>Immediate lookup. kind: patient | items | recipe | recipes | salvage.</summary>
+    /// <summary>Immediate lookup, kind from <see cref="Tools.InspectKinds"/>.</summary>
     string Inspect(int botId, string kind, string query);
 
     /// <summary>Task results and other events since the last call.</summary>
@@ -107,9 +120,11 @@ public interface IGameApi
     IReadOnlyList<ControlEvent> DrainControlEvents();
 
     /// <summary>Ordinary orders players gave bots through the command menu since the last call.</summary>
-    IReadOnlyList<MenuOrder> DrainMenuOrders();
+    IReadOnlyList<MenuOrder> DrainMenuOrders() => System.Array.Empty<MenuOrder>();
 
     /// <summary>A private server message to a human player (feedback: who took an order, a model failed...).
     /// Does nothing if no such player is connected.</summary>
-    void NotifyPlayer(string playerName, string text);
+    void NotifyPlayer(string playerName, string text) { }
 }
+
+public sealed record BotBrief(string? Room, string CurrentOrder, string? CurrentTask, string? Doing);

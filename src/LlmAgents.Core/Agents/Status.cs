@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using LlmAgents.Llm;
 
@@ -8,7 +9,10 @@ namespace LlmAgents
 {
     public static class ModInfo
     {
-        public const string Version = "0.6.1";
+        /// <summary>From &lt;Version&gt; in Directory.Build.props.</summary>
+        public static readonly string Version =
+            typeof(ModInfo).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? typeof(ModInfo).Assembly.GetName().Version?.ToString(3) ?? "?";
     }
 }
 

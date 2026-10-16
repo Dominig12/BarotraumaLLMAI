@@ -98,7 +98,7 @@ public sealed partial class AgentManager
             var system = $"You are {agent.Name}, {agent.Job} on a submarine in Barotrauma. The round just ended. " +
                          $"Write ONE or two sentences (max {MemoryStore.MaxJournalLength} characters) for your long-term memory: what happened, " +
                          "who did what, what you learned. First person, past tense, in the language the crew speaks. Plain text only, no tool calls.";
-            string name = agent.Name, job = agent.Job;
+            string name = agent.Name, job = agent.Job, scope = memory.Scope;   // the campaign this round belonged to
             int max = m.MaxJournal;
             Track(Task.Run(async () =>
             {
@@ -114,7 +114,6 @@ public sealed partial class AgentManager
                         await Task.Delay(500, cts.Token).ConfigureAwait(false);
                     }
                     CountRequest();
-                    CountRequest();
                     var r = await router.CompleteAsync(reservation!, system, new[] { new LlmTurn("user", user) }, Array.Empty<ToolSpec>(), cts.Token).ConfigureAwait(false);
                     var text = r.Status == RouteStatus.Ok ? JsonUtil.OneLine(r.Response?.Text ?? "").Trim().Trim('"') : "";
                     if (text.Length >= 10) entry = text;
@@ -122,7 +121,7 @@ public sealed partial class AgentManager
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception e) { Log.Warn($"[{name}] round summary failed: {e.Message}; using the plain one"); }
-                memory.AddJournal(name, job, entry, max, countRound: true);
+                memory.AddJournal(name, job, entry, max, countRound: true, scope);
                 memory.Flush();
                 Log.Info($"[{name}] journal: {entry}");
             }));

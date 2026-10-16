@@ -121,8 +121,8 @@ public sealed class AnthropicProvider : ILlmProvider
         string raw;
         try
         {
-            using var resp = await http.SendAsync(msg, cts.Token).ConfigureAwait(false);
-            raw = await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
+            using var resp = await http.SendAsync(msg, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
+            raw = await resp.Content.ReadCappedAsync(cts.Token).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
                 throw new HttpRequestException($"HTTP {(int)resp.StatusCode}: {JsonUtil.Trim(JsonUtil.OneLine(raw))}", null, resp.StatusCode);
         }
@@ -133,7 +133,7 @@ public sealed class AnthropicProvider : ILlmProvider
 
         try
         {
-            return ParseResponse(raw, req.Tools);
+            return ParseResponse(raw, req.Understood);
         }
         catch (JsonException e)
         {
