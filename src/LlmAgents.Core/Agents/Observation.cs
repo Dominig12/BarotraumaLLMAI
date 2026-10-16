@@ -44,6 +44,8 @@ public sealed class Observation
     public List<string> Inventory { get; set; } = new();
     /// <summary>Diving gear state, e.g. "diving suit on (oxygen 80%); gear locked (danger)".</summary>
     public string? Gear { get; set; }
+    /// <summary>"3 free slots; hands: right Welding Tool, left empty".</summary>
+    public string? InventorySpace { get; set; }
     /// <summary>Medical items available on the sub (own inventory first), with counts. Only filled when someone is hurt or for medics.</summary>
     public List<string>? MedicalSupplies { get; set; }
     public SubInfo? Submarine { get; set; }

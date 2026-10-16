@@ -24,7 +24,7 @@ public static class Tools
 
     public static readonly IReadOnlyList<string> OperateRoles = new[] { "reactor", "navigation", "weapons", "pumps" };
 
-    public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipes", "recipe", "salvage", "orders" };
+    public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipes", "recipe", "salvage", "orders", "inventory" };
 
     public const int MaxCraftAmount = 10;
     public const int MaxTakeCount = 8;
@@ -158,6 +158,13 @@ public static class Tools
         new("attack", "Attack with a tool or weapon of your choice. target='ballast flora' burns the flora (see 'infestations') with a welding tool or a flamer: the bot takes the tool and fuel, goes to the root and burns branches on the way. Or a creature / intruder from 'threats' (name or kind), with weapon = what to fight with (e.g. 'harpoon gun').",
             Schema(("target", "string", "'ballast flora' (optionally with a room id), a threat from 'threats', or 'nearest'", null, true),
                    ("weapon", "string", "Optional: the tool or weapon to use, e.g. 'welding tool', 'flamer', 'harpoon gun', 'stun baton'", null, false))),
+        new("put_in", "Load an item into something you carry: welding fuel into the welding tool, an oxygen tank into the diving suit or mask, ammo or a magazine into a gun, a battery into a flashlight, bandages into a medkit or toolbelt. Gets the item from the sub if needed; a used-up one comes out into your inventory.",
+            Schema(("item", "string", "What to load, e.g. 'welding fuel', 'oxygen tank', 'revolver rounds', 'battery cell'", null, true),
+                   ("into", "string", "What you carry that takes it, e.g. 'welding tool', 'diving suit', 'revolver', 'toolbelt'", null, true))),
+        new("refill", "Refill what you carry: everything with used-up or missing fuel, oxygen, battery or ammo (or only the item named) gets a full one from the sub.",
+            Schema(("item", "string", "Optional: only this item, e.g. 'welding tool', 'diving suit'", null, false))),
+        new("tidy_inventory", "Put away what you carry but do not wear or hold, each item where it belongs (onto the same items first). Free slots for the job.",
+            Schema(("keep", "string", "Optional: things to keep, comma separated, e.g. 'bandage, welding fuel'", null, false))),
         new("unpack", "Empty a crate or container and put everything where it belongs on the sub: onto the same items first (stacks save space), then next to similar items, then their usual places. A crate is carried along. Items with no fitting place stay in it. The result lists what went where.",
             Schema(("container", "string", "The crate or container: a name ('metal crate'), 'marked' (the one a player marked), or a room id", null, true),
                    ("carry", "boolean", "Carry the crate along (default true); false = walk back and forth", null, false))),
@@ -166,7 +173,7 @@ public static class Tools
                    ("to", "string", "A container name (e.g. 'medical cabinet', 'locker'), a room id from 'rooms', or a crew member name", null, true))),
         new("keep_gear", "Lock or unlock your diving gear. While locked you never take the diving suit/mask off by yourself, even in dry rooms. Turn it on before or during combat and whenever the hull may be breached.",
             Schema(("on", "boolean", "true = keep it on, false = normal behaviour", null, true))),
-        new("inspect", "Look something up; the answer appears in lastActionResults next turn. kind: patient (injuries and suitable medicine; no query = everyone hurt), items (where items are and how many; query = a room id or a crew member's name: what is in that room), recipes (what the fabricators here can make, what can be made right now; query = optional filter like 'medical', 'ammo', or a material), recipe (one item: ingredients, what is missing and where to get it), salvage (query = a material: which items aboard break down into it; query = an item: what it breaks down into; no query = scrap aboard), orders (every order of the game: id, options, targets aboard; query = optional filter).",
+        new("inspect", "Look something up; the answer appears in lastActionResults next turn. kind: patient (injuries and suitable medicine; no query = everyone hurt), items (where items are and how many; query = a room id or a crew member's name: what is in that room), recipes (what the fabricators here can make, what can be made right now; query = optional filter like 'medical', 'ammo', or a material), recipe (one item: ingredients, what is missing and where to get it), salvage (query = a material: which items aboard break down into it; query = an item: what it breaks down into; no query = scrap aboard), orders (every order of the game: id, options, targets aboard; query = optional filter), inventory (your slots, what is inside tools and bags, charge, free space, what needs refilling).",
             Schema(("kind", "string", "What to look up", InspectKinds.ToArray(), true),
                    ("query", "string", "Crew member (patient), item or room (items), item (recipe, salvage), material (salvage), or filter (recipes); optional for patient, recipes, salvage", null, false))),
     };
@@ -357,6 +364,23 @@ public static class Tools
                         var weapon = Str(a, "weapon") ?? Str(a, "tool") ?? Str(a, "item");
                         return game.Attack(agent.Id, v, string.IsNullOrWhiteSpace(weapon) ? null : weapon);
                     });
+                case "put_in":
+                {
+                    var item = Str(a, "item");
+                    var into = Str(a, "into") ?? Str(a, "to") ?? Str(a, "container");
+                    if (string.IsNullOrEmpty(item) || string.IsNullOrEmpty(into)) return "error: 'item' and 'into' are required";
+                    return game.PutIn(agent.Id, item!, into!);
+                }
+                case "refill":
+                {
+                    var item = Str(a, "item") ?? Str(a, "target");
+                    return game.Refill(agent.Id, string.IsNullOrWhiteSpace(item) ? null : item);
+                }
+                case "tidy_inventory":
+                {
+                    var keep = Str(a, "keep");
+                    return game.TidyInventory(agent.Id, string.IsNullOrWhiteSpace(keep) ? null : keep);
+                }
                 case "unpack":
                     return Need(Str(a, "container") ?? Str(a, "item") ?? Str(a, "from"), "container", v => game.Unpack(agent.Id, v, Bool(a, "carry") != false));
                 case "move_item":

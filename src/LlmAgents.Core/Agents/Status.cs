@@ -8,7 +8,7 @@ namespace LlmAgents
 {
     public static class ModInfo
     {
-        public const string Version = "0.6.0";
+        public const string Version = "0.6.1";
     }
 }
 

@@ -179,11 +179,14 @@ public sealed class GameAdapter : IGameApi
 
         var carried = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>()).ToList();
         // the ID card is always there and only costs tokens
-        o.Equipped = carried.Where(i => c.HasEquippedItem(i) && !i.HasTag("identitycard".ToIdentifier())).Select(ItemQueries.Label).Distinct().Take(10).ToList();
+        // what is worn / held (with the slot), what is carried, how full tools and tanks are, what is inside bags
+        o.Equipped = carried.Where(i => c.HasEquippedItem(i) && !InventoryView.IsBoring(i)).Distinct()
+            .Select(i => (InventoryView.SlotName(c, i) is { } slot ? slot + ": " : "") + InventoryView.Describe(i)).Take(10).ToList();
         o.Inventory = carried.Where(i => !c.HasEquippedItem(i))
             .GroupBy(i => i.Prefab)
-            .Select(g => g.Count() > 1 ? $"{ItemQueries.Label(g.First())} x{g.Count()}" : ItemQueries.Label(g.First()))
+            .Select(g => g.Count() > 1 ? $"{ItemQueries.Label(g.First())} x{g.Count()}" : InventoryView.Describe(g.First()))
             .Take(20).ToList();
+        o.InventorySpace = InventoryView.Space(c);
         o.Gear = DescribeGear(c);
 
         var sub = c.Submarine;
@@ -1164,6 +1167,95 @@ public sealed class GameAdapter : IGameApi
         return StartTask(c, new UnpackTask(c, ai, box, ic, carry), evenOverPlayerOrders: true) + $"; plan: {preview}";
     }
 
+    /// <summary>Load an item into something the bot carries: fuel into the welding tool, a tank into the suit, ammo into a gun.</summary>
+    public string PutIn(int botId, string query, string into)
+    {
+        if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
+        var holder = Carried(c).Where(i => i.GetComponent<ItemContainer>() != null && ItemQueries.MatchScore(i.Prefab, into) > 0)
+            .OrderByDescending(i => ItemQueries.MatchScore(i.Prefab, into)).FirstOrDefault();
+        if (holder == null) return $"error: you do not carry '{into}' (put_in loads things into what you carry; for cabinets use move_item)";
+        var ic = holder.GetComponent<ItemContainer>()!;
+        var item = Carried(c).Where(i => i != holder && i.Container != holder && ic.CanBeContained(i) && ItemQueries.MatchScore(i.Prefab, query) > 0).FirstOrDefault()
+                   ?? ItemQueries.Find(c, query, i => i != holder && ic.CanBeContained(i) && (i.Container == null || IsStorage(i.Container)), ClaimedByOthers(c)).FirstOrDefault();
+        if (item == null)
+        {
+            var fits = InventoryView.BestRefill(c, holder, ic, null, new HashSet<Item>());
+            return $"error: no '{query}' that fits into {holder.Name}" + (fits != null ? $"; it takes e.g. {fits.Name}" : "");
+        }
+        if (item.GetRootInventoryOwner() == c)
+        {
+            var err = InventoryView.PutInto(c, item, ic, out var removed);
+            return err != null ? "error: " + err
+                : $"ok, {item.Name} is in {holder.Name}" + (removed != null ? $" (took out {removed.Name}{InventoryView.Condition(removed)})" : "");
+        }
+        return StartTask(c, new PutInTask(c, ai, new List<(Item, ItemContainer)> { (item, ic) }, $"put {item.Name} into {holder.Name}"), evenOverPlayerOrders: true);
+    }
+
+    /// <summary>Refill what the bot carries (or one item): welding fuel, oxygen tanks, batteries, ammo.</summary>
+    public string Refill(int botId, string? query)
+    {
+        if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
+        Item? only = null;
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            only = Carried(c).Where(i => i.GetComponent<ItemContainer>() != null && ItemQueries.MatchScore(i.Prefab, query!) > 0).FirstOrDefault();
+            if (only == null) return $"error: you do not carry '{query}'";
+        }
+        var needs = InventoryView.NeedRefill(c, only);
+        if (needs.Count == 0) return only != null ? $"ok ({only.Name} does not need anything)" : "ok (nothing you carry needs refilling)";
+        var pairs = new List<(Item, ItemContainer)>();
+        var used = new HashSet<Item>(ClaimedByOthers(c));
+        var missing = new List<string>();
+        foreach (var (holder, ic, old) in needs)
+        {
+            var fill = InventoryView.BestRefill(c, holder, ic, old, used);
+            if (fill == null) { missing.Add(holder.Name); continue; }
+            used.Add(fill);
+            pairs.Add((fill, ic));
+        }
+        if (pairs.Count == 0) return $"error: nothing aboard to refill {string.Join(", ", missing)}";
+        var label = "refill " + string.Join(", ", pairs.Select(p => p.Item2.Item.Name).Distinct());
+        var r = StartTask(c, new PutInTask(c, ai, pairs, label), evenOverPlayerOrders: true);
+        return r + $"; {string.Join(", ", pairs.Select(p => $"{p.Item1.Name} -> {p.Item2.Item.Name}"))}" + (missing.Count > 0 ? $"; nothing for {string.Join(", ", missing)}" : "");
+    }
+
+    /// <summary>Put away what the bot carries but does not wear or hold (except 'keep').</summary>
+    public string TidyInventory(int botId, string? keep)
+    {
+        if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
+        var keepWords = (keep ?? "").Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(k => k.Trim()).Where(k => k.Length > 0).ToList();
+        var items = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>())
+            .Where(i => !c.HasEquippedItem(i) && !InventoryView.IsBoring(i) && !i.HasTag("mobileradio".ToIdentifier())
+                        && !keepWords.Any(k => ItemQueries.MatchScore(i.Prefab, k) > 0))
+            .Distinct().ToList();
+        if (items.Count == 0) return "ok (you carry nothing to put away)";
+        var plan = items.GroupBy(i => i.Prefab).Select(g => (g.Key, n: g.Count(), to: StoragePlanner.Choose(c, g.First(), new HashSet<Item>()))).ToList();
+        if (plan.All(p => p.to == null)) return "error: no fitting place on the sub for what you carry; keep it or use move_item";
+        return StartTask(c, new TidyInventoryTask(c, ai, items), evenOverPlayerOrders: true)
+               + "; plan: " + string.Join("; ", plan.Take(6).Select(p => $"{p.Key.Name.Value} x{p.n} -> {(p.to != null ? StoragePlanner.Describe(p.to.Container) : "keep")}"));
+    }
+
+    /// <summary>inspect(kind='inventory'): every slot, contents, charge and what needs refilling.</summary>
+    string DescribeInventory(Character c)
+    {
+        var inv = c.Inventory;
+        if (inv == null) return "no inventory";
+        var lines = new List<string>();
+        foreach (var i in inv.AllItems.Distinct())
+        {
+            var slot = InventoryView.SlotName(c, i) ?? "carried";
+            var inside = i.OwnInventory?.AllItems.ToList();
+            var s = $"{slot}: {ItemQueries.Label(i)}{InventoryView.Condition(i)}";
+            if (inside is { Count: > 0 })
+                s += " [in it: " + string.Join(", ", inside.GroupBy(x => x.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}{InventoryView.Condition(g.First())}")) + "]";
+            else if (i.GetComponent<ItemContainer>() is { Capacity: <= 4 }) s += " [empty]";
+            lines.Add(s);
+        }
+        var needs = InventoryView.NeedRefill(c);
+        var tail = needs.Count > 0 ? $". Needs refill: {string.Join(", ", needs.Select(n => n.Holder.Name))} (refill())" : "";
+        return string.Join("; ", lines) + ". " + InventoryView.Space(c) + tail;
+    }
+
     public string RefuelReactor(int botId)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
@@ -1441,6 +1533,8 @@ public sealed class GameAdapter : IGameApi
                 return Crafting.Salvage(c, query);
             case "orders":
                 return DescribeOrders(c, query);
+            case "inventory":
+                return DescribeInventory(c);
             default:
                 return $"error: unknown kind '{kind}'";
         }

@@ -4,7 +4,7 @@
   The content below (the "Full AI control" order, its icon and texts) is downloaded by clients automatically
   when they join, so the order shows up in their command menu. Clients do not need LuaCs.
 -->
-<contentpackage name="LlmAgents" modversion="0.6.0" corepackage="false">
+<contentpackage name="LlmAgents" modversion="0.6.1" corepackage="false">
   <Orders file="%ModDir%/Orders.xml" />
   <Text file="%ModDir%/Texts/English.xml" />
   <Text file="%ModDir%/Texts/Russian.xml" />

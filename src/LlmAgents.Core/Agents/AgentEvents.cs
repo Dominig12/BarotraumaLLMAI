@@ -99,6 +99,8 @@ public sealed record SituationFlag(string Key, string Text, bool Danger);
 /// </summary>
 public static class Situation
 {
+    static readonly System.Text.RegularExpressions.Regex SuitTank = new(@"oxygen (\d+)%\)");
+
     public static List<SituationFlag> Assess(Observation o, string job, bool aiControl)
     {
         bool captain = job == "captain";
@@ -116,6 +118,9 @@ public static class Situation
             flags.Add(new("threat", $"hostile {t.Kind} {t.DistanceMeters} m away{(t.Room != null ? " in " + t.Room : " outside")}" +
                                     (o.Threats.Count > 1 ? $" (+{o.Threats.Count - 1} more)" : ""), true));
         }
+        // the diving suit you wear is out of air: a full tank (refill) before it matters
+        if (o.Gear != null && (o.Gear.Contains("NO oxygen tank") || SuitTank.Match(o.Gear) is { Success: true } m && int.Parse(m.Groups[1].Value) < 15))
+            flags.Add(new("tank", "your diving gear is almost out of oxygen: refill(item='diving suit')", o.RoomWaterPercent > 50));
         // ballast flora: the mechanics, whoever is in charge, and anyone it grows next to (the vanilla AI does not fight it)
         if (o.Infestations.Count > 0)
         {

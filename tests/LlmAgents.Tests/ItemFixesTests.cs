@@ -424,3 +424,78 @@ public class FloraTests
     [Fact]
     public void AttackIsATask() => Assert.Contains("attack", AgentManager.TaskTools);
 }
+
+/// <summary>Inventory management: loading, refilling, putting away.</summary>
+public class InventoryToolTests
+{
+    static (FakeGame, BotAgent, AgentManager) Setup()
+    {
+        var game = new FakeGame();
+        game.AddBot(1, "Sophie", "mechanic");
+        var settings = Fixtures.Settings();
+        var mgr = new AgentManager(settings, game, new LlmRouter(settings, new FakeHandler(_ => (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("carry_on", "{}"))))), () => 0);
+        return (game, new BotAgent(new BotHandle(1, "Sophie", "mechanic")), mgr);
+    }
+
+    [Theory]
+    [InlineData("put_in", "{\"item\":\"welding fuel\",\"into\":\"welding tool\"}", "1:put welding fuel into welding tool")]
+    [InlineData("put_in", "{\"item\":\"oxygen tank\",\"to\":\"diving suit\"}", "1:put oxygen tank into diving suit")]
+    [InlineData("refill", "{}", "1:refill")]
+    [InlineData("refill", "{\"item\":\"welding tool\"}", "1:refill welding tool")]
+    [InlineData("tidy_inventory", "{\"keep\":\"bandage, welding fuel\"}", "1:tidy keep bandage, welding fuel")]
+    public void Arguments(string tool, string args, string action)
+    {
+        var (game, agent, mgr) = Setup();
+        using var _ = mgr;
+        var r = Tools.Execute(new ToolCall(tool, (JsonObject)JsonNode.Parse(args)!), agent, game, mgr);
+        Assert.StartsWith("ok", r);
+        Assert.Equal(action, game.Actions.Last());
+    }
+
+    [Fact]
+    public void PutInNeedsBoth()
+    {
+        var (game, agent, mgr) = Setup();
+        using var _ = mgr;
+        Assert.StartsWith("error", Tools.Execute(new ToolCall("put_in", new JsonObject { ["item"] = "fuel" }), agent, game, mgr));
+    }
+
+    [Theory]
+    [InlineData("reload(item=\"revolver\")", "refill")]
+    [InlineData("insert(item=\"battery\", into=\"flashlight\")", "put_in")]
+    [InlineData("stow()", "tidy_inventory")]
+    public void TextAliases(string text, string tool) => Assert.Equal(tool, Assert.Single(TextToolCallParser.Parse(text, Tools.All)).Name);
+
+    [Theory]
+    [InlineData("Заправь сварку", "refill")]
+    [InlineData("Смени баллон в скафандре", "refill")]
+    [InlineData("Перезаряди револьвер", "refill")]
+    [InlineData("Вставь батарейку в фонарик", "put_in")]
+    [InlineData("Разгрузи инвентарь", "tidy_inventory")]
+    public void Hints(string text, string tool) => Assert.Contains(tool, OrderHints.Suggest(text, "Daniil", null));
+
+    [Fact]
+    public void RefuellingTheReactorIsNotARefill() =>
+        Assert.DoesNotContain("refill(", OrderHints.Suggest("Заправь реактор топливом", "Daniil", null) ?? "");
+
+    [Fact]
+    public void TheModelSeesFreeSpace() =>
+        Assert.Contains("inventorySpace", new Observation { Name = "Sophie", InventorySpace = "3 free slots; hands: right Welding Tool, left empty" }.ToCompactJson());
+
+    [Fact]
+    public void TheyAreTasks()
+    {
+        foreach (var t in new[] { "put_in", "refill", "tidy_inventory" }) Assert.Contains(t, AgentManager.TaskTools);
+    }
+}
+
+public class SuitTankTests
+{
+    [Theory]
+    [InlineData("Водолазный скафандр on (oxygen 8%)", true)]
+    [InlineData("Водолазный скафандр on (NO oxygen tank)", true)]
+    [InlineData("Водолазный скафандр on (oxygen 80%)", false)]
+    [InlineData("no diving gear on", false)]
+    public void AnEmptyTankWakesTheBot(string gear, bool woken) =>
+        Assert.Equal(woken, Situation.Assess(new Observation { Name = "A", Gear = gear }, "mechanic", false).Any(f => f.Key == "tank"));
+}

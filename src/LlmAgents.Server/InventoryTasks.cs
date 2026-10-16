@@ -1,0 +1,233 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Barotrauma;
+using Barotrauma.Items.Components;
+using Microsoft.Xna.Framework;
+
+namespace LlmAgents;
+
+/// <summary>The bot's inventory in words: slots, hands, what is inside tools and bags, how full things are.</summary>
+internal static class InventoryView
+{
+    public static string? SlotName(Character c, Item i)
+    {
+        int idx = c.Inventory?.FindIndex(i) ?? -1;
+        if (idx < 0 || idx >= c.Inventory!.SlotTypes.Length) return null;
+        return c.Inventory.SlotTypes[idx] switch
+        {
+            InvSlotType.RightHand => "right hand",
+            InvSlotType.LeftHand => "left hand",
+            InvSlotType.Head => "head",
+            InvSlotType.InnerClothes => "clothes",
+            InvSlotType.OuterClothes => "suit",
+            InvSlotType.Headset => "headset",
+            InvSlotType.Card => "id card",
+            InvSlotType.Bag => "bag",
+            InvSlotType.HealthInterface => "health",
+            _ => null,
+        };
+    }
+
+    static float Fraction(Item i) => i.MaxCondition > 0 ? i.Condition / i.MaxCondition : 1f;
+
+    /// <summary>" 40%" when the item is worn down or used up (tanks, batteries, tools).</summary>
+    public static string Condition(Item i) => i.MaxCondition > 0 && Fraction(i) < 0.995f ? $" {Fraction(i) * 100:0}%" : "";
+
+    /// <summary>" [in it: Бак со сварочным топливом 40%]" for tools, guns, suits and bags.</summary>
+    public static string Contents(Item i, int max = 6)
+    {
+        var inside = i.OwnInventory?.AllItems.ToList();
+        if (inside == null || inside.Count == 0)
+            return i.GetComponent<ItemContainer>() is { Capacity: <= 4 } && !GameAdapter.IsStorage(i) ? " [empty]" : "";
+        var groups = inside.GroupBy(x => x.Prefab).Take(max)
+            .Select(g => g.Count() > 1 ? $"{g.Key.Name.Value} x{g.Count()}" : g.Key.Name.Value + Condition(g.First()));
+        return $" [in it: {string.Join(", ", groups)}]";
+    }
+
+    public static string Describe(Item i) => ItemQueries.Label(i) + Condition(i) + Contents(i);
+
+    public static bool IsBoring(Item i) => i.HasTag("identitycard".ToIdentifier());
+
+    /// <summary>"3 free slots; hands: right Сварочный аппарат, left empty".</summary>
+    public static string Space(Character c)
+    {
+        var inv = c.Inventory;
+        if (inv == null) return "no inventory";
+        int free = 0;
+        for (int i = 0; i < inv.Capacity && i < inv.SlotTypes.Length; i++)
+            if (inv.SlotTypes[i] == InvSlotType.Any && inv.IsSlotEmpty(i)) free++;
+        var r = inv.GetItemInLimbSlot(InvSlotType.RightHand);
+        var l = inv.GetItemInLimbSlot(InvSlotType.LeftHand);
+        var left = l == null ? "empty" : l == r ? "the same (two-handed)" : l.Name;
+        return $"{free} free slot{(free == 1 ? "" : "s")}; hands: right {r?.Name ?? "empty"}, left {left}";
+    }
+
+    /// <summary>Tools, guns, suits... the bot carries whose fuel, tank, battery or ammo is used up or missing.</summary>
+    public static List<(Item Holder, ItemContainer Ic, Item? Old)> NeedRefill(Character c, Item? only = null)
+    {
+        var list = new List<(Item, ItemContainer, Item?)>();
+        foreach (var holder in (c.Inventory?.AllItems ?? Enumerable.Empty<Item>()).Where(i => only == null || i == only))
+        {
+            var ic = holder.GetComponent<ItemContainer>();
+            if (ic == null || ic.Capacity > 4 || GameAdapter.IsStorage(holder) || ic.ContainableItems == null || ic.ContainableItems.Count == 0) continue;
+            var inside = ic.Inventory.AllItems.ToList();
+            var spent = inside.Where(x => x.MaxCondition > 0 && Fraction(x) < 0.15f).OrderBy(Fraction).FirstOrDefault();
+            if (spent != null) list.Add((holder, ic, spent));
+            else if (inside.Count == 0) list.Add((holder, ic, null));
+        }
+        return list;
+    }
+
+    /// <summary>The best item on the sub (or in the inventory) to load into that slot: the same kind as before, fullest, nearest.</summary>
+    public static Item? BestRefill(Character c, Item holder, ItemContainer ic, Item? old, ICollection<Item> skip) =>
+        ItemQueries.Available(c)
+            .Where(i => i != holder && i != old && !skip.Contains(i) && Fraction(i) > 0.3f && ic.CanBeContained(i))
+            // loose, in the inventory or in a cabinet: not out of a machine or another tool
+            .Where(i => i.Container == null || GameAdapter.IsStorage(i.Container))
+            .OrderByDescending(i => old != null && i.Prefab == old.Prefab ? 1 : 0)
+            .ThenByDescending(i => i.GetRootInventoryOwner() == c ? 1 : 0)
+            .ThenByDescending(Fraction)
+            .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition))
+            .FirstOrDefault();
+
+    /// <summary>Puts an item into a carried container; a used-up item there comes out into the inventory (or is dropped).</summary>
+    /// <returns>null = done, text = why not</returns>
+    public static string? PutInto(Character c, Item item, ItemContainer ic, out Item? removed)
+    {
+        removed = null;
+        if (!ic.CanBeContained(item)) return $"{item.Name} does not fit into {ic.Item.Name}";
+        if (!ic.Inventory.CanBePut(item))
+        {
+            var old = ic.Inventory.AllItems.Where(x => x.Prefab != item.Prefab || Fraction(x) < 0.15f).OrderBy(Fraction).FirstOrDefault()
+                      ?? ic.Inventory.AllItems.OrderBy(Fraction).FirstOrDefault();
+            if (old == null) return $"{ic.Item.Name} is full";
+            if (!c.Inventory.TryPutItem(old, c, CharacterInventory.AnySlot)) old.Drop(c);
+            removed = old;
+        }
+        return ic.Inventory.TryPutItem(item, c) ? null : $"could not put {item.Name} into {ic.Item.Name}";
+    }
+}
+
+// ------------------------------------------------------------------------------------------- put in / refill
+
+/// <summary>Loads items into carried tools, guns, suits or bags (fuel into the welding tool, a tank into the suit...),
+/// getting them from the sub first.</summary>
+internal sealed class PutInTask : BotTask
+{
+    readonly Queue<(Item Item, ItemContainer Into)> todo;
+    readonly List<string> done = new();
+    readonly List<string> problems = new();
+    readonly string label;
+    (Item Item, ItemContainer Into)? current;
+    public override string Name => label;
+    protected override double TimeoutSeconds => 60 + 45 * Math.Max(1, todo.Count + (current != null ? 1 : 0));
+    public override IEnumerable<Item> Claimed => todo.Select(t => t.Item).Concat(current is { } c ? new[] { c.Item } : Array.Empty<Item>());
+
+    public PutInTask(Character bot, HumanAIController ai, List<(Item, ItemContainer)> pairs, string label) : base(bot, ai)
+    {
+        todo = new Queue<(Item, ItemContainer)>(pairs);
+        this.label = label;
+    }
+
+    protected override string? Update()
+    {
+        if (current == null)
+        {
+            if (todo.Count == 0) return Report();
+            current = todo.Dequeue();
+            ClearObjective();
+        }
+        var (item, into) = current.Value;
+        if (item.Removed || into.Item.Removed || into.Item.GetRootInventoryOwner() != Bot)
+        {
+            problems.Add($"{item.Name}: gone or no longer carried");
+            current = null;
+            return null;
+        }
+        if (item.GetRootInventoryOwner() != Bot)
+        {
+            if (item.GetRootInventoryOwner() is Character other) { problems.Add($"{other.Name} took {item.Name}"); current = null; return null; }
+            if (!HasObjective) Run(new AIObjectiveGetItem(Bot, item, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false }, $"getting {item.Name} from {ItemQueries.Where(item, Bot)}");
+            else if (ObjectiveFailed) { problems.Add($"could not get {item.Name}"); current = null; }
+            else if (ObjectiveDone) ClearObjective();
+            return null;
+        }
+        ClearObjective();
+        var err = InventoryView.PutInto(Bot, item, into, out var removed);
+        if (err != null) problems.Add(err);
+        else done.Add($"{item.Name}{InventoryView.Condition(item)} -> {into.Item.Name}" + (removed != null ? $" (took out {removed.Name}{InventoryView.Condition(removed)})" : ""));
+        current = null;
+        return null;
+    }
+
+    string Report()
+    {
+        if (done.Count == 0) return "failed: " + (problems.Count > 0 ? string.Join("; ", problems.Take(4)) : "nothing loaded");
+        return "ok: " + string.Join("; ", done) + (problems.Count > 0 ? "; not done: " + string.Join("; ", problems.Take(4)) : "");
+    }
+}
+
+// ------------------------------------------------------------------------------------------- tidy up
+
+/// <summary>Puts what the bot carries but does not need back where it belongs (<see cref="StoragePlanner"/>).</summary>
+internal sealed class TidyInventoryTask : BotTask
+{
+    readonly List<Item> items;
+    readonly HashSet<Item> left = new();
+    readonly HashSet<Item> unreachable = new();
+    readonly List<(string What, string Where)> done = new();
+    ItemContainer? target;
+    int trips;
+    public override string Name => "put away carried items";
+    protected override double TimeoutSeconds => 300;
+
+    public TidyInventoryTask(Character bot, HumanAIController ai, List<Item> items) : base(bot, ai) { this.items = items; }
+
+    List<Item> Pending() => items.Where(i => !i.Removed && !left.Contains(i) && i.GetRootInventoryOwner() == Bot && !Bot.HasEquippedItem(i)).ToList();
+
+    protected override string? Update()
+    {
+        if (target == null)
+        {
+            var next = Pending().FirstOrDefault();
+            if (next == null || trips >= 10) return Report();
+            var choice = StoragePlanner.Choose(Bot, next, unreachable);
+            if (choice == null) { left.Add(next); return null; }
+            target = choice.Container;
+            trips++;
+            Run(GoTo(target.Item, 80f), $"taking things to {StoragePlanner.Describe(target)}");
+            return null;
+        }
+        if (target.Item.Removed) { target = null; return null; }
+        if (IsNear(target.Item, 160f))
+        {
+            ClearObjective();
+            int n = 0;
+            foreach (var i in Pending())
+            {
+                if (StoragePlanner.Choose(Bot, i, unreachable)?.Container != target) continue;
+                if (target.Inventory.TryPutItem(i, Bot)) { done.Add((i.Prefab.Name.Value, StoragePlanner.Describe(target))); n++; }
+            }
+            if (n == 0) unreachable.Add(target.Item);
+            target = null;
+            return null;
+        }
+        if (ObjectiveFailed || ObjectiveDone)
+        {
+            unreachable.Add(target.Item);
+            target = null;
+            ClearObjective();
+        }
+        return null;
+    }
+
+    string Report()
+    {
+        var parts = done.GroupBy(d => d).Select(g => $"{g.Key.What} x{g.Count()} -> {g.Key.Where}").ToList();
+        var kept = Pending().GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}").ToList();
+        var s = parts.Count == 0 ? "failed: put nothing away (no fitting place)" : "ok: put away " + string.Join("; ", parts.Take(10));
+        if (kept.Count > 0) s += "; still carrying: " + string.Join(", ", kept.Take(8));
+        return s;
+    }
+}

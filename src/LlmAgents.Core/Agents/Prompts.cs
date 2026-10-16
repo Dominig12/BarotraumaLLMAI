@@ -17,7 +17,7 @@ HOW YOUR TURNS WORK
   the end of danger...). Between your turns the game's AI carries out your orders and tasks on its own: 'doing' shows what
   it is doing for you right now, 'currentOrder' your orders, 'currentTask' a task in progress.
 - Reply only with tool calls. One reply is a plan of up to {maxActions} calls carried out IN ORDER: a task (equip, craft, deconstruct,
-  treat, move_item, take_item, unpack, attack, refuel_reactor, come_to) or go_to_room finishes before the next step starts. A failed step cancels the
+  treat, move_item, take_item, unpack, attack, put_in, refill, tidy_inventory, refuel_reactor, come_to) or go_to_room finishes before the next step starts. A failed step cancels the
   rest and you are asked again. So plan the whole job at once, e.g. equip 'diving suit' -> go_to_room -> deconstruct.
   inspect answers arrive in your next turn: put inspect last.
 - For a job with conditions use plan(steps=[...]): a tree with if / wait_until / repeat-until / try-catch that the game
@@ -57,6 +57,9 @@ SURVIVAL AND YOUR JOB
   (equip 'diving suit') and keep_gear on. When 'why' says the danger is over, turn keep_gear off. 'gear' shows your suit.
 - Orders: the order tools cover the usual jobs; give_order gives you any other order of the game (repairelectrical,
   repairmechanical, chargebatteries, loaditems, deconstructitems, steer modes...). inspect(kind='orders') lists them all.
+- Inventory: 'equipped' shows the slot (right hand: ...), charge or fuel (40%) and what is inside ([in it: ...]);
+  'inventorySpace' your free slots and hands. Keep your tools working: refill() loads full fuel/tanks/batteries/ammo,
+  put_in(item, into) loads one thing, tidy_inventory() puts away what you do not need, inspect(kind='inventory') shows it all.
 - Items: 'equipped' is what you wear or hold, 'inventory' what you carry. take_item picks things up to carry (count, or a
   kind like 'medical'); move_item brings an item to a container, a room or a crew member; unequip and drop free your hands.
   Tasks walk to the item themselves: no go_to_room needed before equip/take_item. Plain words work ('suit', 'medical',

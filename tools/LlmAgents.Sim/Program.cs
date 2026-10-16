@@ -372,6 +372,9 @@ sealed class SimWorld : IGameApi
     public string MoveItem(int botId, string item, string to) { Report(botId, $"task 'move {item}' ok: delivered to {to}", 5); Do(botId, $"move {item} -> {to}"); return Started("move " + item); }
     public string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority) =>
         Order(botId, option != null ? $"{orderId}:{option}" : orderId, priority);
+    public string PutIn(int botId, string item, string into) { Report(botId, $"task 'put {item} into {into}' ok: {item} -> {into}", 3); Do(botId, $"put {item} into {into}"); return Started("put " + item); }
+    public string Refill(int botId, string? item) { Report(botId, "task 'refill' ok: refilled", 4); Do(botId, "refill" + (item != null ? " " + item : "")); return Started("refill"); }
+    public string TidyInventory(int botId, string? keep) { Report(botId, "task 'put away carried items' ok: put away", 6); Do(botId, "tidy inventory"); return Started("tidy"); }
     public string Attack(int botId, string target, string? weapon) { Report(botId, $"task 'attack {target}' ok: done", 6); Do(botId, $"attack {target}" + (weapon != null ? " with " + weapon : "")); return Started("attack " + target); }
     public string Unpack(int botId, string container, bool carry = true) { Report(botId, $"task 'unpack {container}' ok: put away from {container}: Bandage x4 -> Medical Cabinet in Medbay [h4]", 6); Do(botId, $"unpack {container}"); return Started("unpack " + container); }
     public string TakeItem(int botId, string item, int count, string? from = null) { Report(botId, $"task 'take {item}' ok: took {item} x{count} (in your inventory now)", 4); Do(botId, $"take {item} x{count}"); return Started("take " + item); }
