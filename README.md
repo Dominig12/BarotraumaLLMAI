@@ -20,7 +20,7 @@
 
 Поддерживаются локальные и облачные модели: Ollama (родной API), любой OpenAI-совместимый API (LM Studio, vLLM, OpenAI, OpenRouter...) и Anthropic. Подключения и лимиты настраиваются в `llm_config.json` или прямо в игре.
 
-> **Статус:** код собирается против reference-DLL текущей LuaCs (`luacsforbarotrauma_refs.zip`, latest), логика покрыта тестами (518 шт.) и прогнана в симуляторе с мок-LLM. Вызовы игры (`src/LlmAgents.Server/GameAdapter*.cs`) сверены с исходниками LuaCs/Barotrauma; поведение в игре проверяется по логам.
+> **Статус:** код собирается против reference-DLL текущей LuaCs (`luacsforbarotrauma_refs.zip`, latest), логика покрыта тестами (531 шт.) и прогнана в симуляторе с мок-LLM. Вызовы игры (`src/LlmAgents.Server/GameAdapter*.cs`) сверены с исходниками LuaCs/Barotrauma; поведение в игре проверяется по логам.
 
 ## Как это устроено
 

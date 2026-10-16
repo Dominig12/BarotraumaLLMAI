@@ -91,6 +91,7 @@ public sealed partial class GameAdapter
             : ItemQueries.Find(c, query, i => i.GetRootInventoryOwner() != c, ClaimedByOthers(c)).FirstOrDefault();
         if (item == null)
             return carried != null ? "error: your diving gear is locked (danger or keep_gear) and there is no spare one aboard" : NotFound(c, query);
+        if (item != carried && !ItemQueries.IsKindQuery(query) && ItemQueries.NoneFree(c, query, item) is { } busy) return "error: " + busy;
         var replace = Replacer(c);
         var stack = StackOf(c, item, count);
 
@@ -101,6 +102,10 @@ public sealed partial class GameAdapter
             if (place == null) return $"error: no fitting place for {item.Name} on the sub; name a container or a room";
             return StartTask(c, new MoveItemTask(c, ai, stack, place.Container, null, null, StoragePlanner.Describe(place.Container), replace));
         }
+
+        // "шкаф у фабрикатора": the cabinet next to that machine
+        if (NearAnchor(c, to, item) is { } near)
+            return StartTask(c, new MoveItemTask(c, ai, stack, near.Container, null, null, near.Where, replace));
 
         // a crew member?
         var receiver = FindCrew(to, c, includeSelf: false);

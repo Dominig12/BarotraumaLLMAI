@@ -72,6 +72,7 @@ internal static class InventoryView
         {
             var ic = holder.GetComponent<ItemContainer>();
             if (ic == null || !ItemRules.TakesRefills(ic.Capacity, GameAdapter.IsStorage(holder), ic.ContainableItems?.Count ?? 0)) continue;
+            if (!ItemRules.IsRefillSlot(ic.ContainableItems!.SelectMany(r => r.Identifiers).Select(id => id.Value))) continue;
             var inside = ic.Inventory.AllItems.ToList();
             var spent = inside.Where(x => x.MaxCondition > 0 && ItemRules.IsSpent(Fraction(x))).OrderBy(Fraction).FirstOrDefault();
             if (spent != null) list.Add((holder, ic, spent));

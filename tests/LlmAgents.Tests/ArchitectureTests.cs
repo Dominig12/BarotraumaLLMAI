@@ -246,6 +246,12 @@ public class ItemRulesTests
         Assert.False(ItemRules.IsSpent(0.5f));
         Assert.False(ItemRules.IsUsableRefill(0.2f));
         Assert.True(ItemRules.IsUsableRefill(0.9f));
+        Assert.True(ItemRules.IsRefillSlot(new[] { "weldingfuel" }));
+        Assert.True(ItemRules.IsRefillSlot(new[] { "oxygensource", "weldingfuel" }));
+        Assert.True(ItemRules.IsRefillSlot(new[] { "mobilebattery" }));
+        Assert.True(ItemRules.IsRefillSlot(new[] { "revolverammo" }));
+        Assert.False(ItemRules.IsRefillSlot(new[] { "smallitem" }));       // a cap's or a uniform's pocket
+        Assert.False(ItemRules.IsRefillSlot(new string[0]));
     }
 
     [Theory]

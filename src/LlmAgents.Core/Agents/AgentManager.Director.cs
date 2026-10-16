@@ -108,6 +108,7 @@ public sealed partial class AgentManager
     {
         var d = Settings.Director;
         if (!d.Enabled || directorPending || now < directorFallbackUntil) return;
+        if (holdForDispatch) return;   // players first
         if (double.IsNaN(directorStartedAt)) directorStartedAt = now;
         var directed = agents.Values.Where(IsDirected).ToList();
         if (directed.Count == 0) return;

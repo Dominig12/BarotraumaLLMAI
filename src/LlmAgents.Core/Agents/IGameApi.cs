@@ -79,7 +79,8 @@ public interface IGameApi
     /// <summary>salvage = deconstruct scrap aboard for missing ingredients first.</summary>
     string Craft(int botId, string item, int amount, bool salvage = false);
     /// <summary>from = a container or room: deconstruct the matching items in it (item "all" = everything there).</summary>
-    string Deconstruct(int botId, string item, string? from = null);
+    /// <param name="count">0 = the default: one of a named item, everything for 'all' / 'marked'.</param>
+    string Deconstruct(int botId, string item, string? from = null, int count = 0);
     /// <summary>item null = choose the cheapest treatment that is good enough.</summary>
     string Treat(int botId, string target, string? item);
 

@@ -79,7 +79,8 @@ public sealed class FakeGame : IGameApi
     public string Equip(int botId, string item) => Act(botId, $"equip {item}", "ok, started: equip " + item);
     public string RefuelReactor(int botId) => Act(botId, "refuel", "ok, started: refuel reactor");
     public string Craft(int botId, string item, int amount, bool salvage = false) => Act(botId, $"craft {item} x{amount}{(salvage ? " salvage" : "")}", "ok, started: craft " + item);
-    public string Deconstruct(int botId, string item, string? from = null) => Act(botId, $"deconstruct {item}{(from != null ? " from " + from : "")}", "ok, started");
+    public string Deconstruct(int botId, string item, string? from = null, int count = 0) =>
+        Act(botId, $"deconstruct {item}{(from != null ? " from " + from : "")}{(count > 0 ? " x" + count : "")}", "ok, started");
     public string Treat(int botId, string target, string? item) => Act(botId, $"treat {target}{(item != null ? " with " + item : "")}", "ok, started");
     public string Unequip(int botId, string item) => Act(botId, $"unequip {item}");
     public string Drop(int botId, string item) => Act(botId, $"drop {item}");

@@ -153,6 +153,7 @@ public sealed partial class AgentManager
             {
                 if (agent.TravelPending && MovesOn(step.Call.Name)) { game.EndTravel(agent.Id); agent.TravelPending = false; }
                 var r = Run(agent, step);
+                if (r.StartsWith("error") && SoftError(step.Call.Name)) { agent.Tree.Report(true, r); continue; }
                 if (r.StartsWith("error"))
                 {
                     if (agent.Tree.Report(false, r) is { } why)
@@ -181,6 +182,7 @@ public sealed partial class AgentManager
                 continue;
             }
             var result = Run(agent, step);
+            if (result.StartsWith("error") && SoftError(step.Call.Name) && agent.Plan.Count > 0) continue;
             if (result.StartsWith("error"))
             {
                 if (agent.Plan.Count > 0) StopPlan(agent, $"step {step.Call.Name} failed", now);
@@ -209,6 +211,11 @@ public sealed partial class AgentManager
         }
         return true;
     }
+
+    /// <summary>A failed word, note or lookup (order_crew without an order, an empty say) does not stop the work around it:
+    /// the error is in the results for the next turn, the plan goes on.</summary>
+    static bool SoftError(string tool) => Tools.Def(tool)?.Kind is ToolKind.Talk or ToolKind.Memory or ToolKind.Lookup
+        || tool is "order_crew" or "set_order_priority";
 
     /// <summary>Tools a plan tree may contain.</summary>
     static readonly IReadOnlyCollection<string> PlanToolNames = Tools.All.Select(t => t.Name).ToHashSet();

@@ -120,6 +120,18 @@ internal abstract class BotTask
         Bot.Inventory.TryPutItem(item, Bot, new List<InvSlotType> { InvSlotType.Any })
         || Bot.Inventory.TryPutItem(item, Bot, CharacterInventory.AnySlot);
 
+    /// <summary>Into the pockets; something that fits no pocket (a diving suit, a big crate) into the hands, after what
+    /// the hands hold goes into the pockets. The vanilla "get item" gives up on those: it tries to wear the suit.</summary>
+    protected bool PickUp(Item item)
+    {
+        if (Pocket(item)) return true;
+        var hands = new List<InvSlotType> { InvSlotType.RightHand, InvSlotType.LeftHand };
+        foreach (var slot in hands)
+            if (Bot.Inventory.GetItemInLimbSlot(slot) is { } held && held != item)
+                Bot.Inventory.TryPutItem(held, Bot, new List<InvSlotType> { InvSlotType.Any });
+        return Bot.Inventory.TryPutItem(item, Bot, hands);
+    }
+
     protected AIObjectiveGoTo GoTo(ISpatialEntity target, float closeEnough = 100f) =>
         new(target, Bot, Ai.ObjectiveManager, repeat: false, getDivingGearIfNeeded: true, closeEnough: closeEnough);
 
@@ -257,7 +269,8 @@ internal sealed class TakeItemsTask : BotTask
         if (current != null)
         {
             bool lost = current.Removed || (current.GetRootInventoryOwner() is Character owner && owner != Bot);
-            if (!lost && Stalled(8) && IsNear(current, 250f) && Pocket(current)) { got.Add(current); current = null; ClearObjective(); return null; }
+            // at the cabinet, but the objective does not take it (stuck, or it fits no pocket): take it by hand
+            if (!lost && (Stalled(8) || ObjectiveFailed) && IsNear(current, 250f) && PickUp(current)) { got.Add(current); current = null; ClearObjective(); return null; }
             if (lost || ObjectiveFailed || Stalled(20) || (ObjectiveDone && current.GetRootInventoryOwner() != Bot))
             {
                 ClearObjective();
@@ -280,7 +293,7 @@ internal sealed class TakeItemsTask : BotTask
             if (next.GetRootInventoryOwner() == Bot) { got.Add(next); continue; }
             if (!HasRoom(next)) { full = true; return Report(); }
             // the rest of a stack in the cabinet it is standing at: straight into the pockets, no walk per item
-            if (IsNear(next, 150f) && Pocket(next)) { got.Add(next); continue; }
+            if (IsNear(next, 150f) && PickUp(next)) { got.Add(next); continue; }
             current = next;
             Run(Get(current), $"getting {current.Name} from {ItemQueries.Where(current, Bot)} ({got.Count + 1}/{wanted})");
             return null;
@@ -327,6 +340,7 @@ internal sealed class UnpackTask : BotTask
     enum Phase { Fetch, Choose, Walk, Return, Finish }
     Phase phase;
     bool carrying;
+    readonly Vector2 origin;
 
     public override string Name => $"unpack {box.Name}";
     protected override double TimeoutSeconds => 420;
@@ -337,6 +351,7 @@ internal sealed class UnpackTask : BotTask
         this.box = box;
         boxContainer = container;
         this.carry = carry && box.GetComponent<Pickable>() != null;
+        origin = box.WorldPosition;
         phase = this.carry ? Phase.Fetch : Phase.Choose;
     }
 
@@ -367,7 +382,7 @@ internal sealed class UnpackTask : BotTask
                 var next = load.FirstOrDefault(i => !i.Removed && i.GetRootInventoryOwner() == Bot) ?? Contents().FirstOrDefault();
                 if (next == null) { phase = Phase.Finish; return null; }
                 var exclude = new HashSet<Item>(unreachable) { box };
-                var choice = StoragePlanner.Choose(Bot, next, exclude);
+                var choice = StoragePlanner.Choose(Bot, next, exclude, origin);
                 if (choice == null)
                 {
                     if (load.Remove(next)) PutBack(next);
@@ -381,7 +396,7 @@ internal sealed class UnpackTask : BotTask
                     // take what goes to the same place (and fits in the inventory) from the box first
                     if (!IsNear(box, 140f)) { if (!HasObjective || ObjectiveDone) Run(GoTo(box, 80f), $"going to {box.Name}"); else if (ObjectiveFailed) return Report($"cannot reach {box.Name}"); return null; }
                     ClearObjective();
-                    foreach (var i in Contents().Where(i => StoragePlanner.Choose(Bot, i, exclude)?.Container == target).Take(40))
+                    foreach (var i in Contents().Where(i => StoragePlanner.Choose(Bot, i, exclude, origin)?.Container == target).Take(40))
                         if (Bot.Inventory.TryPutItem(i, Bot, new List<InvSlotType> { InvSlotType.Any })) load.Add(i);
                     if (load.Count == 0) { left.Add(next); return null; }   // no room in the inventory for it
                 }
@@ -433,7 +448,7 @@ internal sealed class UnpackTask : BotTask
         var exclude = new HashSet<Item>(unreachable) { box };
         foreach (var i in source)
         {
-            if (StoragePlanner.Choose(Bot, i, exclude)?.Container != to) continue;
+            if (StoragePlanner.Choose(Bot, i, exclude, origin)?.Container != to) continue;
             if (!to.Inventory.TryPutItem(i, Bot)) continue;
             load.Remove(i);
             done.Add((i.Prefab.Name.Value, StoragePlanner.Describe(to), targetWhy));
@@ -543,6 +558,8 @@ internal sealed class RefuelReactorTask : BotTask
     readonly Reactor reactor;
     readonly ItemContainer container;
     readonly Item rod;
+    readonly List<string> removed = new();
+    int walkTries;
     public override string Name => "refuel reactor";
 
     /// <param name="rod">The spare rod to load (the adapter picks the fullest one).</param>
@@ -562,34 +579,50 @@ internal sealed class RefuelReactorTask : BotTask
         //    as done, even spent ones, and report success without loading anything)
         if (rod.GetRootInventoryOwner() != Bot)
         {
+            if (rod.GetRootInventoryOwner() is Character other) return $"failed: {other.Name} took the fuel rod";
             if (!HasObjective) Run(new AIObjectiveGetItem(Bot, rod, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false }, $"getting a fuel rod ({rod.ConditionPercentage:0}%)");
+            else if ((ObjectiveFailed || Stalled(8)) && IsNear(rod, 250f) && PickUp(rod)) ClearObjective();
             else if (ObjectiveFailed) return "failed: could not get the fuel rod (unreachable?)";
             else if (ObjectiveDone) ClearObjective();
             return null;
         }
 
-        // 2. load it; if all slots are taken, the most spent rod comes out
-        if (!HasObjective)
+        // 2. to the reactor
+        if (!IsNear(reactor.Item, 200f) && !Bot.CanInteractWith(reactor.Item))
         {
-            float cond = rod.ConditionPercentage;
-            Run(new AIObjectiveContainItem(Bot, rod, container, Ai.ObjectiveManager)
+            if (!HasObjective) { Run(GoTo(reactor.Item, 80f), "carrying the fuel rod to the reactor"); return null; }
+            if (ObjectiveFailed || ObjectiveDone || Stalled(6))
             {
-                RemoveEmpty = true,
-                RemoveExistingWhenNecessary = true,
-                RemoveExistingPredicate = i => i.HasTag(Tags.ReactorFuel) && i.ConditionPercentage < cond,
-                RemoveMax = 1,
-            }, "loading the fuel rod into the reactor");
-            return null;
+                ClearObjective();
+                if (IsNear(reactor.Item, 450f)) { }                       // the path ends a little short: close enough
+                else if (++walkTries > 2) return "failed: cannot reach the reactor";
+                else return null;
+            }
+            else return null;
         }
-        if (ObjectiveFailed) return "failed: could not load the fuel rod (reactor full of fuller rods, or unreachable)";
-        if (ObjectiveDone) return rod.ParentInventory == container.Inventory ? Loaded() : "failed: the fuel rod did not go in";
-        return null;
+        ClearObjective();
+
+        // 3. the spent rods come out first. The reactor then runs on the fresh rod alone: with a second rod in it, the
+        //    vanilla operator finds it has "too much fuel" and throws a rod out (often the fresh one), and the crew
+        //    refuels again and again.
+        float cond = rod.Condition;
+        foreach (var old in container.Inventory.AllItems.Where(i => i.HasTag(Tags.ReactorFuel) && i.Condition < cond).ToList())
+        {
+            removed.Add($"{old.ConditionPercentage:0}%");
+            if (!Pocket(old)) old.Drop(Bot);
+        }
+        if (!container.Inventory.TryPutItem(rod, Bot))
+            return container.Inventory.IsFull()
+                ? "failed: the reactor is full of fuller rods; no need to refuel"
+                : "failed: the fuel rod did not go in";
+        return Loaded();
     }
 
     string Loaded()
     {
         var hint = reactor.FissionRate < 1 ? " The reactor is not running: operate it (role=reactor, option=powerup) or ask an engineer." : "";
-        return $"ok: fuel rod ({rod.ConditionPercentage:0}%) loaded, reactor fuel now {GameAdapter.FuelInReactor(container):0}%.{hint}";
+        var outText = removed.Count > 0 ? $" Took out the spent rod{(removed.Count > 1 ? "s" : "")} ({string.Join(", ", removed)}): it is in your inventory." : "";
+        return $"ok: fuel rod ({rod.ConditionPercentage:0}%) loaded, reactor fuel now {GameAdapter.FuelInReactor(container):0}%.{outText}{hint}";
     }
 }
 
@@ -606,6 +639,7 @@ internal sealed class CraftTask : BotTask
     readonly HashSet<Item> unreachable = new();
     readonly List<string> unreachableWhere = new();
     double startedFabricatingAt;
+    readonly List<string> clearedOutput = new();
     protected override double TimeoutSeconds => 120 + 120 * amount;
     int Yield => Crafting.Yield(recipe);
     public override string Name => $"craft {recipe.DisplayName.Value} x{amount * Yield} ({made * Yield} done)";
@@ -655,6 +689,7 @@ internal sealed class CraftTask : BotTask
             {
                 int inOutput = fabricator.OutputContainer?.Inventory.AllItems.Count(i => i.Prefab == recipe.TargetItem) ?? 0;
                 return $"ok: made {made * Yield}x {recipe.DisplayName.Value} ({made} craft{(made > 1 ? "s" : "")}); {inOutput} in the output of {fabricator.Item.Name}" +
+                       (clearedOutput.Count > 0 ? $" (what was left in the output is in your inventory now: {string.Join(", ", clearedOutput.Distinct())})" : "") +
                        $": take them with take_item(item=\"{recipe.TargetItem.Name.Value}\", count={Math.Max(1, inOutput)}, from=\"{fabricator.Item.Name}\") or move_item (moves the whole stack)";
             }
         }
@@ -725,11 +760,26 @@ internal sealed class CraftTask : BotTask
         // 2. stand at the fabricator and start it
         var at = ReachFabricator("walking to the fabricator");
         if (at != null) return at.Length == 0 ? null : at;
+        // the game only starts a craft whose product fits the output: what an earlier craft left there goes into the pockets
+        var output = fabricator.OutputContainer?.Inventory;
+        if (output != null && !output.CanProbablyBePut(recipe.TargetItem, recipe.OutCondition * recipe.TargetItem.Health))
+        {
+            foreach (var left in output.AllItems.ToList())
+                if (Pocket(left)) clearedOutput.Add(left.Name);
+            if (!output.CanProbablyBePut(recipe.TargetItem, recipe.OutCondition * recipe.TargetItem.Health))
+                return $"failed: the output of {fabricator.Item.Name} is full ({string.Join(", ", output.AllItems.Select(i => i.Name).Distinct().Take(4))}) and your inventory too: take them out first";
+        }
         fabricator.AmountToFabricate = 1;
         fabricator.amountRemaining = 1;
         fabricator.StartFabricating(recipe, Bot);
         fabricator.Item.CreateServerEvent(fabricator);
-        if (!fabricator.IsActive) return "failed: the fabricator refused to start (missing ingredients, skill or recipe?)";
+        if (!fabricator.IsActive)
+        {
+            var missingNow = recipe.RequiredItems.Where(r => input.AllItems.Count(r.MatchesItem) < r.Amount).Select(r => r.FirstMatchingPrefab?.Name.Value ?? "?").ToList();
+            return missingNow.Count > 0
+                ? $"failed: ingredients went missing from the fabricator's input ({string.Join(", ", missingNow)})"
+                : "failed: the fabricator refused to start (no power, or a recipe/talent it needs)";
+        }
         started = true;
         startedFabricatingAt = Timing.TotalTime;
         return null;
@@ -1018,6 +1068,12 @@ internal sealed class MoveItemTask : BotTask
         while (!full)
         {
             if (fetching != null && Mine(fetching)) { fetching = null; ClearObjective(); }
+            if (fetching != null && !Lost(fetching) && (ObjectiveFailed || Stalled(6)) && IsNear(fetching, 250f) && PickUp(fetching))
+            {
+                fetching = null;
+                ClearObjective();
+                continue;
+            }
             if (fetching != null && (Lost(fetching) || ObjectiveFailed || Stalled(15)))
             {
                 ClearObjective();
@@ -1035,7 +1091,7 @@ internal sealed class MoveItemTask : BotTask
             if (fetching != null)
             {
                 // standing at the cabinet but the objective does not take it: reach in
-                if (Stalled(6) && IsNear(fetching, 250f) && Pocket(fetching)) { fetching = null; ClearObjective(); continue; }
+                if ((Stalled(6) || ObjectiveFailed) && IsNear(fetching, 250f) && PickUp(fetching)) { fetching = null; ClearObjective(); continue; }
                 if (ObjectiveDone) { ClearObjective(); failed.Add(fetching); fetching = null; continue; }   // done, but not in the pockets
                 if (!HasObjective) Run(Get(fetching), Step);
                 return null;
@@ -1047,7 +1103,7 @@ internal sealed class MoveItemTask : BotTask
             var near = pending.FirstOrDefault(i => IsNear(i, 150f));
             if (near != null)
             {
-                if (Pocket(near)) continue;
+                if (PickUp(near)) continue;
                 full = items.Any(Mine);       // no room left: deliver what it has
                 if (!full) { failed.Add(near); continue; }
                 break;

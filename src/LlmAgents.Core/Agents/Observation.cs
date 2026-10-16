@@ -173,6 +173,6 @@ public sealed record CrewInfo(string Name, string Job, string? Room, int HealthP
 
 public sealed record ThreatInfo(string Kind, int DistanceMeters, string? Room);
 
-public sealed record SubInfo(int? ReactorPercent, int? DepthMeters, int HullBreaches,
+public sealed record SubInfo(int? ReactorOutputPercent, int? DepthMeters, int HullBreaches,
     int? ReactorFuelPercent = null, int? ReactorTemperaturePercent = null, int? FuelRodsAboard = null,
     int? OxygenPercent = null, string? Power = null);

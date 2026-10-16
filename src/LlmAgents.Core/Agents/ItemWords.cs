@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -163,6 +164,17 @@ public static class ItemWords
         return SelfWords.Contains(t) || t.Equals(ownName, StringComparison.OrdinalIgnoreCase)
             || (t.Length >= 4 && ownName.StartsWith(t, StringComparison.OrdinalIgnoreCase));
     }
+
+    static readonly Regex NearWords = new(
+        @"^(?<what>.+?)\s+(?:у|возле|около|рядом\s+со?|near|next\s+to|beside|by)\s+(?<anchor>.+)$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>"шкаф у фабрикатора" -> ("шкаф", "фабрикатора"); "locker next to the reactor" -> ("locker", "the reactor"). null = not such a phrase.</summary>
+    public static (string What, string Anchor)? SplitNear(string text)
+    {
+        var m = NearWords.Match(text.Trim());
+        return m.Success ? (m.Groups["what"].Value.Trim(), m.Groups["anchor"].Value.Trim()) : null;
+    }
 }
 
 /// <summary>Which marks a query means: "помеченный ящик", "the marked crate", "помеченное на разбор".</summary>
@@ -185,4 +197,5 @@ public static class MarkWords
         string.Join(" ", ItemWords.Words(query).Where(w =>
             !MarkStems.Any(s => w.StartsWith(s, StringComparison.Ordinal)) && !DeconstructStems.Any(s => w.StartsWith(s, StringComparison.Ordinal))
             && w is not ("for" or "на" or "для" or "the" or "this" or "это" or "этот" or "эту" or "все" or "всё" or "all" or "ии" or "ai")));
+
 }

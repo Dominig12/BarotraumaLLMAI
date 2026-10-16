@@ -81,7 +81,8 @@ public sealed partial class GameAdapter
         {
             case "reactor": orderId = "operatereactor"; match = i => i.GetComponent<Reactor>() != null; break;
             case "navigation": orderId = "steer"; match = i => i.GetComponent<Steering>() != null; break;
-            case "weapons": orderId = "operateweapons"; match = i => i.GetComponent<Turret>() != null; break;
+            // a searchlight is a turret too: not a weapon
+            case "weapons": orderId = "operateweapons"; match = i => i.GetComponent<Turret>() != null && !IsSearchlight(i); break;
             case "pumps": orderId = "pumpwater"; match = null; break; // all pumps, no specific target
             default: return $"error: unknown role '{role}'";
         }
@@ -96,7 +97,10 @@ public sealed partial class GameAdapter
         }
         else if (prefab.Options.Length > 0)
         {
-            opt = prefab.Options.First();
+            // "steer" alone means sailing on, not holding position (the first option): captains said "heading to the
+            // outpost" while the sub stood still
+            var go = "navigatetodestination".ToIdentifier();
+            opt = role == "navigation" && prefab.Options.Contains(go) ? go : prefab.Options.First();
         }
 
         Order order;
@@ -134,6 +138,10 @@ public sealed partial class GameAdapter
             r += ". Note: with low electrical skill you will not refuel it; use refuel_reactor for that";
         return r;
     }
+
+    static bool IsSearchlight(Item i) =>
+        i.Prefab.Identifier.Value.Contains("searchlight", StringComparison.OrdinalIgnoreCase) || i.HasTag("searchlight".ToIdentifier())
+        || (i.Prefab.Name.Value.Contains("searchlight", StringComparison.OrdinalIgnoreCase) || i.Prefab.Name.Value.Contains("прожектор", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Orders a bot must not give itself through give_order: the mod's own and the item marks.</summary>
     static bool IsSpecialOrder(OrderPrefab p) =>
@@ -382,7 +390,8 @@ public sealed partial class GameAdapter
         if (Find(botId) is not { } c) return "error: character gone";
         PruneOwn(c);
         var orders = c.CurrentOrders?.Where(o => o != null && !o.IsDismissal).ToList() ?? new List<Order>();
-        if (orders.Count == 0) return "error: you have no orders";
+        // dropping what is not there is no failure: the plan goes on
+        if (orders.Count == 0) return priority <= 0 ? "ok (you have no orders to drop)" : "error: you have no orders";
 
         var q = query.Trim().ToLowerInvariant();
         q = q.Split(' ', '[', '(')[0];
@@ -392,6 +401,8 @@ public sealed partial class GameAdapter
         var id = Tools.OrderAliases.TryGetValue(q, out var alias) ? alias : q;
         var match = orders.FirstOrDefault(o => o.Identifier == id && (opt == null || o.Option == opt))
                  ?? orders.FirstOrDefault(o => o.Identifier == id);
+        if (match == null && priority <= 0)
+            return $"ok (no order '{query}' to drop; your orders: {string.Join(", ", orders.Select(o => $"{Name(o)} [p{o.ManualPriority}]"))})";
         if (match == null)
             return $"error: no current order '{query}'; your orders: {string.Join(", ", orders.Select(o => $"{Name(o)} [p{o.ManualPriority}]"))}";
 

@@ -168,6 +168,7 @@ public sealed partial class GameAdapter
             if (active != current && Tag(active) != s) s += " > " + Tag(active);
             var target = TargetOf(active) ?? TargetOf(current);
             if (target != null) s += ": " + target;
+            s = System.Text.RegularExpressions.Regex.Replace(s, @"\s*\(ID: \d+\)", "").Replace("()", "").Replace("( )", "");
             return s.Length > 120 ? s.Substring(0, 120) : s;
         }
         catch { return null; }

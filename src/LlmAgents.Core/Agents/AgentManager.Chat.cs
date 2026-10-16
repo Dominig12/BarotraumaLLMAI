@@ -87,8 +87,14 @@ public sealed partial class AgentManager
         return lines.TakeLast(Math.Max(0, c.ConversationLines)).Select(l => ConversationLog.Format(l, now, agent?.Name)).ToList();
     }
 
+    /// <summary>A message waits for the dispatcher only because every request slot is busy: the bots do not start new
+    /// requests meanwhile, so it gets the next free one. (When a per-minute or daily limit is the reason, waiting helps
+    /// nobody, and the bots go on.)</summary>
+    bool holdForDispatch;
+
     void DispatchChats(double now)
     {
+        holdForDispatch = false;
         var chat = Settings.Chat;
         for (int i = 0; i < pendingChats.Count;)
         {
@@ -122,7 +128,12 @@ public sealed partial class AgentManager
             }
 
             var provider = string.IsNullOrEmpty(chat.Provider) ? Settings.DefaultProvider : chat.Provider;
-            if (!router.TryReserve(provider, out var reservation, out _)) { i++; continue; }   // next tick
+            if (!router.TryReserve(provider, out var reservation, out var why))
+            {
+                if (why.Contains("busy")) holdForDispatch = true;
+                i++;
+                continue;   // next tick
+            }
             p.InFlight = true;
             p.Attempts++;
             StartDispatch(p, roster, reservation!, now);

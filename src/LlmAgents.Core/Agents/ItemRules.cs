@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace LlmAgents.Agents;
@@ -55,6 +56,13 @@ public static class ItemRules
         capacity <= 4 && !isStorage && containableCount > 0;
 
     public static bool IsSpent(float conditionFraction) => conditionFraction < SpentBelow;
+
+    static readonly string[] RefillWords = { "fuel", "oxygen", "battery", "batterycell", "ammo", "magazine", "cartridge", "round", "shell", "dart", "spear", "tank", "canister" };
+
+    /// <summary>What a slot takes (identifiers or tags) is something that runs out: fuel, a tank, a battery, ammo. The
+    /// pockets of a cap or a uniform take "any small item" and are not refilled (refill() once filled a cap with goggles).</summary>
+    public static bool IsRefillSlot(IEnumerable<string> takes) =>
+        takes.Any(t => RefillWords.Any(w => t.Contains(w, StringComparison.OrdinalIgnoreCase)));
 
     public static bool IsUsableRefill(float conditionFraction) => conditionFraction > UsableAbove;
 

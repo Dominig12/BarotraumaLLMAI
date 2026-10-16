@@ -12,8 +12,12 @@ namespace LlmAgents;
 /// <summary>Finding items by a free-text query (any language, name or identifier) and choosing medicine.</summary>
 internal static class ItemQueries
 {
+    static readonly System.Text.RegularExpressions.Regex EntityIdText = new(@"\(id:\d+\)");
+
     public static string Norm(string s) =>
-        new string(s.ToLowerInvariant().Where(ch => !char.IsWhiteSpace(ch) && ch != '_' && ch != '-' && ch != '.').ToArray());
+        // "(ID: 759)" is the game's debug text for an entity: it leaks into what bots see doing and they copy it
+        EntityIdText.Replace(new string(s.ToLowerInvariant().Where(ch => !char.IsWhiteSpace(ch) && ch != '_' && ch != '-' && ch != '.').ToArray()), "");
+
 
     /// <summary>"Бинт [antibleeding1]": localized name plus identifier, so the LLM can copy either.</summary>
     public static string Label(Item i) => $"{i.Name} [{i.Prefab.Identifier}]";
@@ -43,6 +47,22 @@ internal static class ItemQueries
         var groups = ItemWords.Groups(query);
         if (groups.Count > 0 && groups.Any(g => InGroup(p, g))) return 1;
         return 0;
+    }
+
+    /// <summary>
+    /// The query names an item exactly, but none of it is free (all carried or in use), while something weaker matches
+    /// ("Сварочный аппарат": every welding tool is in someone's hands, only fuel tanks "of the welding tool" are left):
+    /// who has them, instead of silently taking the other thing. null = not that case.
+    /// </summary>
+    public static string? NoneFree(Character c, string query, Item? best)
+    {
+        if (best != null && MatchScore(best.Prefab, query, kinds: false) >= 3) return null;
+        var exact = Item.ItemList.Where(i => !i.Removed && i.Submarine == c.Submarine && MatchScore(i.Prefab, query, kinds: false) >= 3).ToList();
+        if (exact.Count == 0) return null;
+        var holders = exact
+            .Select(i => i.GetRootInventoryOwner() is Character h ? (h == c ? "you" : h.Name) : i.Container != null ? $"{i.Container.Name} (in use)" : "in use")
+            .GroupBy(x => x).Select(g => g.Count() > 1 ? $"{g.Key} x{g.Count()}" : g.Key);
+        return $"no free {Label(exact[0].Prefab)} aboard: {string.Join(", ", holders.Take(6))} has it; craft one, or ask them";
     }
 
     public static bool InGroup(ItemPrefab p, ItemGroup g) => g switch

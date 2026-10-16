@@ -360,7 +360,7 @@ sealed class SimWorld : IGameApi
     public string Equip(int botId, string item) { if (item.Contains("suit")) gearOn.Add(botId); Report(botId, $"task 'equip {item}' ok: equipped", 2); Do(botId, $"equip {item}"); return Started("equip " + item); }
     public string RefuelReactor(int botId) { Report(botId, "task 'refuel reactor' ok: fuel rod loaded", 5); Do(botId, "refuel reactor"); return Started("refuel reactor"); }
     public string Craft(int botId, string item, int amount, bool salvage = false) { Report(botId, $"task 'craft {item}' ok: made {amount}", 8); Do(botId, $"craft {item} x{amount}"); return Started("craft " + item); }
-    public string Deconstruct(int botId, string item, string? from = null) { Report(botId, $"task 'deconstruct {item}' ok", 6); Do(botId, $"deconstruct {item}"); return Started("deconstruct " + item); }
+    public string Deconstruct(int botId, string item, string? from = null, int count = 0) { Report(botId, $"task 'deconstruct {item}' ok", 6); Do(botId, $"deconstruct {item}"); return Started("deconstruct " + item); }
     public string Treat(int botId, string target, string? item)
     {
         var p = bots.FirstOrDefault(b => b.Name.Contains(target, StringComparison.OrdinalIgnoreCase));

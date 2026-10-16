@@ -145,6 +145,10 @@ public sealed partial class GameAdapter
             if (all) return "error: 'all' needs 'from' (a container, a room or a crew member's name)";
             // not what the bot already carries, not what others are going for
             found = ItemQueries.Find(c, query, i => i.GetRootInventoryOwner() != c && !claimed.Contains(i));
+            if (ItemQueries.Find(c, query).FirstOrDefault(i => i.GetRootInventoryOwner() == c) is { } own
+                && ItemQueries.MatchScore(own.Prefab, query, kinds: false) >= 3 && (found.Count == 0 || ItemQueries.MatchScore(found[0].Prefab, query, kinds: false) < 3))
+                return $"ok (you already carry {own.Name}; none left to take)";
+            if (!ItemQueries.IsKindQuery(query) && ItemQueries.NoneFree(c, query, found.FirstOrDefault()) is { } busy) return "error: " + busy;
             if (found.Count == 0)
                 return ItemQueries.Find(c, query).Any(i => i.GetRootInventoryOwner() == c)
                     ? $"ok (you already carry {query}; none left to take)"
@@ -261,7 +265,7 @@ public sealed partial class GameAdapter
         var ic = box.GetComponent<ItemContainer>();
         if (ic == null) return $"error: {box.Name} holds nothing";
         var plan = ic.Inventory.AllItems.GroupBy(i => i.Prefab)
-            .Select(g => (g.Key, n: g.Count(), to: StoragePlanner.Choose(c, g.First(), new HashSet<Item> { box })))
+            .Select(g => (g.Key, n: g.Count(), to: StoragePlanner.Choose(c, g.First(), new HashSet<Item> { box }, box.WorldPosition)))
             .ToList();
         if (plan.All(p => p.to == null))
             return $"error: no fitting place on the sub for anything in {box.Name} ({string.Join(", ", plan.Take(6).Select(p => $"{p.Key.Name.Value} x{p.n}"))}); use move_item with a container name";
@@ -279,8 +283,9 @@ public sealed partial class GameAdapter
         if (spare == null)
             return "error: no spare fuel rods aboard; craft one (craft item='fuel rod', check inspect recipe first) or find some";
         float fuel = FuelInReactor(container);
-        if (fuel >= 60 && !HasAuthority(c))
-            return $"error: the reactor still has {fuel:0}% fuel; refuel when it drops below about 20% (a player can order it earlier)";
+        if (fuel >= 25 && !HasAuthority(c))
+            return $"error: the reactor still has {fuel:0}% fuel; refuel when it drops below about 20% (a player can order it earlier). " +
+                   "A second rod does not help: the reactor operator throws extra rods out";
         var inside = container.Inventory.AllItems.Where(i => i.HasTag(Tags.ReactorFuel)).ToList();
         if (inside.Count > 0 && container.Inventory.IsFull() && inside.All(i => i.ConditionPercentage >= spare.ConditionPercentage))
             return $"error: the reactor is full and every rod in it is fuller than the best spare one ({spare.ConditionPercentage:0}%)";
@@ -313,7 +318,7 @@ public sealed partial class GameAdapter
                $" ({runs} craft(s), {runs * Crafting.Yield(r)} items)" + $"; will first deconstruct {string.Join(", ", plan.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))}";
     }
 
-    public string Deconstruct(int botId, string query, string? from = null)
+    public string Deconstruct(int botId, string query, string? from = null, int count = 0)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
         if (!Crafting.HasDeconstructor(c)) return "error: no deconstructor on this submarine";
@@ -323,10 +328,14 @@ public sealed partial class GameAdapter
         {
             var (places, where) = ContainersAt(c, from!);
             if (places.Count == 0) return $"error: no container or room '{from}'; use a room id from 'rooms' or a container name (cabinet, locker, crate...)";
-            var items = places.SelectMany(ic => ic.Inventory.AllItems)
+            var candidates = places.SelectMany(ic => ic.Inventory.AllItems)
                 .Where(i => i.Prefab.AllowDeconstruct && i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i))
-                .Where(i => all || ItemQueries.MatchScore(i.Prefab, query) > 0)
-                .Take(MaxDeconstructBatch).ToList();
+                .Select(i => (i, score: all ? 1 : ItemQueries.MatchScore(i.Prefab, query)))
+                .Where(t => t.score > 0).ToList();
+            // only the best match: "Сварочный аппарат" is the welding tool, not every "Топливный бак сварочного аппарата" next to it
+            int best = candidates.Count > 0 ? candidates.Max(t => t.score) : 0;
+            var items = candidates.Where(t => t.score == best).Select(t => t.i)
+                .Take(all ? (count > 0 ? count : MaxDeconstructBatch) : Math.Max(1, count)).ToList();
             if (items.Count == 0) return $"error: nothing {(all ? "" : $"matching '{query}' ")}that can be deconstructed in {where}";
             return StartTask(c, new DeconstructManyTask(c, ai, items, where)) +
                    $"; {items.Count} item(s): {string.Join(", ", items.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))}";
@@ -347,14 +356,17 @@ public sealed partial class GameAdapter
         if (all) return "error: 'all' needs 'from' (a container or room), so nothing important is broken down by accident";
         // without 'from' the item must be named: "tools" or "medical" alone would break down whatever is nearest
         // (with 'from', "инструменты из шкафа" is fine: only that cabinet)
-        var item = ItemQueries.Find(c, query, i => i.Prefab.DeconstructItems.Any() && i.Prefab.AllowDeconstruct && !c.HasEquippedItem(i), kinds: false).FirstOrDefault();
-        if (item == null)
+        var found = ItemQueries.Find(c, query, i => i.Prefab.DeconstructItems.Any() && i.Prefab.AllowDeconstruct && !c.HasEquippedItem(i), kinds: false);
+        if (found.Count == 0)
         {
             // maybe they named the material they want
             var hint = Crafting.Salvage(c, query);
             return $"error: no '{query}' that can be deconstructed. {hint}";
         }
-        return StartTask(c, new DeconstructTask(c, ai, item));
+        if (count <= 1) return StartTask(c, new DeconstructTask(c, ai, found[0]));
+        var same = found.Where(i => i.Prefab == found[0].Prefab).Take(count).ToList();
+        return StartTask(c, new DeconstructManyTask(c, ai, same, "around the sub")) +
+               (same.Count < count ? $"; only {same.Count} found" : "");
     }
 
     const int MaxDeconstructBatch = 12;
@@ -368,9 +380,35 @@ public sealed partial class GameAdapter
             || m.GetComponent<Deconstructor>()?.OutputContainer?.Inventory == i.ParentInventory;
     }
 
+    /// <summary>"шкаф у фабрикатора", "the locker next to the reactor": the storage of that kind nearest to the named thing
+    /// (a machine, a station, any item), within a few metres. null = not such a phrase, or nothing near it.</summary>
+    internal (ItemContainer Container, string Where)? NearAnchor(Character c, string text, Item? toPut = null)
+    {
+        if (ItemWords.SplitNear(text) is not { } near) return null;
+        var (what, anchorText) = near;
+        var anchor = Item.ItemList
+            .Where(i => !i.Removed && i.Submarine == c.Submarine && i.GetRootInventoryOwner() is not Character && ItemQueries.MatchScore(i.Prefab, anchorText, kinds: false) > 0)
+            .OrderByDescending(i => ItemQueries.MatchScore(i.Prefab, anchorText, kinds: false))
+            .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition))
+            .FirstOrDefault();
+        if (anchor == null) return null;
+        var storages = Item.ItemList
+            .Where(i => !i.Removed && i != anchor && i.Submarine == c.Submarine && i.GetRootInventoryOwner() is not Character && IsStorage(i)
+                        && Vector2.Distance(i.WorldPosition, anchor.WorldPosition) < 700f)
+            .Select(i => (i, ic: i.GetComponent<ItemContainer>()!))
+            .Where(t => toPut == null || t.ic.Inventory.CanBePut(toPut))
+            .ToList();
+        // of that kind if any is there ("шкаф"), else any storage next to it
+        var kind = storages.Where(t => ItemQueries.MatchScore(t.i.Prefab, what, kinds: false) > 0).ToList();
+        var pick = (kind.Count > 0 ? kind : storages).OrderBy(t => Vector2.DistanceSquared(t.i.WorldPosition, anchor.WorldPosition)).FirstOrDefault();
+        if (pick.ic == null) return null;
+        return (pick.ic, $"{pick.i.Name} next to {anchor.Name} in {(pick.i.CurrentHull != null ? RoomId(pick.i.CurrentHull) : "?")}");
+    }
+
     /// <param name="outputs">also fabricators and deconstructors by name, meaning their output (to take products from)</param>
     (List<ItemContainer> Containers, string Where) ContainersAt(Character c, string from, bool outputs = false)
     {
+        if (NearAnchor(c, from) is { } near) return (new List<ItemContainer> { near.Container }, near.Where);
         var storages = Item.ItemList
             .Where(i => i.Submarine == c.Submarine && !i.Removed && i.GetRootInventoryOwner() is not Character)
             .Select(i => (item: i, ic: outputs && (i.GetComponent<Fabricator>()?.OutputContainer ?? i.GetComponent<Deconstructor>()?.OutputContainer) is { } o

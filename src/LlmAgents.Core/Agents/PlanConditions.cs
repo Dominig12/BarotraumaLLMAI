@@ -210,7 +210,7 @@ public static class PlanConditions
             "threats" => o.Threats.Count,
             "leaks" => o.Leaks.Count,
             "flora" => o.Infestations.Sum(i => FloraCount.Match(i) is { Success: true } m ? int.Parse(m.Groups[1].Value) : 1),
-            "reactor" => o.Submarine?.ReactorPercent ?? 0,
+            "reactor" => o.Submarine?.ReactorOutputPercent ?? 0,
             "reactor_fuel" => o.Submarine?.ReactorFuelPercent ?? 100,
             "sub_oxygen" => o.Submarine?.OxygenPercent ?? 100,
             "injured" => o.Crew.Count(c => c.HealthPercent < 50),

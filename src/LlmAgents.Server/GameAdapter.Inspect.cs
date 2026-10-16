@@ -38,12 +38,16 @@ public sealed partial class GameAdapter
             }
             case "items":
             {
+                if (NearAnchor(c, query) is { } near) return DescribePlace(near.Container.Inventory.AllItems.ToList(), near.Where, c);
                 // a room id, a container or a crew member's name: what is there ("what's in Электрика [h140]?")
                 bool placeFirst = query.Contains("[h") || ResolveRoom(query.Trim()) != null
                     || (FindCrew(query.Trim(), c, includeSelf: true) != null && query.Trim().Length >= 3);
                 if (placeFirst && ItemsAt(c, query) is { } p0) return DescribePlace(p0.Items, p0.Where, c);
                 bool byKind = ItemQueries.IsKindQuery(query);
                 var found = ItemQueries.Find(c, query).Take(byKind ? 60 : 30).ToList();
+                var noneFree = byKind ? null : ItemQueries.NoneFree(c, query, found.FirstOrDefault());
+                if (noneFree != null)
+                    return noneFree + (found.Count > 0 ? $". Other matches: {string.Join(", ", found.Select(i => i.Prefab).Distinct().Take(3).Select(ItemQueries.Label))}" : "");
                 if (found.Count == 0)
                     return ItemsAt(c, query) is { } p1 ? DescribePlace(p1.Items, p1.Where, c) : $"no '{query}' on the sub (try a plainer word: 'tools', 'medical', 'ammo', 'suit', or a room id to see what is there)";
                 var groups = found.GroupBy(i => i.Prefab).Take(byKind ? 8 : 5).Select(g =>

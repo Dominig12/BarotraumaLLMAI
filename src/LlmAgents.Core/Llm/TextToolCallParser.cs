@@ -84,6 +84,7 @@ public static class TextToolCallParser
     static List<ToolCall> ParseJson(string text, Dictionary<string, ToolSpec> tools)
     {
         var result = new List<ToolCall>();
+        bool emptyList = false;
         for (int start = 0; start < text.Length; start++)
         {
             char open = text[start];
@@ -102,11 +103,22 @@ public static class TextToolCallParser
             else if (node is JsonObject obj)
             {
                 var list = obj["calls"] as JsonArray ?? obj["actions"] as JsonArray ?? obj["tool_calls"] as JsonArray;
-                if (list != null) foreach (var item in list) TryAddJson(item as JsonObject, tools, result);
+                if (list != null)
+                {
+                    if (list.Count == 0) emptyList = true;
+                    foreach (var item in list)
+                    {
+                        // {"calls": ["inspect(kind=\"items\", query=\"x\")", ...]}: call syntax inside strings
+                        if (item is JsonValue sv && sv.TryGetValue<string>(out var callText)) result.AddRange(ParseLoose(Normalize(callText), tools));
+                        else TryAddJson(item as JsonObject, tools, result);
+                    }
+                }
                 else TryAddJson(obj, tools, result);
             }
             if (result.Count > before) start = end; // its insides are done
         }
+        // {"calls": []}: the model chose to do nothing, which is an answer, not a broken reply
+        if (result.Count == 0 && emptyList && tools.ContainsKey("carry_on")) result.Add(new ToolCall("carry_on", new JsonObject()));
         return result;
     }
 
@@ -197,6 +209,10 @@ public static class TextToolCallParser
             int segStart = m.Index + m.Length;
             int segEnd = i + 1 < matches.Count ? matches[i + 1].Index : text.Length;
             var segment = text.Substring(segStart, segEnd - segStart);
+            // a name right after a quote is a call only with argument syntax after it ("say", ... / "say(...)");
+            // in prose ('the task is "burn the ballast flora"') it is just a word
+            bool afterQuote = m.Index > 0 && (text[m.Index - 1] == '"' || text[m.Index - 1] == Q);
+            if (afterQuote && (segment.Length == 0 || "({\"\u0001:,'".IndexOf(segment[0]) < 0)) continue;
             var args = ParseArgs(segment, tools[name], out bool plausible);
             if (plausible) result.Add(new ToolCall(name, args));
         }
@@ -257,6 +273,8 @@ public static class TextToolCallParser
 
         // a required-args tool with no arguments at all is almost certainly prose
         if (required.Count > 0 && required.All(r => !args.ContainsKey(r.Name)) && args.Count == 0) plausible = false;
+        // a required value that is empty: the reply was cut off in the middle of it ({"text": "Принял. Разбираю три сва)
+        if (required.Any(r => args[r.Name] is JsonValue v && v.TryGetValue<string>(out var s) && s.Trim().Length == 0)) plausible = false;
         return args;
     }
 

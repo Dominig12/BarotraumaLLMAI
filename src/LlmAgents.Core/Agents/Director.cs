@@ -113,7 +113,7 @@ public static class Director
         var sub = all.Select(o => o.Submarine).FirstOrDefault(s => s != null);
         sb.Append("\nSubmarine: ").Append(sub == null ? "unknown" : string.Join(", ", new[]
         {
-            sub.ReactorPercent is int output ? $"reactor output {output}%" : null,
+            sub.ReactorOutputPercent is int output ? $"reactor output {output}%" : null,
             sub.ReactorFuelPercent is int f ? $"reactor fuel {f}%" : null,
             sub.ReactorTemperaturePercent is int t ? $"reactor temperature {t}%" : null,
             sub.FuelRodsAboard is int rods ? $"{rods} spare fuel rods" : null,

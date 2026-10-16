@@ -29,7 +29,17 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
 
     public static JsonObject BuildBody(ProviderConfig cfg, LlmRequest req) => BuildBody(cfg, req, allowJsonFormat: true);
 
-    static JsonObject BuildBody(ProviderConfig cfg, LlmRequest req, bool allowJsonFormat)
+    /// <summary>The server rejected the "reasoning" switch (official OpenAI and some others do): not sent again.</summary>
+    bool reasoningSwitchUnsupported;
+
+    /// <summary>thinking "off" for gateways that pass reasoning models through (OpenRouter style): the system prompt
+    /// switch alone was ignored, and replies spent all their tokens thinking. Not for api.openai.com, and not when
+    /// extraBody already says something about reasoning.</summary>
+    static bool SendReasoningOff(ProviderConfig cfg) =>
+        cfg.Thinking == "off" && !cfg.ExtraBody.ContainsKey("reasoning") && !cfg.ExtraBody.ContainsKey("reasoning_effort")
+        && !cfg.BaseUrl.Contains("api.openai.com", StringComparison.OrdinalIgnoreCase);
+
+    static JsonObject BuildBody(ProviderConfig cfg, LlmRequest req, bool allowJsonFormat, bool reasoningSwitch = true)
     {
         bool promptMode = cfg.ToolMode == "prompt" && req.Tools.Count > 0;
         var system = promptMode ? ToolPrompt.Build(req.System, req.Tools) : req.System;
@@ -70,6 +80,7 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
             body["tools"] = tools;
             body["tool_choice"] = "auto";
         }
+        if (reasoningSwitch && SendReasoningOff(cfg)) body["reasoning"] = new JsonObject { ["enabled"] = false };
         JsonUtil.Merge(body, cfg.ExtraBody);
         return body;
     }
@@ -111,15 +122,22 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
         string raw;
         try
         {
-            var body = BuildBody(cfg, req, allowJsonFormat: !jsonFormatUnsupported);
+            var body = BuildBody(cfg, req, allowJsonFormat: !jsonFormatUnsupported, reasoningSwitch: !reasoningSwitchUnsupported);
             var (status, text) = await SendAsync(body, cts.Token).ConfigureAwait(false);
+            if (status == HttpStatusCode.BadRequest && body.ContainsKey("reasoning") && text.Contains("reasoning", StringComparison.OrdinalIgnoreCase))
+            {
+                reasoningSwitchUnsupported = true;
+                Log.Warn($"provider '{cfg.Name}' does not accept the reasoning switch; thinking: off now relies on the prompt only");
+                body = BuildBody(cfg, req, allowJsonFormat: !jsonFormatUnsupported, reasoningSwitch: false);
+                (status, text) = await SendAsync(body, cts.Token).ConfigureAwait(false);
+            }
             if (status == HttpStatusCode.BadRequest && body.ContainsKey("response_format") &&
                 text.Contains("response_format", StringComparison.OrdinalIgnoreCase))
             {
                 // e.g. LM Studio only accepts json_schema: retry once without it and remember
                 jsonFormatUnsupported = true;
                 Log.Warn($"provider '{cfg.Name}' does not support response_format json_object; continuing without it");
-                (status, text) = await SendAsync(BuildBody(cfg, req, allowJsonFormat: false), cts.Token).ConfigureAwait(false);
+                (status, text) = await SendAsync(BuildBody(cfg, req, allowJsonFormat: false, reasoningSwitch: !reasoningSwitchUnsupported), cts.Token).ConfigureAwait(false);
             }
             if ((int)status < 200 || (int)status > 299)
                 throw new HttpRequestException($"HTTP {(int)status}: {JsonUtil.Trim(JsonUtil.OneLine(text))}", null, status);

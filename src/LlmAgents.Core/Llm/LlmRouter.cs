@@ -25,6 +25,8 @@ public sealed class LlmRouter : IDisposable
         public ProviderConfig Config { get; }
         public ILlmProvider Provider { get; set; }
         public LlmGate Gate { get; }
+        /// <summary>Learned from replies that thought until maxOutputTokens ran out: later requests get at least this.</summary>
+        public int LearnedMinOutput;
         // health: guarded by `lock (this)`
         public DateTime PausedUntil;
         public int Failures;
@@ -132,7 +134,11 @@ public sealed class LlmRouter : IDisposable
     {
         globalGate.CarryOver(old.globalGate);
         foreach (var (name, e) in providers)
-            if (old.providers.TryGetValue(name, out var o)) e.Gate.CarryOver(o.Gate);
+            if (old.providers.TryGetValue(name, out var o))
+            {
+                e.Gate.CarryOver(o.Gate);
+                if (o.Config.Model == e.Config.Model) e.LearnedMinOutput = o.LearnedMinOutput;
+            }
     }
     public LlmGate? GateOf(string provider) => providers.TryGetValue(provider, out var e) ? e.Gate : null;
 
@@ -192,6 +198,8 @@ public sealed class LlmRouter : IDisposable
         return true;
     }
 
+    const int MaxLearnedOutput = 4096;
+
     readonly Dictionary<string, DateTime> contextWarned = new(StringComparer.OrdinalIgnoreCase);
 
     void WarnContext(string provider, int used, int ctx)
@@ -225,7 +233,7 @@ public sealed class LlmRouter : IDisposable
                 var e = providers[current.Provider];
                 try
                 {
-                    int maxOut = Math.Max(e.Config.MaxOutputTokens, minOutputTokens);
+                    int maxOut = Math.Max(Math.Max(e.Config.MaxOutputTokens, minOutputTokens), e.LearnedMinOutput);
                     var fitted = turns.ToList();
                     int ctx = e.Config.ContextLength;
                     int dropped = ContextGuard.Fit(system, fitted, tools, ctx, maxOut);
@@ -234,6 +242,18 @@ public sealed class LlmRouter : IDisposable
                     var started = utcNow();
                     var res = await e.Provider.CompleteAsync(req, ct).ConfigureAwait(false);
                     e.Gate.ReportTokens(res.InputTokens + res.OutputTokens);
+                    // the model kept thinking until the budget ran out and lost its calls: every later request gets more
+                    // room (one retry per reply was wasted each time before)
+                    if (res.Truncated && res.ToolCalls.Count == 0 && res.ReasoningTokens >= maxOut / 2 && maxOut < MaxLearnedOutput)
+                    {
+                        int learned = Math.Min(MaxLearnedOutput, maxOut * 2);
+                        if (learned > e.LearnedMinOutput)
+                        {
+                            e.LearnedMinOutput = learned;
+                            Log.Warn($"{current.Provider}: replies think past maxOutputTokens ({res.ReasoningTokens} reasoning tokens); requests now get up to {learned} " +
+                                     "(raise maxOutputTokens, or make thinking: off work for this server)");
+                        }
+                    }
                     if (ctx > 0 && res.InputTokens >= ContextGuard.WarnShare * ctx)
                         WarnContext(current.Provider, res.InputTokens, ctx);
                     lock (e) { e.Ok++; e.TotalSeconds += Math.Max(0, (utcNow() - started).TotalSeconds); }

@@ -82,9 +82,14 @@ internal sealed class AIObjectiveBurnFlora : AIObjective
 
         float reach = AIObjectiveFixLeak.CalculateReach(rt, character);
         var aimFrom = character.AnimController.AimSourceWorldPos;
-        var nearest = live.Select(t => (t.Flora, t.Branch, Pos: PositionOf(t.Flora, t.Branch)))
-            .OrderBy(x => Vector2.DistanceSquared(x.Pos, aimFrom)).First();
-        if (Vector2.Distance(nearest.Pos, aimFrom) <= reach)
+        // in reach AND nothing in between: a branch right below the floor is "in reach" too, and the bot welded the floor
+        var inReach = live.Select(t => (t.Flora, t.Branch, Pos: PositionOf(t.Flora, t.Branch)))
+            .Where(x => Vector2.Distance(x.Pos, aimFrom) <= reach)
+            .OrderBy(x => x.Branch.CurrentHull == character.CurrentHull ? 0 : 1)
+            .ThenBy(x => Vector2.DistanceSquared(x.Pos, aimFrom))
+            .Take(6).ToList();
+        var nearest = inReach.FirstOrDefault(x => ClearShot(aimFrom, x.Pos));
+        if (nearest.Branch != null)
         {
             RemoveSubObjective(ref goTo);
             Step = $"burning ballast flora in {(nearest.Branch.CurrentHull != null ? GameAdapter.RoomId(nearest.Branch.CurrentHull) : "?")}";
@@ -93,6 +98,7 @@ internal sealed class AIObjectiveBurnFlora : AIObjective
         }
 
         // walk: to the root if it can be reached (it kills the plant), else to the nearest branch
+        // walking on while branches in reach are only behind a wall: they are reached from their own room
         var candidates = live.Where(t => !unreachable.Contains(t.Branch)).ToList();
         if (candidates.Count == 0) { Fail("cannot reach the flora"); return; }
         var dest = candidates.FirstOrDefault(t => t.Branch.IsRoot);
@@ -108,7 +114,12 @@ internal sealed class AIObjectiveBurnFlora : AIObjective
                 UseDistanceRelativeToAimSourcePos = true,
                 CloseEnough = reach * 0.8f,
             },
-            onCompleted: () => RemoveSubObjective(ref goTo),
+            onCompleted: () =>
+            {
+                // there, but still no clear shot at it (it grows behind a wall): try another branch
+                if (!ClearShot(character.AnimController.AimSourceWorldPos, destPos)) unreachable.Add(target);
+                RemoveSubObjective(ref goTo);
+            },
             onAbandon: () => { unreachable.Add(target); RemoveSubObjective(ref goTo); });
     }
 
@@ -127,6 +138,16 @@ internal sealed class AIObjectiveBurnFlora : AIObjective
         if (friendInTheWay) return;
         character.SetInput(InputType.Shoot, false, true);
         rt.Use(deltaTime, character);
+    }
+
+    /// <summary>No wall, floor or door between the tool and the branch (the last bit is not checked: branches grow on walls).</summary>
+    bool ClearShot(Vector2 from, Vector2 to)
+    {
+        var dir = to - from;
+        float len = dir.Length();
+        if (len < 40f) return true;
+        var end = from + dir * ((len - 30f) / len);
+        return Submarine.PickBody(ConvertSim(from), ConvertSim(end), collisionCategory: Physics.CollisionWall) == null;
     }
 
     Vector2 ConvertSim(Vector2 world)

@@ -29,8 +29,11 @@ internal static class StoragePlanner
     public sealed record Choice(ItemContainer Container, int Score, string Why);
 
     /// <param name="exclude">containers not to use (the crate being emptied, ones that could not be reached)</param>
-    public static Choice? Choose(Character c, Item item, ICollection<Item> exclude)
+    /// <param name="origin">where distances are measured from (the crate being emptied: the same item goes to the same
+    /// place on every trip, however far the bot walked meanwhile); default the bot</param>
+    public static Choice? Choose(Character c, Item item, ICollection<Item> exclude, Vector2? origin = null)
     {
+        var from = origin ?? c.WorldPosition;
         var groups = GroupsOf(item.Prefab);
         Choice? best = null;
         float bestValue = float.MinValue;
@@ -49,7 +52,7 @@ internal static class StoragePlanner
             if (!same && !similar) preferred = item.Prefab.IsContainerPreferred(item, ic, out _, out secondary);
             if (ItemRules.StorageScore(same, similar, preferred, secondary, i.GetComponent<Pickable>() != null) is not { } s) continue;
 
-            float meters = Vector2.Distance(i.WorldPosition, c.WorldPosition) / UnitsPerMeter;
+            float meters = Vector2.Distance(i.WorldPosition, from) / UnitsPerMeter;
             float value = ItemRules.StorageValue(s.Score, meters);
             if (value > bestValue) { bestValue = value; best = new Choice(ic, s.Score, s.Why); }
         }

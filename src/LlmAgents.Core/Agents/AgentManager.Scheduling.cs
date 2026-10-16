@@ -64,6 +64,10 @@ public sealed partial class AgentManager
             catch (Exception e) { Log.Error($"[{agent.Name}] scheduling failed: {e}"); }
         }
 
+        // a player's message waits for the dispatcher: it gets the next free request, before the bots
+        // (with one request at a time the dispatcher otherwise waited behind them until it gave up)
+        if (holdForDispatch) return;
+
         // Most important first, then whoever has waited longest since their last decision.
         foreach (var c in candidates.OrderBy(c => c.Tier).ThenBy(c => c.Agent.LastRequestAt).ThenBy(c => c.Agent.Id))
         {

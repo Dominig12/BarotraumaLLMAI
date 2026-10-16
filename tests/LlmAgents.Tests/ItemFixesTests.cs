@@ -198,7 +198,7 @@ public class ItemPlanTests
         Assert.True(tokens.Count >= 3, string.Join(",", tokens));
         Assert.Equal(800, tokens[0]);
         Assert.Equal(1600, tokens[1]);   // the retry: twice the room
-        Assert.Equal(800, tokens[2]);    // back to normal once calls came through
+        Assert.Equal(1600, tokens[2]);   // the provider keeps the larger budget: it thinks that long every time
     }
     [Fact]
     public async Task AReplyCutOffAgainGetsMoreRoomAgain()

@@ -68,6 +68,7 @@ public static class Tools
     public const int MaxCraftAmount = 24;
     public const int MaxTakeCount = 8;
     public const int MaxMoveCount = 32;
+    public const int MaxDeconstructCount = 12;
 
     /// <summary>Vanilla order priorities: 1..3, 3 = most important.</summary>
     public const int TopPriority = 3;
@@ -141,7 +142,8 @@ public static class Tools
         SimpleOrder("wait", "Order to stand still here. Not for 'nothing to do' (that is carry_on)."),
         T("operate", "Take a free station and operate it.",
             OrderArgs(Arg("role", "Station", en: OperateRoles.ToArray()),
-                      Arg("option", "Optional mode: reactor powerup|shutdown; pumps pumpout|pumpin", required: false)),
+                      Arg("option", "Optional mode: reactor powerup|shutdown; pumps pumpout|pumpin; navigation navigatetodestination "
+                          + "(sail to the destination, the default)|navigateback (back to the start)|maintainposition (stop and hold here)", required: false)),
             ToolKind.Order, ToolGroup.Orders, c => c.Need(c.Str("role"), "role", v =>
             {
                 var role = v.ToLowerInvariant();
@@ -293,9 +295,12 @@ public static class Tools
                    Arg("salvage", "Deconstruct scrap for missing materials first", required: false, type: "boolean")),
             ToolKind.Task, ToolGroup.Crafting, c => c.Need(c.Str("item"), "item",
                 v => c.Game.Craft(c.Id, v, c.Int("amount", 1, 1, MaxCraftAmount), c.Bool("salvage") == true))) with { MovesOn = true },
-        T("deconstruct", "Break an item down in the deconstructor. 'all' with 'from' = everything there; 'marked' = what players marked.",
-            Schema(Arg("item", "Name, [id], 'all' or 'marked'"), Arg("from", "Optional container or room id", required: false)),
-            ToolKind.Task, ToolGroup.Crafting, c => c.Need(c.Str("item"), "item", v => c.Game.Deconstruct(c.Id, v, c.Str("from")))) with { MovesOn = true },
+        T("deconstruct", "Break items down in the deconstructor: count of the named item (default 1, so 'deconstruct 3 welding tools' = count 3); "
+            + "'all' with 'from' = everything there; 'marked' = what players marked.",
+            Schema(Arg("item", "Exact name, [id], 'all' or 'marked'"), Arg("from", "Optional container or room id", required: false),
+                   Arg("count", $"How many of that item, 1-{MaxDeconstructCount}, default 1", required: false, type: "integer")),
+            ToolKind.Task, ToolGroup.Crafting, c => c.Need(c.Str("item"), "item",
+                v => c.Game.Deconstruct(c.Id, v, c.Str("from"), c.Int("count", 0, 0, MaxDeconstructCount)))) with { MovesOn = true },
         T("treat", "Treat a wounded crew member (or 'me'). Without 'item' the cheapest good-enough medicine.",
             Schema(Arg("target", "Name or 'me'"), Arg("item", "Optional medicine", required: false)), ToolKind.Task, ToolGroup.Medical,
             c => c.Need(c.Str("target"), "target", v =>
