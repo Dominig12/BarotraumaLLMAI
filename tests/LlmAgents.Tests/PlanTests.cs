@@ -74,12 +74,13 @@ public class PlanTests
 
         game.Observations[1].Room = "Command Room [h11]";
         await Run(mgr, 2);
-        Assert.Equal("1:deconstruct all from locker", Actions()[^1]);
+        // the room was only on the way: its "stay here" order goes, then the next step
+        Assert.Equal(new[] { "1:end travel", "1:deconstruct all from locker" }, Actions().Skip(2));
         Assert.Single(seen);
 
         game.PendingReports.Add(new GameReport(1, "task 'deconstruct' ok: 5 items"));
         await Run(mgr, 2);
-        Assert.Equal("1:say Done", Actions()[3]);
+        Assert.Equal("1:say Done", Actions()[4]);
         // plan done: the bot thinks again and sees what happened along the way
         Assert.Equal(2, seen.Count);
         var results = seen.Last().Obs["lastActionResults"]!.AsArray().Select(x => x!.GetValue<string>()).ToList();

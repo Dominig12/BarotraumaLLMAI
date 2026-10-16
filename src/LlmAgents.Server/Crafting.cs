@@ -128,7 +128,7 @@ internal static class Crafting
         if (all.Count == 0) return (null, null, Fabricators(c).Count == 0 ? "error: no fabricator on this submarine" : "error: the fabricators here can make nothing");
         var stock = Stock(c);
         // best name match; among several recipes for the same item, the one with the fewest missing ingredients
-        var best = all.Select(t => (t.Fabricator, t.Recipe, score: ItemQueries.MatchScore(t.Recipe.TargetItem, query)))
+        var best = all.Select(t => (t.Fabricator, t.Recipe, score: ItemQueries.MatchScore(t.Recipe.TargetItem, query, kinds: false)))
             .Where(t => t.score > 0)
             .OrderByDescending(t => t.score)
             .ThenBy(t => Missing(t.Recipe, stock).Sum(m => m.Missing))

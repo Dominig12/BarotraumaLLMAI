@@ -378,6 +378,18 @@ public sealed class GameAdapter : IGameApi
         return Issue(c, order, $"ok, heading to {RoomId(hull)}", priority);
     }
 
+    /// <summary>
+    /// A go_to_room step was only the way to the next step: the bot's own "wait there" order goes, so it does not walk
+    /// back and stand in that room once the next task is done. Orders from players stay.
+    /// </summary>
+    public string EndTravel(int botId)
+    {
+        if (Find(botId) is not { } c) return "error: character gone";
+        var waits = c.CurrentOrders?.Where(o => o != null && o.Identifier == "wait" && IsOwn(c, o) && !IsPlayerOrder(c, o)).ToList() ?? new List<Order>();
+        foreach (var o in waits) DropOrder(c, o);
+        return waits.Count > 0 ? "ok, travel order dropped" : "ok";
+    }
+
     public string ComeTo(int botId, string targetName)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
@@ -439,20 +451,36 @@ public sealed class GameAdapter : IGameApi
         }
 
         Order order;
+        string station = "";
         if (match == null)
         {
             order = new Order(prefab, opt, targetEntity: null, targetItem: null, orderGiver: c);
         }
         else
         {
-            var item = Item.ItemList
+            var stations = Item.ItemList
                 .Where(i => i.Submarine == c.Submarine && !i.Removed && match(i))
                 .OrderBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition))
-                .FirstOrDefault();
-            if (item == null) return $"error: no {role} station on this submarine";
+                .ToList();
+            if (stations.Count == 0) return $"error: no {role} station on this submarine";
+            // The game dismisses the order of whoever was told to operate the same station before, so five bots told
+            // "man the guns" would keep pushing each other off one turret: take a free station, keep one already ours.
+            var mine = stations.FirstOrDefault(i => c.CurrentOrders?.Any(o => o != null && o.Identifier == orderId && o.TargetEntity == i) == true);
+            var item = mine ?? stations.FirstOrDefault(i => OperatorOf(c, orderId, i) == null);
+            if (item == null)
+            {
+                var busy = stations.Select(i => OperatorOf(c, orderId, i)).Where(x => x != null).Select(x => x!.Name).Distinct().ToList();
+                if (!HasAuthority(c))
+                    return stations.Count == 1
+                        ? $"error: {busy.FirstOrDefault()} already operates the {role}; do another job (or ask them with message_crew)"
+                        : $"error: all {stations.Count} {role} stations are taken ({string.Join(", ", busy)}); do another job";
+                item = stations[0];   // a player told this bot to: it takes over
+                station = $" (taking over from {OperatorOf(c, orderId, item)?.Name})";
+            }
+            if (stations.Count > 1) station = $": {item.Name}{(item.CurrentHull != null ? " in " + RoomId(item.CurrentHull) : "")}" + station;
             order = new Order(prefab, opt, item, prefab.GetTargetItemComponent(item), orderGiver: c);
         }
-        var r = Issue(c, order, $"ok, operating {role}{(opt.IsEmpty ? "" : " (" + opt.Value + ")")}", priority);
+        var r = Issue(c, order, $"ok, operating {role}{(opt.IsEmpty ? "" : " (" + opt.Value + ")")}{station}", priority);
         if (role == "reactor" && r.StartsWith("ok") && c.GetSkillLevel("electrical".ToIdentifier()) < 30)
             r += ". Note: with low electrical skill you will not refuel it; use refuel_reactor for that";
         return r;
@@ -574,6 +602,12 @@ public sealed class GameAdapter : IGameApi
         set.Add(Signature(order));
         return okText + (priority < CharacterInfo.HighestManualOrderPriority ? $" [p{priority}]" : "") + note;
     }
+
+    /// <summary>Someone else who has an order to operate that station, or a player using it right now.</summary>
+    static Character? OperatorOf(Character c, string orderId, Item station) =>
+        Character.CharacterList.FirstOrDefault(o => o != c && !o.IsDead && !o.Removed && o.TeamID == c.TeamID
+            && ((o.IsBot && o.CurrentOrders?.Any(x => x != null && x.Identifier == orderId && x.TargetEntity == station) == true)
+                || (o.IsPlayer && (o.SelectedItem == station || o.SelectedSecondaryItem == station))));
 
     /// <summary>Operating a station another bot was told to operate by a player would dismiss that bot's order (vanilla autodismiss).</summary>
     Character? OperatedByOrderOfPlayer(Character c, Order order)
@@ -725,13 +759,164 @@ public sealed class GameAdapter : IGameApi
         return ai != null;
     }
 
+    /// <summary>Items other bots' tasks are going for right now.</summary>
+    HashSet<Item> ClaimedByOthers(Character c) =>
+        tasks.Where(kv => kv.Key != c.ID).SelectMany(kv => kv.Value.Claimed).ToHashSet();
+
+    FindReplacement Replacer(Character c) => (failed, tried) => ItemQueries.Replacement(c, failed, tried, ClaimedByOthers(c));
+
+    string NotFound(Character c, string query)
+    {
+        var kinds = ItemWords.Groups(query);
+        return kinds.Count > 0
+            ? $"error: no {string.Join("/", kinds).ToLowerInvariant()} items available on the sub (everything is carried by someone or used up)"
+            : $"error: no '{query}' available; try inspect(kind='items', query='{query}') or a plainer word (e.g. 'suit', 'medical', 'ammo', 'tools')";
+    }
+
     public string Equip(int botId, string query)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
-        var item = ItemQueries.Find(c, query).FirstOrDefault();
-        if (item == null) return $"error: no '{query}' available; try inspect(kind='items', query='{query}')";
+        // "diving gear" to put on = the suit (a mask only when no suit is left)
+        var kinds = ItemWords.Groups(query);
+        Func<Item, bool>? filter = kinds.Count == 1 && kinds[0] == ItemGroup.DivingGear && ItemQueries.Find(c, "diving suit").Any()
+            ? i => i.HasTag(Tags.HeavyDivingGear) : null;
+        // already wearing something that fits ("diving suit" while in a combat suit): keep it, do not swap
+        var worn = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>())
+            .FirstOrDefault(i => c.HasEquippedItem(i) && (filter == null || filter(i)) && ItemQueries.MatchScore(i.Prefab, query) > 0);
+        if (worn != null) return $"ok ({worn.Name} is already equipped)";
+        var item = ItemQueries.Find(c, query, filter, ClaimedByOthers(c)).FirstOrDefault();
+        if (item == null) return NotFound(c, query);
         if (c.HasEquippedItem(item)) return $"ok ({item.Name} is already equipped)";
-        return StartTask(c, new EquipTask(c, ai, item), evenOverPlayerOrders: true);
+        return StartTask(c, new EquipTask(c, ai, item, Replacer(c)), evenOverPlayerOrders: true);
+    }
+
+    public const int MaxTake = 8;
+
+    static bool IsAll(string query) =>
+        query.Trim().ToLowerInvariant() is "all" or "everything" or "*" or "все" or "всё" or "everything in it" or "всё что есть" or "все что есть";
+
+    /// <summary>
+    /// Pick items up into the inventory. A kind of items ("medical") takes a mix, nearest first. With 'from' only items
+    /// in that container, room or the room of that crew member ("take the tools from here").
+    /// </summary>
+    public string TakeItem(int botId, string query, int count, string? from = null)
+    {
+        if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
+        count = Math.Clamp(count, 1, MaxTake);
+        var claimed = ClaimedByOthers(c);
+        bool all = IsAll(query);
+        List<Item> found;
+        string? where = null;
+        if (from != null)
+        {
+            var place = ItemsAt(c, from);
+            if (place == null) return $"error: no container, room or crew member '{from}'; use a room id from 'rooms', a container name (cabinet, locker...) or a name";
+            where = place.Value.Where;
+            found = place.Value.Items
+                .Where(i => ItemQueries.IsAvailableTo(i, c) && i.GetRootInventoryOwner() != c && !claimed.Contains(i))
+                .Select(i => (i, score: all ? 1 : ItemQueries.MatchScore(i.Prefab, query)))
+                .Where(t => t.score > 0)
+                .OrderByDescending(t => t.score)
+                .ThenBy(t => Vector2.DistanceSquared(t.i.WorldPosition, c.WorldPosition))
+                .Select(t => t.i).ToList();
+            if (found.Count == 0)
+                return $"error: no {(all ? "items you can take" : $"'{query}'")} in {where}" + Contents(place.Value.Items, c, " (there is: {0})");
+        }
+        else
+        {
+            if (all) return "error: 'all' needs 'from' (a container, a room or a crew member's name)";
+            // not what the bot already carries, not what others are going for
+            found = ItemQueries.Find(c, query, i => i.GetRootInventoryOwner() != c && !claimed.Contains(i));
+            if (found.Count == 0)
+                return ItemQueries.Find(c, query).Any(i => i.GetRootInventoryOwner() == c)
+                    ? $"ok (you already carry {query}; none left to take)"
+                    : NotFound(c, query);
+        }
+        List<Item> pick;
+        if (all || ItemQueries.IsKindQuery(query))
+        {
+            // a mix: one of each kind in turn (bandages, morphine, saline...), the nearest of each first
+            var byKind = found.GroupBy(i => i.Prefab).Select(g => new Queue<Item>(g)).ToList();
+            pick = new List<Item>();
+            while (pick.Count < count && byKind.Any(q => q.Count > 0))
+                foreach (var q in byKind)
+                    if (q.Count > 0 && pick.Count < count) pick.Add(q.Dequeue());
+        }
+        else
+        {
+            var best = found[0].Prefab;
+            pick = found.Where(i => i.Prefab == best).Take(count).ToList();
+        }
+        var label = (pick.Count == 1 ? pick[0].Name
+            : string.Join(", ", pick.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))) + (where != null ? $" from {where}" : "");
+        // with 'from' a replacement must come from the same place
+        var inPlace = where != null ? found.ToHashSet() : null;
+        FindReplacement replace = inPlace == null ? Replacer(c)
+            : (failed, tried) => inPlace.FirstOrDefault(i => i.Prefab == failed.Prefab && !tried.Contains(i) && i != failed && ItemQueries.IsAvailableTo(i, c) && i.GetRootInventoryOwner() != c);
+        var r = StartTask(c, new TakeItemsTask(c, ai, pick, label, replace), evenOverPlayerOrders: true);
+        return pick.Count < count && r.StartsWith("ok") && !all ? r + $"; only {pick.Count} found" : r;
+    }
+
+    /// <summary>Items in a container, a room (containers and floor) or the room a crew member is in.</summary>
+    (List<Item> Items, string Where)? ItemsAt(Character c, string from)
+    {
+        var f = from.Trim();
+        Hull? hull = null;
+        if (f.Contains("[h")) hull = ResolveRoom(f);
+        if (f.ToLowerInvariant() is "here" or "this room" or "здесь" or "тут" or "отсюда" or "сюда" or "эта комната" or "этот отсек")
+            hull = c.CurrentHull;
+        var person = hull == null && f.Length >= 3 ? FindCrew(f, c, includeSelf: true) : null;
+        if (person != null) hull = person.CurrentHull;
+        hull ??= ResolveRoom(f) ?? Hull.HullList.FirstOrDefault(h => h.Submarine == c.Submarine && f.Length >= 4
+                    && RoomId(h).StartsWith(f, StringComparison.OrdinalIgnoreCase));
+        if (hull != null)
+        {
+            // loose on the floor, or directly in a cabinet / locker / crate of that room (not inside a gun or a machine)
+            var items = Item.ItemList.Where(i => !i.Removed && i.GetRootInventoryOwner() is not Character
+                    && (i.Container == null ? i.ParentInventory == null && i.CurrentHull == hull
+                                            : i.Container.CurrentHull == hull && IsStorage(i.Container)))
+                .ToList();
+            return (items, person != null ? $"{RoomId(hull)} (where {person.Name} is)" : RoomId(hull));
+        }
+        var (containers, where) = ContainersAt(c, f);
+        if (containers.Count == 0) return null;
+        return (containers.SelectMany(ic => ic.Inventory.AllItems).ToList(), where);
+    }
+
+    /// <summary>
+    /// Cabinets, lockers, shelves, crates: not machines (fabricator, reactor, turret loaders...) and not the magazine of a
+    /// gun, the tank of a suit or the battery of a flashlight.
+    /// </summary>
+    static bool IsStorage(Item i)
+    {
+        var ic = i.GetComponent<ItemContainer>();
+        if (ic == null) return false;
+        if (i.GetComponent<Fabricator>() != null || i.GetComponent<Deconstructor>() != null || i.GetComponent<Reactor>() != null
+            || i.GetComponent<Turret>() != null || i.HasTag(TurretAmmoSource)) return false;
+        if (i.GetComponent<Pickable>() == null) return true;               // fixed to the wall or the floor
+        if (i.GetComponent<Wearable>() != null || i.GetComponent<RangedWeapon>() != null || i.GetComponent<MeleeWeapon>() != null
+            || i.GetComponent<RepairTool>() != null || i.GetComponent<LightComponent>() != null) return false;
+        return ic.Capacity >= 3;                                           // a crate or a toolbox
+    }
+
+    static readonly Identifier TurretAmmoSource = "turretammosource".ToIdentifier();
+
+    /// <summary>"in Электрика [h140]: Средний стальной шкаф: Отвертка x2, ...; on the floor: ..." (inspect of a place).</summary>
+    static string DescribePlace(List<Item> items, string where, Character c)
+    {
+        var free = items.Where(i => ItemQueries.IsAvailableTo(i, c)).ToList();
+        if (free.Count == 0) return $"in {where}: nothing you can take";
+        var parts = free.GroupBy(i => i.Container).OrderBy(g => g.Key == null ? 1 : 0).Take(5)
+            .Select(g => $"{(g.Key != null ? g.Key.Name : "on the floor")}: {Contents(g, c, max: 6)}");
+        return $"in {where}: {string.Join("; ", parts)}. take_item(item=..., from=\"{where.Split(" (where")[0]}\") takes them";
+    }
+
+    /// <summary>"Бинт x5, Морфин x2" for a list of items (what is in a cabinet or a room).</summary>
+    static string Contents(IEnumerable<Item> items, Character c, string format = "{0}", int max = 8)
+    {
+        var groups = items.Where(i => ItemQueries.IsAvailableTo(i, c)).GroupBy(i => i.Prefab)
+            .OrderByDescending(g => g.Count()).Take(max).Select(g => $"{ItemQueries.Label(g.Key)} x{g.Count()}").ToList();
+        return groups.Count == 0 ? (format == "{0}" ? "nothing you can take" : "") : string.Format(format, string.Join(", ", groups));
     }
 
     public string RefuelReactor(int botId)
@@ -795,7 +980,9 @@ public sealed class GameAdapter : IGameApi
         }
 
         if (all) return "error: 'all' needs 'from' (a container or room), so nothing important is broken down by accident";
-        var item = ItemQueries.Find(c, query, i => i.Prefab.DeconstructItems.Any() && i.Prefab.AllowDeconstruct && !c.HasEquippedItem(i)).FirstOrDefault();
+        // without 'from' the item must be named: "tools" or "medical" alone would break down whatever is nearest
+        // (with 'from', "инструменты из шкафа" is fine: only that cabinet)
+        var item = ItemQueries.Find(c, query, i => i.Prefab.DeconstructItems.Any() && i.Prefab.AllowDeconstruct && !c.HasEquippedItem(i), kinds: false).FirstOrDefault();
         if (item == null)
         {
             // maybe they named the material they want
@@ -890,18 +1077,25 @@ public sealed class GameAdapter : IGameApi
     public string MoveItem(int botId, string query, string to)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
-        var item = FindCarried(c, query) ?? ItemQueries.Find(c, query).FirstOrDefault();
-        if (item == null) return $"error: no '{query}' available";
-        if (item.HasTag(Tags.HeavyDivingGear) && c.HasEquippedItem(item) && GearLock.IsLocked(c) && !PlayerSaidSo(c))
-            return "error: your diving gear is locked (danger or keep_gear)";
+        // "to me" / "себе" / its own name: pick it up into the inventory
+        if (ItemWords.IsSelf(to, c.Name)) return TakeItem(botId, query, 1);
+
+        // what it carries first, but not the diving suit it has to keep on: then a spare one from the sub
+        bool Locked(Item i) => i.HasTag(Tags.HeavyDivingGear) && c.HasEquippedItem(i) && GearLock.IsLocked(c) && !PlayerSaidSo(c);
+        var carried = FindCarried(c, query);
+        var item = carried != null && !Locked(carried) ? carried
+            : ItemQueries.Find(c, query, i => i.GetRootInventoryOwner() != c, ClaimedByOthers(c)).FirstOrDefault();
+        if (item == null)
+            return carried != null ? "error: your diving gear is locked (danger or keep_gear) and there is no spare one aboard" : NotFound(c, query);
+        var replace = Replacer(c);
 
         // a crew member?
         var receiver = FindCrew(to, c, includeSelf: false);
-        if (receiver != null) return StartTask(c, new MoveItemTask(c, ai, item, null, null, receiver, receiver.Name));
+        if (receiver != null) return StartTask(c, new MoveItemTask(c, ai, item, null, null, receiver, receiver.Name, replace));
 
         // a room?
         var hull = to.Contains("[h") ? ResolveRoom(to) : null;
-        if (hull != null) return StartTask(c, new MoveItemTask(c, ai, item, null, hull, null, RoomId(hull)));
+        if (hull != null) return StartTask(c, new MoveItemTask(c, ai, item, null, hull, null, RoomId(hull), replace));
 
         // a container on the sub that accepts the item
         var container = Item.ItemList
@@ -912,11 +1106,11 @@ public sealed class GameAdapter : IGameApi
             .ThenBy(t => Vector2.DistanceSquared(t.i.WorldPosition, c.WorldPosition))
             .FirstOrDefault();
         if (container.ic != null)
-            return StartTask(c, new MoveItemTask(c, ai, item, container.ic, null, null, $"{container.i.Name} in {(container.i.CurrentHull != null ? RoomId(container.i.CurrentHull) : "?")}"));
+            return StartTask(c, new MoveItemTask(c, ai, item, container.ic, null, null, $"{container.i.Name} in {(container.i.CurrentHull != null ? RoomId(container.i.CurrentHull) : "?")}", replace));
 
         hull = ResolveRoom(to);
-        if (hull != null) return StartTask(c, new MoveItemTask(c, ai, item, null, hull, null, RoomId(hull)));
-        return $"error: '{to}' is not a crew member, a room id or a container that can hold {item.Name}";
+        if (hull != null) return StartTask(c, new MoveItemTask(c, ai, item, null, hull, null, RoomId(hull), replace));
+        return $"error: '{to}' is not a crew member, a room id or a container that can hold {item.Name} (to take it yourself: take_item)";
     }
 
     public string KeepGear(int botId, bool on)
@@ -953,9 +1147,15 @@ public sealed class GameAdapter : IGameApi
             }
             case "items":
             {
-                var found = ItemQueries.Find(c, query).Take(30).ToList();
-                if (found.Count == 0) return $"no '{query}' on the sub";
-                var groups = found.GroupBy(i => i.Prefab).Take(5).Select(g =>
+                // a room id, a container or a crew member's name: what is there ("what's in Электрика [h140]?")
+                bool placeFirst = query.Contains("[h") || ResolveRoom(query.Trim()) != null
+                    || (FindCrew(query.Trim(), c, includeSelf: true) != null && query.Trim().Length >= 3);
+                if (placeFirst && ItemsAt(c, query) is { } p0) return DescribePlace(p0.Items, p0.Where, c);
+                bool byKind = ItemQueries.IsKindQuery(query);
+                var found = ItemQueries.Find(c, query).Take(byKind ? 60 : 30).ToList();
+                if (found.Count == 0)
+                    return ItemsAt(c, query) is { } p1 ? DescribePlace(p1.Items, p1.Where, c) : $"no '{query}' on the sub (try a plainer word: 'tools', 'medical', 'ammo', 'suit', or a room id to see what is there)";
+                var groups = found.GroupBy(i => i.Prefab).Take(byKind ? 8 : 5).Select(g =>
                     $"{ItemQueries.Label(g.Key)}: " + string.Join(", ", g.GroupBy(i => ItemQueries.Where(i, c)).Take(4).Select(w => $"{w.Count()} {w.Key}")));
                 return string.Join("; ", groups);
             }

@@ -63,6 +63,7 @@ public sealed class FakeGame : IGameApi
         Observations[botId].Rooms.Any(r => r.Id == roomId) ? Act(botId, $"goto {roomId}{P(priority)}") : $"error: unknown room '{roomId}'";
     public string Follow(int botId, string targetName, int priority = Tools.TopPriority) => Act(botId, $"follow {targetName}{P(priority)}");
     public string ComeTo(int botId, string targetName) => Act(botId, $"come to {targetName}", "ok, started: come to " + targetName);
+    public string EndTravel(int botId) => Act(botId, "end travel");
     /// <summary>What SimpleOrder answers (e.g. "ok (already doing that)").</summary>
     public string SimpleOrderResult = "ok";
     public string SimpleOrder(int botId, string orderKey, int priority = Tools.TopPriority) => Act(botId, orderKey + P(priority), SimpleOrderResult);
@@ -82,6 +83,8 @@ public sealed class FakeGame : IGameApi
     public string Unequip(int botId, string item) => Act(botId, $"unequip {item}");
     public string Drop(int botId, string item) => Act(botId, $"drop {item}");
     public string MoveItem(int botId, string item, string to) => Act(botId, $"move {item} -> {to}", "ok, started");
+    public string TakeItem(int botId, string item, int count, string? from = null) =>
+        Act(botId, $"take {item} x{count}" + (from != null ? $" from {from}" : ""), "ok, started: take " + item);
     public string KeepGear(int botId, bool on) => Act(botId, $"keepgear {on}");
     public string Inspect(int botId, string kind, string query) => $"{kind} {query}: " + new string('x', 2000);
     public readonly Dictionary<int, bool> Control = new();

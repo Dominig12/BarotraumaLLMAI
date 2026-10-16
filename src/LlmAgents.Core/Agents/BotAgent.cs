@@ -53,6 +53,8 @@ public sealed class BotAgent
     /// <summary>After a failed request: not before this time.</summary>
     public double RetryNotBefore { get; set; } = double.NegativeInfinity;
     public int FailedRequests { get; set; }
+    /// <summary>After a reply cut off by the token limit (thinking models): the next request may use this many output tokens.</summary>
+    public int OutputBoost { get; set; }
 
     /// <summary>Things that happened since the last decision (see <see cref="EventKind"/>).</summary>
     public readonly List<AgentEvent> Events = new();
@@ -166,6 +168,12 @@ public sealed class BotAgent
     }
 
     public List<string> DrainPlayerOrders() => DrainOrders().Select(o => o.Text).ToList();
+
+    /// <summary>Who gave the orders still waiting (for "your order is waiting" notices).</summary>
+    public List<string> OrderSenders() => playerOrders.Select(o => o.From).Where(f => f != null).Select(f => f!).Distinct().ToList();
+
+    /// <summary>When the senders were last told that the orders wait for a free request.</summary>
+    public double LimitToldAt { get; set; } = double.NegativeInfinity;
 
     public void RecordResult(string line)
     {

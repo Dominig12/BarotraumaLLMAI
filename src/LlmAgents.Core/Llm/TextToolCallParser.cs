@@ -39,6 +39,11 @@ public static class TextToolCallParser
         ["continue"] = "carry_on",
         ["no_action"] = "carry_on",
         ["noop"] = "carry_on",
+        ["take"] = "take_item",
+        ["pick_up"] = "take_item",
+        ["pickup"] = "take_item",
+        ["grab"] = "take_item",
+        ["get_item"] = "take_item",
     };
 
     public static List<ToolCall> Parse(string? text, IReadOnlyList<ToolSpec> tools)

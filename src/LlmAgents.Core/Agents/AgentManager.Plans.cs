@@ -57,7 +57,8 @@ public sealed partial class AgentManager
     }
 
     /// <summary>Runs the plan's next steps until one has to be waited for (a task or walking to a room).</summary>
-    void Advance(BotAgent agent, double now)
+    /// <returns>false = a step failed (the bot was told and will think again), so the plan is not "done".</returns>
+    bool Advance(BotAgent agent, double now)
     {
         while (agent.Waiting == PlanWait.None && agent.Plan.Count > 0)
         {
@@ -72,7 +73,7 @@ public sealed partial class AgentManager
                     agent.AddEvent(EventKind.TaskFailed, $"the last step of your plan failed: {Tools.Clip(result, 160)}", now);
                     TellGoalOutcome(agent, false, result);
                 }
-                return;
+                return false;
             }
             if (TaskTools.Contains(step.Call.Name) && result.StartsWith("ok, started"))
             {
@@ -90,6 +91,7 @@ public sealed partial class AgentManager
                 agent.PlanHadWait = true;
             }
         }
+        return true;
     }
 
     void StopPlan(BotAgent agent, string why, double now)
@@ -169,6 +171,11 @@ public sealed partial class AgentManager
                            : current.StartsWith(target.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>Steps that take the bot somewhere else or give it other work (not talk, lookups or gear locks).</summary>
+    static bool MovesOn(string tool) =>
+        TaskTools.Contains(tool) || tool is "go_to_room" or "follow" or "operate" or "return_to_default"
+        || (Tools.SimpleOrders.ContainsKey(tool) && tool != "wait");
+
     /// <summary>go_to_room steps: go on with the plan once the bot is there.</summary>
     void CheckArrivals(double now)
     {
@@ -182,8 +189,10 @@ public sealed partial class AgentManager
                 var room = agent.WaitRoom;
                 agent.Waiting = PlanWait.None;
                 agent.WaitRoom = null;
-                Advance(agent, now);
-                if (!agent.Busy) PlanFinished(agent, $"arrived in {room}", now);
+                // the room was only on the way to the next job: its "stay here" order would pull the bot back
+                // there after the job and keep it from its other orders
+                if (agent.Plan.Any(s => MovesOn(s.Call.Name))) game.EndTravel(agent.Id);
+                if (Advance(agent, now) && !agent.Busy) PlanFinished(agent, $"arrived in {room}", now);
             }
             else if (now - agent.WaitingSince > Settings.Global.PlanStepTimeoutSeconds)
             {
@@ -218,8 +227,9 @@ public sealed partial class AgentManager
                     continue;
                 }
                 // next step right away; the model sees all results when it is asked next
-                if (agent.Plan.Count > 0) Advance(agent, now);
-                if (!agent.Busy) PlanFinished(agent, r.Text, now);
+                bool ok = agent.Plan.Count == 0 || Advance(agent, now);
+                if (ok && !agent.Busy) PlanFinished(agent, r.Text, now);
+                else if (!ok) agent.TaskTool = null;
                 continue;
             }
             // a task outside of the current plan (replaced by a newer decision): only a failure matters

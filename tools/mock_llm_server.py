@@ -115,6 +115,10 @@ def decide(obs: dict) -> list[dict]:
         crew = crew_names(obs)
         if "ко мне" in text or "сюда" in text or "come to me" in text:
             calls.append({"name": "come_to", "arguments": {"target": "Daniil"}})
+        elif any(w in text for w in ["возьми", "бери", "хватай", "take", "grab"]) and any(w in text for w in ["медикамент", "лекарств", "medic"]):
+            calls.append({"name": "take_item", "arguments": {"item": "medical", "count": 4}})
+            if "за мной" in text or "follow me" in text:
+                calls.append({"name": "follow", "arguments": {"target": "Daniil"}})
         elif any(w in text for w in ["леч", "heal", "treat", "перевяж"]):
             target = next((n for n in crew if latin(n.split()[0])[:3] in latin(text)), obs.get("name"))
             item = "bandage" if ("бинт" in text or "bandage" in text) else None

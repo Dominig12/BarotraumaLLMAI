@@ -27,6 +27,7 @@ public static class Tools
     public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipes", "recipe", "salvage" };
 
     public const int MaxCraftAmount = 10;
+    public const int MaxTakeCount = 8;
 
     /// <summary>Vanilla order priorities: 1..3, 3 = most important.</summary>
     public const int TopPriority = 3;
@@ -117,7 +118,7 @@ public static class Tools
 
         // ---- items and machinery (multi-step tasks; the result is reported in lastActionResults when done)
         new("equip", "Take an item from the sub (or your inventory) and equip / wear it, e.g. a diving suit, a weapon, a welding tool, a headset.",
-            Schema(("item", "string", "Item name or identifier, e.g. 'diving suit', 'harpoon gun', 'welding tool'", null, true))),
+            Schema(("item", "string", "Item name or [id], or a plain word, e.g. 'diving suit', 'harpoon gun', 'welding tool', 'weapon'", null, true))),
         new("refuel_reactor", "Bring a fuel rod to the reactor and load it (replaces a spent rod). Use when reactor fuel is low or the reactor is at 0%.",
             NoArgs()),
         new("craft", "Gather the ingredients and make an item at a fabricator (medicine, ammo, tools...). Do NOT guess names: first inspect(kind='recipes') to see what this sub can make, then use the exact name or [id] from that list. If materials are missing, the result says which scrap gives them; salvage=true breaks that scrap down in the deconstructor first and then crafts.",
@@ -134,14 +135,18 @@ public static class Tools
             Schema(("item", "string", "Item you wear or hold", null, true))),
         new("drop", "Drop an item from your inventory on the floor here.",
             Schema(("item", "string", "Item in your inventory", null, true))),
-        new("move_item", "Carry an item somewhere: into a container (cabinet, locker...), to a room (left on the floor), or hand it to a crew member.",
+        new("take_item", "Pick items up from the sub into your own inventory to carry them (not equipped): medicine for the wounded, spare tools, ammo, a spare suit for someone. A kind of items works too ('medical', 'ammo', 'tools', 'diving gear') and takes a mix.",
+            Schema(("item", "string", "Item name or [id], or a kind: 'medical', 'ammo', 'tools', 'weapons', 'diving gear', 'oxygen'", null, true),
+                   ("count", "integer", $"How many (1-{MaxTakeCount}, default 1)", null, false),
+                   ("from", "string", "Optional: where from - a container ('medical cabinet'), a room id, or a crew member's name (= the room they are in, for 'take these from here')", null, false))),
+        new("move_item", "Carry an item somewhere: into a container (cabinet, locker...), to a room (left on the floor), or hand it to a crew member. To keep it yourself use take_item.",
             Schema(("item", "string", "Item to carry (yours or one on the sub)", null, true),
                    ("to", "string", "A container name (e.g. 'medical cabinet', 'locker'), a room id from 'rooms', or a crew member name", null, true))),
         new("keep_gear", "Lock or unlock your diving gear. While locked you never take the diving suit/mask off by yourself, even in dry rooms. Turn it on before or during combat and whenever the hull may be breached.",
             Schema(("on", "boolean", "true = keep it on, false = normal behaviour", null, true))),
-        new("inspect", "Look something up; the answer appears in lastActionResults next turn. kind: patient (injuries and suitable medicine; no query = everyone hurt), items (where items are and how many), recipes (what the fabricators here can make, what can be made right now; query = optional filter like 'medical', 'ammo', or a material), recipe (one item: ingredients, what is missing and where to get it), salvage (query = a material: which items aboard break down into it; query = an item: what it breaks down into; no query = scrap aboard).",
+        new("inspect", "Look something up; the answer appears in lastActionResults next turn. kind: patient (injuries and suitable medicine; no query = everyone hurt), items (where items are and how many; query = a room id or a crew member's name: what is in that room), recipes (what the fabricators here can make, what can be made right now; query = optional filter like 'medical', 'ammo', or a material), recipe (one item: ingredients, what is missing and where to get it), salvage (query = a material: which items aboard break down into it; query = an item: what it breaks down into; no query = scrap aboard).",
             Schema(("kind", "string", "What to look up", InspectKinds.ToArray(), true),
-                   ("query", "string", "Crew member (patient), item (items, recipe, salvage), material (salvage), or filter (recipes); optional for patient, recipes, salvage", null, false))),
+                   ("query", "string", "Crew member (patient), item or room (items), item (recipe, salvage), material (salvage), or filter (recipes); optional for patient, recipes, salvage", null, false))),
     };
 
     public static IReadOnlyList<ToolSpec> Filtered(ICollection<string> allowed) => For(allowed, aiControl: true);
@@ -304,6 +309,13 @@ public static class Tools
                     return Need(Str(a, "item"), "item", v => game.Unequip(agent.Id, v));
                 case "drop":
                     return Need(Str(a, "item"), "item", v => game.Drop(agent.Id, v));
+                case "take_item":
+                    return Need(Str(a, "item"), "item", v =>
+                    {
+                        int count = int.TryParse(Str(a, "count") ?? Str(a, "amount"), out var n) ? n : 1;
+                        var from = Str(a, "from");
+                        return game.TakeItem(agent.Id, v, Math.Clamp(count, 1, MaxTakeCount), string.IsNullOrWhiteSpace(from) ? null : from);
+                    });
                 case "move_item":
                 {
                     var item = Str(a, "item");

@@ -69,7 +69,17 @@ public sealed partial class AgentManager
             if (!router.TryReserve(ProviderFor(c.Agent), out var reservation, out var why, priority: c.Tier == 0))
             {
                 // every slot is busy or a budget is spent: the events stay, try again next tick
-                if (why.Contains("budget") || why.Contains("limit")) c.Agent.RetryNotBefore = now + Settings.Global.RetrySeconds;
+                if (why.Contains("budget") || why.Contains("limit"))
+                {
+                    c.Agent.RetryNotBefore = now + Settings.Global.RetrySeconds;
+                    // an order that has to wait: say so, instead of leaving the player wondering
+                    if (c.Tier == 0 && now - c.Agent.LimitToldAt > 30)
+                    {
+                        c.Agent.LimitToldAt = now;
+                        foreach (var from in c.Agent.OrderSenders())
+                            Tell(from, $"{c.Agent.Name}: приказ ждёт, лимит запросов к модели ({why}). Пока бот действует как обычно.");
+                    }
+                }
                 continue;
             }
             try
@@ -219,6 +229,7 @@ public sealed partial class AgentManager
         var tools = Tools.For(Settings.Bots.AllowedTools, agent.AiControl, MemoryOn);
         var token = cts.Token;
         var r0 = router;
+        int boost = agent.OutputBoost;
         CountRequest();
 
         if (g.LogPrompts) Log.Info($"[{agent.Name}] -> {reservation.Provider}: {user}");
@@ -228,7 +239,7 @@ public sealed partial class AgentManager
             RouteResult r;
             try
             {
-                r = await r0.CompleteAsync(reservation, system, history, tools, token).ConfigureAwait(false);
+                r = await r0.CompleteAsync(reservation, system, history, tools, token, boost).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { return; }
             catch (Exception e)
@@ -288,6 +299,17 @@ public sealed partial class AgentManager
             agent.RecordResult("warning: your last reply was too long and got cut off, so part of it was lost. Use fewer and shorter calls (short say texts).");
             WarnTruncated(r.Provider, r.Response);
         }
+        // a thinking model used the whole budget before writing its calls: the retry gets twice the room (up to 4096)
+        var limit = Settings.Providers.FirstOrDefault(p => p.Name.Equals(r.Provider, StringComparison.OrdinalIgnoreCase))?.MaxOutputTokens ?? 0;
+        bool boosted = false;
+        if (calls.Count == 0 && (r.Response.Truncated || (limit > 0 && r.Response.OutputTokens >= limit * 0.9)))
+        {
+            int next = Math.Min(MaxOutputBoost, Math.Max(limit, agent.OutputBoost) * 2);
+            boosted = next > Math.Max(limit, agent.OutputBoost);
+            if (boosted) Log.Info($"[{agent.Name}] the reply ran out of output tokens; the retry may use up to {next}");
+            agent.OutputBoost = next;
+        }
+        else if (calls.Count > 0) agent.OutputBoost = 0;
         // Only canonical calls go into the history: raw broken replies would teach the model to keep writing them.
         var summary = calls.Count == 0 ? "(no tool call)" : string.Join("; ", calls.Select(c => $"{c.Name}({Tools.ArgsToString(c)})"));
         // Past turns are kept short: what happened then and what the bot did, not the whole old observation.
@@ -304,7 +326,8 @@ public sealed partial class AgentManager
             if (!string.IsNullOrWhiteSpace(r.Response.Text))
                 Log.Warn($"[{agent.Name}] reply had no recognizable tool call ({r.Provider}); if this repeats, set \"toolMode\": \"prompt\" for this provider. Reply: {Tools.Clip(JsonUtil.OneLine(r.Response.Text), 300)}");
             // what made the bot think must not be lost to one broken (or cut off) reply: ask once more
-            if (!req.IsRetry && !req.HeartbeatOnly)
+            // (and again while a cut-off reply can still get more room)
+            if ((!req.IsRetry || boosted) && !req.HeartbeatOnly)
             {
                 agent.Restore(Array.Empty<string>(), Array.Empty<string>(), req.Orders, req.Events);
                 agent.AddEvent(EventKind.Retry, "your last reply could not be used: answer again, with tool calls only", now);
@@ -337,6 +360,8 @@ public sealed partial class AgentManager
         }
     }
 
+    const int MaxOutputBoost = 4096;
+
     readonly System.Collections.Concurrent.ConcurrentDictionary<string, double> truncatedWarnedAt = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Says once a minute per provider that replies hit maxOutputTokens, and what to do.</summary>
@@ -349,7 +374,7 @@ public sealed partial class AgentManager
         var limit = cfg?.MaxOutputTokens.ToString() ?? "?";
         Log.Warn($"reply from '{provider}' was cut off at maxOutputTokens={limit} ({res.OutputTokens} output tokens" +
                  (res.ReasoningTokens > 0 ? $", {res.ReasoningTokens} of them spent on reasoning" : "") +
-                 $"): calls were lost. Raise maxOutputTokens for '{provider}' (Models tab, e.g. 800-1500)" +
+                 $"): calls were lost. Raise maxOutputTokens for '{provider}' (Models tab, e.g. {Math.Max(1500, (cfg?.MaxOutputTokens ?? 800) * 2)})" +
                  (res.ReasoningTokens > 0 || res.OutputTokens >= (cfg?.MaxOutputTokens ?? int.MaxValue) && res.ToolCalls.Count == 0
                      ? ", or turn the model's reasoning off (thinking: off; for some servers extraBody, e.g. {\"reasoning\": {\"enabled\": false}})" : "") + ".");
     }

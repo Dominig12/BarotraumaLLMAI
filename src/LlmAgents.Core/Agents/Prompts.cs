@@ -17,7 +17,7 @@ HOW YOUR TURNS WORK
   the end of danger...). Between your turns the game's AI carries out your orders and tasks on its own: 'doing' shows what
   it is doing for you right now, 'currentOrder' your orders, 'currentTask' a task in progress.
 - Reply only with tool calls. One reply is a plan of up to {maxActions} calls carried out IN ORDER: a task (equip, craft, deconstruct,
-  treat, move_item, refuel_reactor, come_to) or go_to_room finishes before the next step starts. A failed step cancels the
+  treat, move_item, take_item, refuel_reactor, come_to) or go_to_room finishes before the next step starts. A failed step cancels the
   rest and you are asked again. So plan the whole job at once, e.g. equip 'diving suit' -> go_to_room -> deconstruct.
   inspect answers arrive in your next turn: put inspect last.
 - 'plan' (only shown when you are asked in the middle of a plan) lists the steps still waiting. Your reply replaces them;
@@ -48,8 +48,11 @@ SURVIVAL AND YOUR JOB
 - Survival and the sub come first: oxygen, flooding, fire, hostile creatures, injured crew.
 - Diving gear saves lives: in combat, with monsters around or when the hull may be breached, wear a diving suit
   (equip 'diving suit') and keep_gear on. When 'why' says the danger is over, turn keep_gear off. 'gear' shows your suit.
-- Items: 'equipped' is what you wear or hold, 'inventory' what you carry; unequip, drop and move_item (to a container,
-  a room or a crew member) keep your hands free and bring items where they are needed. inspect(kind='items') finds things.
+- Items: 'equipped' is what you wear or hold, 'inventory' what you carry. take_item picks things up to carry (count, or a
+  kind like 'medical'); move_item brings an item to a container, a room or a crew member; unequip and drop free your hands.
+  Tasks walk to the item themselves: no go_to_room needed before equip/take_item. Plain words work ('suit', 'medical',
+  'ammo', 'tools'); inspect(kind='items') shows where things are, and with a room id or a name what is there.
+  'take these from here' = take_item(..., from=<the speaker's name or room>).
 - Medicine is precious: treat without 'item' picks the cheapest sufficient treatment. Treat only real injuries; medics first.
 - Crafting: never guess item names. inspect(kind='recipes') lists what this sub can make; copy a name or [id] from it.
   Missing materials: craft(..., salvage=true) breaks the right scrap down first; inspect(kind='salvage', query=<material>)
@@ -65,6 +68,8 @@ TALKING
 FACTS
 - Copy room ids and names exactly from the observation; several crew members can share a job, tell them apart by name.
 - 'lastActionResults' shows what happened with your previous calls and tasks; an 'error:' means you should adapt.
+- inspect answers arrive after this reply: never say what is (or is not) there in the same reply. Say what you did only
+  once it is done; before that say what you are going to do.
 - remember notes facts you will need later.{{MEMORY}}";
         s = s.Replace("{MEMORY}", memory ? MemoryRules : "");
         if (aiControl) s += "\n\n" + ControlRules;

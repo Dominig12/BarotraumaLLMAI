@@ -18,7 +18,8 @@ using LlmAgents.Llm;
 // and player chat orders at t=14s ("Механики, откачайте воду насосами"), t=28s ("Анна, иди в медотсек"),
 // t=33s ("Всем надеть водолазные костюмы, идёт бой"), t=40s ("Анна, вылечи Макса, только бинтами"), t=44s ("Ольга, перезаряди реактор"),
 // t=47s ("Механики, приоритет: сначала тушить пожар, потом течи") and at t=50s the player gives Ivan the "Full AI control" order.
-// Also: t=5s "Все ко мне" (come_to), t=55s a command-menu order for Oleg (fix leaks), t=58s "Скрафтите гарпун" (one crafter).
+// Also: t=5s "Все ко мне" (come_to), t=55s a command-menu order for Oleg (fix leaks), t=58s "Скрафтите гарпун" (one crafter),
+// t=62s "Медик, возьми медикаменты и за мной" (take_item, then follow).
 // Bots think only on events (autonomy "events"): watch "why" in the log and the request count at the end.
 // At the end every bot writes a round summary into its long-term memory (sim_memory/sim.json by default).
 // Characters come from sim_memory/personas.json (created with a few examples). Console lines starting with "!llm"
@@ -77,12 +78,15 @@ if (newPersonas)
     personas.SetCharacter("Oleg Sidorov", preset: "coward");
     personas.Save();
 }
-using var mgr = new AgentManager(settings, world, new LlmRouter(settings), () => SimClock.Now, memory, personas);
+// limits per minute count simulated time, so --speed does not use them up faster than a real round would
+var simStart = DateTime.UtcNow;
+DateTime SimUtc() => simStart.AddSeconds(SimClock.Now);
+using var mgr = new AgentManager(settings, world, new LlmRouter(settings, null, SimUtc), () => SimClock.Now, memory, personas);
 mgr.BeginRound("sim");
 // in the sim the settings file is never written: commands change a copy in memory
 var simEditor = new LlmAgents.SettingsUi.ConfigEditor(editor.ToJson());
 var settingsService = new LlmAgents.SettingsUi.SettingsService(simEditor, personas,
-    (s, providersChanged) => mgr.ApplySettings(ApplySimOverrides(s), providersChanged ? new LlmRouter(s) : null),
+    (s, providersChanged) => mgr.ApplySettings(ApplySimOverrides(s), providersChanged ? new LlmRouter(s, null, SimUtc) : null),
     () => new LlmAgents.SettingsUi.GameInfo(
         world.GetBots().Select(b => new LlmAgents.SettingsUi.CrewEntry(b.Name, b.Job, b.Trait, false)).ToList(),
         new[] { "captain", "engineer", "mechanic", "medicaldoctor", "assistant", "securityofficer" }),
@@ -111,6 +115,7 @@ if (scriptedChat)
     script.Add((44, "Ольга, перезаряди реактор"));
     script.Add((47, "Механики, приоритет: сначала тушить пожар, потом течи"));
     script.Add((58, "Скрафтите гарпун"));
+    script.Add((62, "Медик, возьми медикаменты и за мной"));
 
 }
 
@@ -281,6 +286,14 @@ sealed class SimWorld : IGameApi
         return Do(botId, $"come to {targetName}") + ", started: come to " + targetName;
     }
 
+    public string EndTravel(int botId)
+    {
+        var b = B(botId);
+        int before = b.Orders.Count;
+        b.Orders.RemoveAll(o => o.Id == "wait");
+        return before != b.Orders.Count ? Do(botId, "drop travel order") : "ok";
+    }
+
     public readonly List<string> Notices = new();
     public void NotifyPlayer(string playerName, string text)
     {
@@ -301,6 +314,8 @@ sealed class SimWorld : IGameApi
     public string Follow(int botId, string targetName, int priority = Tools.TopPriority)
     {
         var t = bots.FirstOrDefault(b => b.Name.Contains(targetName, StringComparison.OrdinalIgnoreCase));
+        // the player (Daniil) stands in the command room
+        if (t == null && targetName.Contains("Daniil", StringComparison.OrdinalIgnoreCase)) return Order(botId, "follow", priority, "Command Room [h1]");
         return t == null ? $"error: no crew member '{targetName}'" : Order(botId, "follow", priority, t.Room);
     }
 
@@ -355,6 +370,7 @@ sealed class SimWorld : IGameApi
     public string Unequip(int botId, string item) => Do(botId, $"unequip {item}");
     public string Drop(int botId, string item) => Do(botId, $"drop {item}");
     public string MoveItem(int botId, string item, string to) { Report(botId, $"task 'move {item}' ok: delivered to {to}", 5); Do(botId, $"move {item} -> {to}"); return Started("move " + item); }
+    public string TakeItem(int botId, string item, int count, string? from = null) { Report(botId, $"task 'take {item}' ok: took {item} x{count} (in your inventory now)", 4); Do(botId, $"take {item} x{count}"); return Started("take " + item); }
     public string KeepGear(int botId, bool on) => Do(botId, on ? "keep gear ON" : "keep gear off");
     public string Inspect(int botId, string kind, string query) => kind switch
     {

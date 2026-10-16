@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using Barotrauma;
 using Barotrauma.Items.Components;
+using LlmAgents.Agents;
 using Microsoft.Xna.Framework;
 
 namespace LlmAgents;
@@ -18,20 +19,57 @@ internal static class ItemQueries
     public static string Label(Item i) => $"{i.Name} [{i.Prefab.Identifier}]";
     public static string Label(ItemPrefab p) => $"{p.Name.Value} [{p.Identifier}]";
 
-    /// <summary>0 = no match, higher = better (exact identifier / name beats substring).</summary>
-    public static int MatchScore(ItemPrefab p, string query)
+    /// <summary>
+    /// 0 = no match, higher = better (exact identifier / name beats substring). Plain words work too: other word forms
+    /// ("скафандры"), a copied "Name [id]", and kinds of items ("медикаменты", "оружие", "водолазный костюм").
+    /// </summary>
+    /// <param name="kinds">false = the query must name the item itself (crafting and deconstructing: "medical" must not
+    /// pick some medicine to make or break down).</param>
+    public static int MatchScore(ItemPrefab p, string query, bool kinds = true)
     {
         var q = Norm(query);
         if (q.Length == 0) return 0;
         var id = Norm(p.Identifier.Value);
+        if (ItemWords.BracketId(query) is { } bracket && Norm(bracket) == id) return 3;
         var name = Norm(p.Name.Value);
-        var en = Crafting.EnglishName(p) is { } e ? Norm(e) : "";
+        var enName = Crafting.EnglishName(p);
+        var en = enName != null ? Norm(enName) : "";
         if (id == q || name == q || en == q) return 3;
         if (id.Contains(q) || name.Contains(q) || (en.Length > 0 && en.Contains(q))) return 2;
         if (q.Length >= 4 && (q.Contains(id) || q.Contains(name) || (en.Length > 0 && q.Contains(en)))) return 1;
         if (p.Tags.Any(t => t.Value.Equals(query.Trim(), StringComparison.OrdinalIgnoreCase))) return 1;
+        if (ItemWords.WordsMatch(query, new[] { p.Name.Value, enName, p.Identifier.Value })) return 1;
+        if (!kinds) return 0;
+        var groups = ItemWords.Groups(query);
+        if (groups.Count > 0 && groups.Any(g => InGroup(p, g))) return 1;
         return 0;
     }
+
+    public static bool InGroup(ItemPrefab p, ItemGroup g) => g switch
+    {
+        ItemGroup.Weapon => (p.Tags.Contains(Tags.Weapon) || p.Category.HasFlag(MapEntityCategory.Weapon)) && !IsAmmo(p),
+        ItemGroup.Ammo => IsAmmo(p),
+        ItemGroup.Medical => p.Tags.Contains(Tags.MedicalItem) || p.Category.HasFlag(MapEntityCategory.Medical),
+        ItemGroup.Tool => p.Tags.Contains(Tags.ToolItem),
+        ItemGroup.DivingGear => p.Tags.Contains(Tags.HeavyDivingGear) || p.Tags.Contains(Tags.LightDivingGear),
+        ItemGroup.DivingSuit => p.Tags.Contains(Tags.HeavyDivingGear),
+        ItemGroup.DivingMask => p.Tags.Contains(Tags.LightDivingGear),
+        ItemGroup.Oxygen => p.Tags.Contains(Tags.OxygenSource),
+        ItemGroup.ReactorFuel => p.Tags.Contains(Tags.ReactorFuel),
+        ItemGroup.Extinguisher => p.Tags.Contains(Tags.FireExtinguisher),
+        ItemGroup.Battery => p.Tags.Contains(Tags.MobileBattery),
+        ItemGroup.Material => p.Category.HasFlag(MapEntityCategory.Material),
+        _ => false,
+    };
+
+    static readonly string[] AmmoWords = { "ammo", "round", "bullet", "shell", "magazine", "spear", "dart", "cartridge" };
+
+    static bool IsAmmo(ItemPrefab p) =>
+        p.Tags.Any(t => t.Value.Contains("ammo", StringComparison.OrdinalIgnoreCase))
+        || AmmoWords.Any(w => p.Identifier.Value.Contains(w, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The query names a kind of items, not one item ("медикаменты", "ammo").</summary>
+    public static bool IsKindQuery(string query) => ItemWords.Groups(query).Count > 0;
 
     /// <summary>Items the bot may take: in its own inventory, or anywhere on its sub that is not on another character or built in.</summary>
     public static bool IsAvailableTo(Item i, Character c)
@@ -48,19 +86,36 @@ internal static class ItemQueries
 
     public static IEnumerable<Item> Available(Character c) => Item.ItemList.Where(i => IsAvailableTo(i, c));
 
-    /// <summary>Best matching available items, own inventory first, then by distance.</summary>
-    public static List<Item> Find(Character c, string query, Func<Item, bool>? filter = null)
+    /// <summary>
+    /// Best matching available items, own inventory first, then by distance. Items another bot is already going for
+    /// (<paramref name="avoid"/>) come after the free ones, so two bots do not run for the same diving suit.
+    /// </summary>
+    public static List<Item> Find(Character c, string query, Func<Item, bool>? filter = null, ICollection<Item>? avoid = null, bool kinds = true)
     {
+        var scores = new Dictionary<ItemPrefab, int>();
         return Available(c)
             .Where(i => filter == null || filter(i))
-            .Select(i => (i, score: MatchScore(i.Prefab, query)))
+            .Select(i =>
+            {
+                if (!scores.TryGetValue(i.Prefab, out var s)) scores[i.Prefab] = s = MatchScore(i.Prefab, query, kinds);
+                return (i, score: s);
+            })
             .Where(t => t.score > 0)
             .OrderByDescending(t => t.score)
             .ThenBy(t => t.i.GetRootInventoryOwner() == c ? 0 : 1)
+            .ThenBy(t => avoid != null && avoid.Contains(t.i) ? 1 : 0)
             .ThenBy(t => Vector2.DistanceSquared(t.i.WorldPosition, c.WorldPosition))
             .Select(t => t.i)
             .ToList();
     }
+
+    /// <summary>Another item of the same kind for a task whose item was taken by someone else or could not be reached.</summary>
+    public static Item? Replacement(Character c, Item failed, ICollection<Item> tried, ICollection<Item>? avoid = null) =>
+        Available(c)
+            .Where(i => i.Prefab == failed.Prefab && i != failed && !tried.Contains(i) && i.GetRootInventoryOwner() != c)
+            .OrderBy(i => avoid != null && avoid.Contains(i) ? 1 : 0)
+            .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition))
+            .FirstOrDefault();
 
     public static string Where(Item i, Character c)
     {

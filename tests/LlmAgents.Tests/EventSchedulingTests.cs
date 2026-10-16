@@ -314,6 +314,24 @@ public class EventSchedulingTests
     }
 
     [Fact]
+    public async Task AnOrderThatWaitsForTheLimitIsReportedToTheSender()
+    {
+        for (int i = 1; i <= 5; i++) game.AddBot(i, "Bot" + i, "mechanic");
+        var mgr = Create(s => { s.Bots.Autonomy = "always"; s.Global.DecisionIntervalSeconds = 5; s.Global.IdleBackoff = false; },
+            global: @", ""requestsPerMinute"": 3");
+        await Run(mgr, 20);      // the whole minute is used up
+        int before = seen.Count;
+        mgr.GetAgent(3)!.ReceivePlayerOrder("Daniil: weld", from: "Daniil");
+        await Run(mgr, 5);
+        Assert.Equal(before, seen.Count);
+        var notes = game.Notices.Where(x => x.Text.Contains("приказ ждёт")).ToList();
+        Assert.Single(notes);    // once, not every tick
+        Assert.Equal("Daniil", notes[0].Player);
+        await Run(mgr, 60);      // the limit frees up: the order goes through
+        Assert.Contains(seen, r => r.User.Contains("NEW ORDER"));
+    }
+
+    [Fact]
     public void RequestsAreCounted()
     {
         game.AddBot(1, "Ann", "mechanic");

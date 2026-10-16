@@ -40,6 +40,8 @@ public interface IGameApi
     string Follow(int botId, string targetName, int priority = Tools.TopPriority);
     /// <summary>Task: walk to the person's current position, stay with them for a while, done. ("come to me")</summary>
     string ComeTo(int botId, string targetName);
+    /// <summary>A go_to_room step was only on the way to the next step: drop the bot's own "stay in that room" order.</summary>
+    string EndTravel(int botId);
 
     /// <summary>orderKey is one of <see cref="Tools.SimpleOrders"/> keys.</summary>
     string SimpleOrder(int botId, string orderKey, int priority = Tools.TopPriority);
@@ -69,8 +71,13 @@ public interface IGameApi
     /// <summary>Move a worn/held item into the bot's own inventory.</summary>
     string Unequip(int botId, string item);
     string Drop(int botId, string item);
-    /// <summary>to = container name, room id, or crew member name. Multi-step task.</summary>
+    /// <summary>to = container name, room id, or crew member name ("me" = take it). Multi-step task.</summary>
     string MoveItem(int botId, string item, string to);
+    /// <summary>
+    /// Pick up to <paramref name="count"/> matching items into the inventory; a kind ("medical") takes a mix. Multi-step task.
+    /// from = a container, a room or a crew member (the room they are in); null = anywhere, nearest first.
+    /// </summary>
+    string TakeItem(int botId, string item, int count, string? from = null);
     /// <summary>While on, the bot never takes its diving gear off by itself (except when its suit runs out of air).</summary>
     string KeepGear(int botId, bool on);
 

@@ -187,8 +187,10 @@ public sealed class LlmRouter : IDisposable
     /// Runs the request on the reserved provider; on error tries the fallback provider (if it has a free slot).
     /// Always releases the reservation.
     /// </summary>
+    /// <param name="minOutputTokens">At least this many output tokens (a retry after a reply that was cut off).</param>
     public async Task<RouteResult> CompleteAsync(
-        Reservation reservation, string system, IReadOnlyList<LlmTurn> turns, IReadOnlyList<ToolSpec> tools, CancellationToken ct)
+        Reservation reservation, string system, IReadOnlyList<LlmTurn> turns, IReadOnlyList<ToolSpec> tools, CancellationToken ct,
+        int minOutputTokens = 0)
     {
         var current = reservation;
         var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -201,7 +203,7 @@ public sealed class LlmRouter : IDisposable
                 var e = providers[current.Provider];
                 try
                 {
-                    var req = new LlmRequest(system, turns, tools, e.Config.MaxOutputTokens, e.Config.Temperature);
+                    var req = new LlmRequest(system, turns, tools, Math.Max(e.Config.MaxOutputTokens, minOutputTokens), e.Config.Temperature);
                     var started = utcNow();
                     var res = await e.Provider.CompleteAsync(req, ct).ConfigureAwait(false);
                     e.Gate.ReportTokens(res.InputTokens + res.OutputTokens);

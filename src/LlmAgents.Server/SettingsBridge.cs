@@ -36,6 +36,8 @@ internal sealed class SettingsBridge
         return c.HasPermission(ClientPermissions.ManageSettings);
     }
 
+    readonly System.Collections.Generic.Dictionary<string, DateTime> lastLogged = new();
+
     void OnMessage(IReadMessage msg, Client client)
     {
         try
@@ -45,7 +47,11 @@ internal sealed class SettingsBridge
             var request = msg.ReadString();
             var reply = svc.HandleJson(request, CanEdit(client));
             Send(client, reply);
-            Log.Info($"settings window: request from {client.Name} ({(CanEdit(client) ? "allowed" : "denied")})");
+            // the open window refreshes its status several times a second: log the opening, not every refresh
+            var now = DateTime.UtcNow;
+            if (!lastLogged.TryGetValue(client.Name, out var at) || (now - at).TotalSeconds > 60)
+                Log.Info($"settings window: requests from {client.Name} ({(CanEdit(client) ? "allowed" : "denied")})");
+            lastLogged[client.Name] = now;
         }
         catch (Exception e)
         {

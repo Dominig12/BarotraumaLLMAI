@@ -34,6 +34,9 @@ internal abstract class BotTask
 
     public string Describe() => $"{Name}: {Step}";
 
+    /// <summary>Items this task is going for, so other bots pick different ones.</summary>
+    public virtual IEnumerable<Item> Claimed => Enumerable.Empty<Item>();
+
     /// <summary>null = still running, otherwise the final report ("ok ..." / "failed ...").</summary>
     public string? Tick()
     {
@@ -137,18 +140,42 @@ internal sealed class ComeToTask : BotTask
 
 // ------------------------------------------------------------------------------------------- equip
 
+/// <summary>
+/// Another item of the same kind when the chosen one was taken by someone else or could not be reached.
+/// tried = items that already failed.
+/// </summary>
+internal delegate Item? FindReplacement(Item failed, ICollection<Item> tried);
+
 internal sealed class EquipTask : BotTask
 {
-    readonly Item item;
+    const int MaxSwitches = 2;
+    Item item;
+    readonly FindReplacement? replace;
+    readonly List<Item> tried = new();
     public override string Name => $"equip {item.Name}";
     protected override double TimeoutSeconds => 120;
+    public override IEnumerable<Item> Claimed => new[] { item };
 
-    public EquipTask(Character bot, HumanAIController ai, Item item) : base(bot, ai) { this.item = item; }
+    public EquipTask(Character bot, HumanAIController ai, Item item, FindReplacement? replace = null) : base(bot, ai)
+    {
+        this.item = item;
+        this.replace = replace;
+    }
 
     protected override string? Update()
     {
-        if (Bot.HasEquippedItem(item)) return $"ok: {item.Name} equipped";
-        if (item.Removed) return $"failed: {item.Name} is gone";
+        if (Bot.HasEquippedItem(item)) return $"ok: {item.Name} equipped" + (tried.Count > 0 ? " (took another one: the first was taken or out of reach)" : "");
+        bool lost = item.Removed || (item.GetRootInventoryOwner() is Character owner && owner != Bot);
+        if (lost || ObjectiveFailed)
+        {
+            // someone was faster (several bots ordered to suit up at once) or it is out of reach: try another one
+            var why = lost ? (item.Removed ? "is gone" : "was taken by someone else") : "could not be reached";
+            if (tried.Count >= MaxSwitches || replace?.Invoke(item, tried.Append(item).ToList()) is not { } next)
+                return $"failed: could not get {item.Name} ({why})";
+            tried.Add(item);
+            ClearObjective();
+            item = next;
+        }
         if (!HasObjective)
         {
             var get = new AIObjectiveGetItem(Bot, item, Ai.ObjectiveManager, equip: true)
@@ -159,10 +186,87 @@ internal sealed class EquipTask : BotTask
             Run(get, $"getting {item.Name} from {ItemQueries.Where(item, Bot)}");
             return null;
         }
-        if (ObjectiveFailed) return $"failed: could not get {item.Name}";
         if (ObjectiveDone && !Bot.HasEquippedItem(item))
             return Bot.Inventory.Contains(item) ? $"ok: {item.Name} is in your inventory (could not equip it)" : $"failed: could not get {item.Name}";
         return null;
+    }
+}
+
+// ------------------------------------------------------------------------------------------- take
+
+/// <summary>Picks items up into the bot's own inventory (not equipped): medicine to carry, spare tools, ammo.</summary>
+internal sealed class TakeItemsTask : BotTask
+{
+    readonly Queue<Item> queue;
+    readonly FindReplacement? replace;
+    readonly List<Item> got = new(), tried = new();
+    readonly string label;
+    readonly int wanted;
+    Item? current;
+    bool full;
+    public override string Name => $"take {label}";
+    protected override double TimeoutSeconds => 60 + 30 * wanted;
+    public override IEnumerable<Item> Claimed => current != null ? queue.Append(current) : queue;
+
+    public TakeItemsTask(Character bot, HumanAIController ai, List<Item> items, string label, FindReplacement? replace = null) : base(bot, ai)
+    {
+        queue = new Queue<Item>(items);
+        wanted = items.Count;
+        this.label = label;
+        this.replace = replace;
+    }
+
+    protected override string? Update()
+    {
+        if (current != null && current.GetRootInventoryOwner() == Bot)
+        {
+            got.Add(current);
+            current = null;
+            ClearObjective();
+        }
+        if (current != null)
+        {
+            bool lost = current.Removed || (current.GetRootInventoryOwner() is Character owner && owner != Bot);
+            if (lost || ObjectiveFailed || (ObjectiveDone && current.GetRootInventoryOwner() != Bot))
+            {
+                ClearObjective();
+                tried.Add(current);
+                if (!lost && !HasRoom(current)) { full = true; return Report(); }
+                current = tried.Count <= wanted + 2 ? replace?.Invoke(current, tried) : null; // not every cabinet on the sub
+                if (current != null) Run(Get(current), $"getting {current.Name} from {ItemQueries.Where(current, Bot)}");
+                return null;
+            }
+            return null;
+        }
+        while (queue.Count > 0)
+        {
+            Item? next = queue.Dequeue();
+            if (next.Removed || (next.GetRootInventoryOwner() is Character other && other != Bot))
+            {
+                next = replace?.Invoke(next, tried.Append(next).ToList());
+                if (next == null) continue;
+            }
+            if (next.GetRootInventoryOwner() == Bot) { got.Add(next); continue; }
+            if (!HasRoom(next)) { full = true; return Report(); }
+            current = next;
+            Run(Get(current), $"getting {current.Name} from {ItemQueries.Where(current, Bot)} ({got.Count + 1}/{wanted})");
+            return null;
+        }
+        return Report();
+    }
+
+    AIObjectiveGetItem Get(Item i) => new(Bot, i, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false };
+
+    bool HasRoom(Item i) =>
+        Bot.Inventory.CanBePut(i, InvSlotType.Any) || Bot.Inventory.CanBePut(i, InvSlotType.RightHand) || Bot.Inventory.CanBePut(i, InvSlotType.LeftHand);
+
+    string Report()
+    {
+        var left = wanted - got.Count;
+        var why = full ? "your inventory is full" : "could not get them (taken or out of reach)";
+        if (got.Count == 0) return $"failed: took nothing: {why}";
+        var list = string.Join(", ", got.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"));
+        return $"ok: took {list} (in your inventory now)" + (left > 0 ? $"; {left} more not taken: {why}" : "");
     }
 }
 
@@ -587,14 +691,19 @@ internal sealed class TreatTask : BotTask
 /// <summary>Carry an item into a container, to a room (dropped there) or into a crew member's inventory.</summary>
 internal sealed class MoveItemTask : BotTask
 {
-    readonly Item item;
+    Item item;
     readonly ItemContainer? container;
     readonly Hull? room;
     readonly Character? receiver;
     readonly string destination;
+    readonly FindReplacement? replace;
+    readonly List<Item> tried = new();
+    bool pickedUp;
     public override string Name => $"move {item.Name} to {destination}";
+    public override IEnumerable<Item> Claimed => new[] { item };
 
-    public MoveItemTask(Character bot, HumanAIController ai, Item item, ItemContainer? container, Hull? room, Character? receiver, string destination)
+    public MoveItemTask(Character bot, HumanAIController ai, Item item, ItemContainer? container, Hull? room, Character? receiver, string destination,
+        FindReplacement? replace = null)
         : base(bot, ai)
     {
         this.item = item;
@@ -602,22 +711,32 @@ internal sealed class MoveItemTask : BotTask
         this.room = room;
         this.receiver = receiver;
         this.destination = destination;
+        this.replace = item.GetRootInventoryOwner() == bot ? null : replace; // the bot's own item: that one, no other
     }
 
     protected override string? Update()
     {
-        if (item.Removed) return $"failed: {item.Name} is gone";
-
         if (container != null && item.ParentInventory == container.Inventory) return $"ok: {item.Name} is in {destination}";
 
         // pick it up first (the "contain item" objective gives up on items the bot cannot reach from where it stands)
         if (item.GetRootInventoryOwner() != Bot)
         {
-            if (!HasObjective) Run(new AIObjectiveGetItem(Bot, item, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false }, $"getting {item.Name}");
-            else if (ObjectiveFailed) return $"failed: could not get {item.Name}";
+            bool lost = item.Removed || (item.GetRootInventoryOwner() is Character owner && owner != Bot);
+            if (lost || ObjectiveFailed)
+            {
+                if (pickedUp && !lost) return $"failed: {item.Name} slipped out of your inventory";
+                if (tried.Count >= 2 || replace?.Invoke(item, tried.Append(item).ToList()) is not { } next)
+                    return lost ? $"failed: {item.Name} {(item.Removed ? "is gone" : "was taken by someone else")}" : $"failed: could not get {item.Name}";
+                tried.Add(item);
+                ClearObjective();
+                item = next;
+            }
+            if (!HasObjective) Run(new AIObjectiveGetItem(Bot, item, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false }, $"getting {item.Name} from {ItemQueries.Where(item, Bot)}");
             else if (ObjectiveDone) ClearObjective();
             return null;
         }
+        if (item.Removed) return $"failed: {item.Name} is gone";
+        if (!pickedUp) { pickedUp = true; ClearObjective(); }
 
         if (container != null)
         {
