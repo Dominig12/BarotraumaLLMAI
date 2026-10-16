@@ -43,7 +43,7 @@ public sealed partial class AgentManager : IDisposable
     int agentsCreated; // staggers the first look of bots at round start
 
     /// <summary>Tools that start a multi-step task; with sequentialActions the next step waits for its result.</summary>
-    public static readonly IReadOnlyCollection<string> TaskTools = new[] { "equip", "refuel_reactor", "craft", "deconstruct", "treat", "move_item", "take_item", "unpack", "come_to" };
+    public static readonly IReadOnlyCollection<string> TaskTools = new[] { "equip", "refuel_reactor", "craft", "deconstruct", "treat", "move_item", "take_item", "unpack", "attack", "come_to" };
     /// <summary>Calls that only talk or note things down: they change nothing in the game.</summary>
     static readonly IReadOnlyCollection<string> TalkTools = new[] { "say", "message_crew", "remember", "forget", "note_relationship", "note_preference", "inspect", "keep_plan", "set_goal", "carry_on" };
     /// <summary>Echoed bot-to-bot messages are clipped to this (the game's chat limit is about 200).</summary>

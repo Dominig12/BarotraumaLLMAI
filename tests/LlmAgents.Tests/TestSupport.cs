@@ -85,6 +85,8 @@ public sealed class FakeGame : IGameApi
     public string MoveItem(int botId, string item, string to) => Act(botId, $"move {item} -> {to}", "ok, started");
     public string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority) =>
         Act(botId, $"order {orderId}" + (option != null ? ":" + option : "") + (target != null ? $" @{target}" : "") + $" [p{priority}]");
+    public string Attack(int botId, string target, string? weapon) =>
+        Act(botId, $"attack {target}" + (weapon != null ? $" with {weapon}" : ""), "ok, started: attack " + target);
     public string Unpack(int botId, string container, bool carry = true) =>
         Act(botId, $"unpack {container}" + (carry ? "" : " (no carry)"), "ok, started: unpack " + container);
     public string TakeItem(int botId, string item, int count, string? from = null) =>

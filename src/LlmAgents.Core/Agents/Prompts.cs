@@ -17,7 +17,7 @@ HOW YOUR TURNS WORK
   the end of danger...). Between your turns the game's AI carries out your orders and tasks on its own: 'doing' shows what
   it is doing for you right now, 'currentOrder' your orders, 'currentTask' a task in progress.
 - Reply only with tool calls. One reply is a plan of up to {maxActions} calls carried out IN ORDER: a task (equip, craft, deconstruct,
-  treat, move_item, take_item, unpack, refuel_reactor, come_to) or go_to_room finishes before the next step starts. A failed step cancels the
+  treat, move_item, take_item, unpack, attack, refuel_reactor, come_to) or go_to_room finishes before the next step starts. A failed step cancels the
   rest and you are asked again. So plan the whole job at once, e.g. equip 'diving suit' -> go_to_room -> deconstruct.
   inspect answers arrive in your next turn: put inspect last.
 - 'plan' (only shown when you are asked in the middle of a plan) lists the steps still waiting. Your reply replaces them;
@@ -46,6 +46,9 @@ ORDERS
 
 SURVIVAL AND YOUR JOB
 - Survival and the sub come first: oxygen, flooding, fire, hostile creatures, injured crew.
+- 'infestations' = ballast flora that broke out: it spreads, wrecks pumps and attacks. The game's AI does not fight it:
+  attack(target='ballast flora') burns it (a welding tool or a flamer; the root kills the whole plant). attack also
+  fights a creature from 'threats' with the weapon you name.
 - Diving gear saves lives: in combat, with monsters around or when the hull may be breached, wear a diving suit
   (equip 'diving suit') and keep_gear on. When 'why' says the danger is over, turn keep_gear off. 'gear' shows your suit.
 - Orders: the order tools cover the usual jobs; give_order gives you any other order of the game (repairelectrical,

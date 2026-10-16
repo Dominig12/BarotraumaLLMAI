@@ -53,6 +53,8 @@ public sealed class Observation
     public List<string> Leaks { get; set; } = new();
     /// <summary>What players marked with the middle mouse button: for the AI, for deconstruction, to be ignored.</summary>
     public List<string> Marks { get; set; } = new();
+    /// <summary>Ballast flora that broke out: branches per room, where the root is.</summary>
+    public List<string> Infestations { get; set; } = new();
 
     // Filled in by the agent layer, not by the game adapter:
     public List<string> Inbox { get; set; } = new();
@@ -68,7 +70,7 @@ public sealed class Observation
     [JsonIgnore]
     public bool Urgent =>
         HealthPercent < 50 || OxygenPercent < 40 || RoomWaterPercent > 60 || RoomFires > 0 ||
-        Threats.Count > 0 || Leaks.Count > 0 ||
+        Threats.Count > 0 || Leaks.Count > 0 || Infestations.Count > 0 ||
         (Submarine?.ReactorFuelPercent is int fuel && fuel < 10) || (Submarine?.OxygenPercent is int o2 && o2 < 50) ||
         DangerWithoutSuit;
 

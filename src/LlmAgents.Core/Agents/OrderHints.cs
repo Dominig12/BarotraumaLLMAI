@@ -28,6 +28,8 @@ public static class OrderHints
         (R(@"батаре|аккумулятор|заряд\w*\s+(батар|аккум)|charge\s*batter"), (_, _) => "give_order(order=\"chargebatteries\")"),
         (R(@"загруз\w*\s+(боеприпас|патрон|снаряд|пушк|орудия)|заряди\w*\s+(пушк|орудия)|load\s+(the\s+)?(ammo|guns|items)"), (_, _) => "give_order(order=\"loaditems\")"),
         (R(@"атакуй\w*\s+(корабл|подлодк|врага)|абордаж|assault"), (_, _) => "give_order(order=\"assaultenemy\")"),
+        (R(@"флор|ballast\s*flora|выжг|выжиг|сожг|сжечь|сожги|burn"), (_, _) => "attack(target=\"ballast flora\", weapon=\"welding tool\")"),
+        (R(@"(сварк|сварочн|резак|огнем[её]т|гарпун|ружь|дробовик|пистолет|револьвер|дубинк|нож)\w*.*(убей|атак|бей|мочи|стреля)|(убей|атак|бей|мочи|стреля)\w*.*(сварк|сварочн|резак|огнем[её]т|гарпун|ружь|дробовик|пистолет|револьвер|дубинк|нож)"), (_, _) => "attack(target=<the threat>, weapon=<what they named>)"),
         (R(@"монстр|тварь|убей|атак|враг|fight|kill|intruder"), (_, _) => "fight_intruders()"),
         (R(@"раненых|лечи|вылечи|heal|treat|medic"), (_, _) => "rescue_injured() or treat(target=...)"),
         (R(@"не\s*снима|keep\s*(your\s*)?(gear|suit)"), (_, _) => "keep_gear(on=true)"),

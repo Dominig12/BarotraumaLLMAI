@@ -81,6 +81,8 @@ public interface IGameApi
     /// from = a container, a room or a crew member (the room they are in); null = anywhere, nearest first.
     /// </summary>
     string TakeItem(int botId, string item, int count, string? from = null);
+    /// <summary>Attack ballast flora (burnt with a fire tool) or a creature / intruder, with a chosen tool or weapon. Multi-step task.</summary>
+    string Attack(int botId, string target, string? weapon);
     /// <summary>Empty a crate or container: every item goes where it belongs (stacks of the same items first). Multi-step task.</summary>
     string Unpack(int botId, string container, bool carry = true);
     /// <summary>While on, the bot never takes its diving gear off by itself (except when its suit runs out of air).</summary>

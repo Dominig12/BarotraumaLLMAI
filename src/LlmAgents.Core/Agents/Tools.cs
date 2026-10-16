@@ -143,6 +143,9 @@ public static class Tools
             Schema(("item", "string", "Item name or [id], or a kind: 'medical', 'ammo', 'tools', 'weapons', 'diving gear', 'oxygen'", null, true),
                    ("count", "integer", $"How many (1-{MaxTakeCount}, default 1)", null, false),
                    ("from", "string", "Optional: where from - a container ('medical cabinet'), a room id, or a crew member's name (= the room they are in, for 'take these from here')", null, false))),
+        new("attack", "Attack with a tool or weapon of your choice. target='ballast flora' burns the flora (see 'infestations') with a welding tool or a flamer: the bot takes the tool and fuel, goes to the root and burns branches on the way. Or a creature / intruder from 'threats' (name or kind), with weapon = what to fight with (e.g. 'harpoon gun').",
+            Schema(("target", "string", "'ballast flora' (optionally with a room id), a threat from 'threats', or 'nearest'", null, true),
+                   ("weapon", "string", "Optional: the tool or weapon to use, e.g. 'welding tool', 'flamer', 'harpoon gun', 'stun baton'", null, false))),
         new("unpack", "Empty a crate or container and put everything where it belongs on the sub: onto the same items first (stacks save space), then next to similar items, then their usual places. A crate is carried along. Items with no fitting place stay in it. The result lists what went where.",
             Schema(("container", "string", "The crate or container: a name ('metal crate'), 'marked' (the one a player marked), or a room id", null, true),
                    ("carry", "boolean", "Carry the crate along (default true); false = walk back and forth", null, false))),
@@ -331,6 +334,12 @@ public static class Tools
                         int count = int.TryParse(Str(a, "count") ?? Str(a, "amount"), out var n) ? n : 1;
                         var from = Str(a, "from");
                         return game.TakeItem(agent.Id, v, Math.Clamp(count, 1, MaxTakeCount), string.IsNullOrWhiteSpace(from) ? null : from);
+                    });
+                case "attack":
+                    return Need(Str(a, "target") ?? Str(a, "enemy") ?? "nearest", "target", v =>
+                    {
+                        var weapon = Str(a, "weapon") ?? Str(a, "tool") ?? Str(a, "item");
+                        return game.Attack(agent.Id, v, string.IsNullOrWhiteSpace(weapon) ? null : weapon);
                     });
                 case "unpack":
                     return Need(Str(a, "container") ?? Str(a, "item") ?? Str(a, "from"), "container", v => game.Unpack(agent.Id, v, Bool(a, "carry") != false));

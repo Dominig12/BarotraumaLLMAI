@@ -377,3 +377,50 @@ public class RoomNameIsNotAnOrderTests
     public void GoingToTheElectricalRoomIsNotRepairing() =>
         Assert.DoesNotContain("repairelectrical", OrderHints.Suggest("Иди в Электрику", "Daniil", null) ?? "");
 }
+
+/// <summary>Ballast flora: seen, woken for, attacked with a chosen tool.</summary>
+public class FloraTests
+{
+    const string Flora = "ballast flora: 34 branches - 30 in Балласт [h5] (root), 4 in Насосная [h6]. It spreads and attacks; burn it: attack(target='ballast flora') with a welding tool or a flamer";
+
+    static Observation Obs(string room) => new() { Name = "Sophie", Room = room, Infestations = new() { Flora } };
+
+    [Theory]
+    [InlineData("mechanic", "Engine [h2]", true, false)]
+    [InlineData("medicaldoctor", "Medbay [h4]", false, false)]
+    [InlineData("medicaldoctor", "Балласт [h5]", true, true)]        // it grows right next to them: everyone
+    [InlineData("captain", "Command [h1]", true, false)]
+    public void WhoIsWoken(string job, string room, bool woken, bool danger)
+    {
+        var flag = Situation.Assess(Obs(room), job, aiControl: false).FirstOrDefault(f => f.Key == "flora");
+        Assert.Equal(woken, flag != null);
+        if (flag != null) Assert.Equal(danger, flag.Danger);
+    }
+
+    [Fact]
+    public void ShownToTheModel() => Assert.Contains("\"infestations\"", Obs("Engine [h2]").ToCompactJson());
+
+    [Theory]
+    [InlineData("{\"target\":\"ballast flora\",\"weapon\":\"welding tool\"}", "1:attack ballast flora with welding tool")]
+    [InlineData("{\"target\":\"Crawler\"}", "1:attack Crawler")]
+    [InlineData("{}", "1:attack nearest")]
+    public void Arguments(string args, string action)
+    {
+        var game = new FakeGame();
+        game.AddBot(1, "Sophie", "mechanic");
+        var settings = Fixtures.Settings();
+        using var mgr = new AgentManager(settings, game, new LlmRouter(settings, new FakeHandler(_ => (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("carry_on", "{}"))))), () => 0);
+        var r = Tools.Execute(new ToolCall("attack", (JsonObject)JsonNode.Parse(args)!), new BotAgent(new BotHandle(1, "Sophie", "mechanic")), game, mgr);
+        Assert.StartsWith("ok", r);
+        Assert.Equal(action, game.Actions.Last());
+    }
+
+    [Theory]
+    [InlineData("Софи, выжги флору в балласте сваркой", "ballast flora")]
+    [InlineData("В балласте завелась флора!", "ballast flora")]
+    [InlineData("Берта, убей ползуна из гарпуна", "weapon=<what they named>")]
+    public void Hints(string text, string expected) => Assert.Contains(expected, OrderHints.Suggest(text, "Daniil", null));
+
+    [Fact]
+    public void AttackIsATask() => Assert.Contains("attack", AgentManager.TaskTools);
+}

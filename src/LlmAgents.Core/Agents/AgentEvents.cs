@@ -116,6 +116,13 @@ public static class Situation
             flags.Add(new("threat", $"hostile {t.Kind} {t.DistanceMeters} m away{(t.Room != null ? " in " + t.Room : " outside")}" +
                                     (o.Threats.Count > 1 ? $" (+{o.Threats.Count - 1} more)" : ""), true));
         }
+        // ballast flora: the mechanics, whoever is in charge, and anyone it grows next to (the vanilla AI does not fight it)
+        if (o.Infestations.Count > 0)
+        {
+            bool here = o.Room != null && o.Infestations.Any(i => i.Contains(o.Room, StringComparison.OrdinalIgnoreCase));
+            if (here || job is "mechanic" or "engineer" or "assistant" || command)
+                flags.Add(new("flora", (here ? "ballast flora right here: " : "") + o.Infestations[0], here));
+        }
         // no suit with monsters around or water coming in where you are (a far-away breach is the mechanics' business)
         bool ownRoomBreached = o.Room != null && o.Leaks.Any(l => l.StartsWith(o.Room, StringComparison.OrdinalIgnoreCase));
         if (o.DangerWithoutSuit && (o.Threats.Count > 0 || o.RoomWaterPercent >= 10 || ownRoomBreached))
