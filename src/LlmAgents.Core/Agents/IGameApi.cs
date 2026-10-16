@@ -43,6 +43,9 @@ public interface IGameApi
     /// <summary>A go_to_room step was only on the way to the next step: drop the bot's own "stay in that room" order.</summary>
     string EndTravel(int botId);
 
+    /// <summary>Any order of the game by its identifier ("repairelectrical", "chargebatteries"...); target = device or room text.</summary>
+    string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority);
+
     /// <summary>orderKey is one of <see cref="Tools.SimpleOrders"/> keys.</summary>
     string SimpleOrder(int botId, string orderKey, int priority = Tools.TopPriority);
 

@@ -370,6 +370,8 @@ sealed class SimWorld : IGameApi
     public string Unequip(int botId, string item) => Do(botId, $"unequip {item}");
     public string Drop(int botId, string item) => Do(botId, $"drop {item}");
     public string MoveItem(int botId, string item, string to) { Report(botId, $"task 'move {item}' ok: delivered to {to}", 5); Do(botId, $"move {item} -> {to}"); return Started("move " + item); }
+    public string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority) =>
+        Order(botId, option != null ? $"{orderId}:{option}" : orderId, priority);
     public string Unpack(int botId, string container, bool carry = true) { Report(botId, $"task 'unpack {container}' ok: put away from {container}: Bandage x4 -> Medical Cabinet in Medbay [h4]", 6); Do(botId, $"unpack {container}"); return Started("unpack " + container); }
     public string TakeItem(int botId, string item, int count, string? from = null) { Report(botId, $"task 'take {item}' ok: took {item} x{count} (in your inventory now)", 4); Do(botId, $"take {item} x{count}"); return Started("take " + item); }
     public string KeepGear(int botId, bool on) => Do(botId, on ? "keep gear ON" : "keep gear off");

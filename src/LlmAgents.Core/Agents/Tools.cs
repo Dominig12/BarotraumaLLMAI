@@ -24,7 +24,7 @@ public static class Tools
 
     public static readonly IReadOnlyList<string> OperateRoles = new[] { "reactor", "navigation", "weapons", "pumps" };
 
-    public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipes", "recipe", "salvage" };
+    public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipes", "recipe", "salvage", "orders" };
 
     public const int MaxCraftAmount = 10;
     public const int MaxTakeCount = 8;
@@ -86,6 +86,10 @@ public static class Tools
         new("operate", "Take a station and operate it.",
             OrderArgs(("role", "string", "Station to operate", OperateRoles.ToArray(), true),
                    ("option", "string", "Optional mode: reactor 'powerup'|'shutdown'; pumps 'pumpout'|'pumpin'", null, false))),
+        new("give_order", "Give yourself ANY order of the game by its id, also the ones without their own tool: repairmechanical, repairelectrical, chargebatteries, loaditems, deconstructitems, assaultenemy, steer (navigation modes), operateweapons, pumpwater, report orders (reportfire, reportbreach, reportintruders, reportbrokendevices, requestfirstaid)... inspect(kind='orders') lists every order of this game with its options and targets.",
+            OrderArgs(("order", "string", "Order id, e.g. 'repairelectrical', 'chargebatteries', 'loaditems'", null, true),
+                   ("option", "string", "Optional mode from inspect(kind='orders'), e.g. steer 'navigatetactical', pumpwater 'pumpin'", null, false),
+                   ("target", "string", "Optional: which device or room (a name or a room id); default the nearest free one", null, false))),
         new("wait", "An order to stop and stay where you are (until another order). Not for 'nothing to do': use carry_on for that.", OrderArgs()),
         new("carry_on", "Change nothing: keep doing what you are doing (your orders and tasks go on). Use when nothing needs to change.", NoArgs()),
         new("set_order_priority", "Reorder your current orders ('currentOrder' shows them as name [pN]). 3 = most important. 0 = drop that order.",
@@ -147,7 +151,7 @@ public static class Tools
                    ("to", "string", "A container name (e.g. 'medical cabinet', 'locker'), a room id from 'rooms', or a crew member name", null, true))),
         new("keep_gear", "Lock or unlock your diving gear. While locked you never take the diving suit/mask off by yourself, even in dry rooms. Turn it on before or during combat and whenever the hull may be breached.",
             Schema(("on", "boolean", "true = keep it on, false = normal behaviour", null, true))),
-        new("inspect", "Look something up; the answer appears in lastActionResults next turn. kind: patient (injuries and suitable medicine; no query = everyone hurt), items (where items are and how many; query = a room id or a crew member's name: what is in that room), recipes (what the fabricators here can make, what can be made right now; query = optional filter like 'medical', 'ammo', or a material), recipe (one item: ingredients, what is missing and where to get it), salvage (query = a material: which items aboard break down into it; query = an item: what it breaks down into; no query = scrap aboard).",
+        new("inspect", "Look something up; the answer appears in lastActionResults next turn. kind: patient (injuries and suitable medicine; no query = everyone hurt), items (where items are and how many; query = a room id or a crew member's name: what is in that room), recipes (what the fabricators here can make, what can be made right now; query = optional filter like 'medical', 'ammo', or a material), recipe (one item: ingredients, what is missing and where to get it), salvage (query = a material: which items aboard break down into it; query = an item: what it breaks down into; no query = scrap aboard), orders (every order of the game: id, options, targets aboard; query = optional filter).",
             Schema(("kind", "string", "What to look up", InspectKinds.ToArray(), true),
                    ("query", "string", "Crew member (patient), item or room (items), item (recipe, salvage), material (salvage), or filter (recipes); optional for patient, recipes, salvage", null, false))),
     };
@@ -224,6 +228,15 @@ public static class Tools
                         if (!OperateRoles.Contains(role)) return $"error: role must be one of {string.Join(", ", OperateRoles)}";
                         var option = Str(a, "option");
                         return game.Operate(agent.Id, role, string.IsNullOrEmpty(option) ? null : option!.ToLowerInvariant(), Priority(a));
+                    });
+                case "give_order":
+                    return Need(Str(a, "order") ?? Str(a, "id") ?? Str(a, "name"), "order", v =>
+                    {
+                        var option = Str(a, "option");
+                        var target = Str(a, "target");
+                        return game.GiveOrder(agent.Id, v.Trim().ToLowerInvariant(),
+                            string.IsNullOrWhiteSpace(option) ? null : option!.Trim().ToLowerInvariant(),
+                            string.IsNullOrWhiteSpace(target) ? null : target, Priority(a));
                     });
                 case "return_to_default":
                     return game.Dismiss(agent.Id);

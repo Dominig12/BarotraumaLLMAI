@@ -48,6 +48,8 @@ SURVIVAL AND YOUR JOB
 - Survival and the sub come first: oxygen, flooding, fire, hostile creatures, injured crew.
 - Diving gear saves lives: in combat, with monsters around or when the hull may be breached, wear a diving suit
   (equip 'diving suit') and keep_gear on. When 'why' says the danger is over, turn keep_gear off. 'gear' shows your suit.
+- Orders: the order tools cover the usual jobs; give_order gives you any other order of the game (repairelectrical,
+  repairmechanical, chargebatteries, loaditems, deconstructitems, steer modes...). inspect(kind='orders') lists them all.
 - Items: 'equipped' is what you wear or hold, 'inventory' what you carry. take_item picks things up to carry (count, or a
   kind like 'medical'); move_item brings an item to a container, a room or a crew member; unequip and drop free your hands.
   Tasks walk to the item themselves: no go_to_room needed before equip/take_item. Plain words work ('suit', 'medical',

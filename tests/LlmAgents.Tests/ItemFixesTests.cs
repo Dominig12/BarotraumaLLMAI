@@ -311,3 +311,69 @@ public class MarksAndUnpackTests
         Assert.DoesNotContain("\"marks\"", new Observation { Name = "Tracy" }.ToCompactJson());   // nothing marked: not shown
     }
 }
+
+/// <summary>give_order: every vanilla order, also the ones without a tool of their own.</summary>
+public class GiveOrderTests
+{
+    static (FakeGame, BotAgent, AgentManager) Setup()
+    {
+        var game = new FakeGame();
+        game.AddBot(1, "Sophie", "mechanic");
+        var settings = Fixtures.Settings();
+        var mgr = new AgentManager(settings, game, new LlmRouter(settings, new FakeHandler(_ => (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("carry_on", "{}"))))), () => 0);
+        return (game, new BotAgent(new BotHandle(1, "Sophie", "mechanic")), mgr);
+    }
+
+    [Theory]
+    [InlineData("{\"order\":\"repairelectrical\"}", "1:order repairelectrical [p3]")]
+    [InlineData("{\"order\":\"Charge_Batteries\",\"priority\":2}", "1:order charge_batteries [p2]")]
+    [InlineData("{\"order\":\"steer\",\"option\":\"NavigateTactical\"}", "1:order steer:navigatetactical [p3]")]
+    [InlineData("{\"order\":\"loaditems\",\"target\":\"Арсенал [h44]\"}", "1:order loaditems @Арсенал [h44] [p3]")]
+    public void Arguments(string args, string action)
+    {
+        var (game, agent, mgr) = Setup();
+        using var _ = mgr;
+        var r = Tools.Execute(new ToolCall("give_order", (JsonObject)JsonNode.Parse(args)!), agent, game, mgr);
+        Assert.StartsWith("ok", r);
+        Assert.Equal(action, game.Actions.Last());
+    }
+
+    [Fact]
+    public void OrderIsRequired()
+    {
+        var (game, agent, mgr) = Setup();
+        using var _ = mgr;
+        Assert.StartsWith("error", Tools.Execute(new ToolCall("give_order", new JsonObject()), agent, game, mgr));
+    }
+
+    [Fact]
+    public void OrdersCanBeInspected()
+    {
+        var (game, agent, mgr) = Setup();
+        using var _ = mgr;
+        var r = Tools.Execute(new ToolCall("inspect", new JsonObject { ["kind"] = "orders" }), agent, game, mgr);
+        Assert.DoesNotContain("error", r);
+    }
+
+    [Fact]
+    public void TextAlias() => Assert.Equal("give_order", Assert.Single(TextToolCallParser.Parse("order(order=\"repairmechanical\")", Tools.All)).Name);
+
+    [Fact]
+    public void OfferedToTheModel() => Assert.Contains(Tools.All, t => t.Name == "give_order");
+}
+
+public class VanillaOrderHintTests
+{
+    [Theory]
+    [InlineData("Трейси, займись электрикой", "repairelectrical")]
+    [InlineData("Заряди батареи", "chargebatteries")]
+    [InlineData("Загрузите боеприпасы в пушки", "loaditems")]
+    public void Hints(string text, string id) => Assert.Contains(id, OrderHints.Suggest(text, "Daniil", null));
+}
+
+public class RoomNameIsNotAnOrderTests
+{
+    [Fact]
+    public void GoingToTheElectricalRoomIsNotRepairing() =>
+        Assert.DoesNotContain("repairelectrical", OrderHints.Suggest("Иди в Электрику", "Daniil", null) ?? "");
+}

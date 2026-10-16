@@ -523,6 +523,112 @@ public sealed class GameAdapter : IGameApi
         return r;
     }
 
+    /// <summary>Orders a bot must not give itself through give_order: the mod's own and the item marks.</summary>
+    static bool IsSpecialOrder(OrderPrefab p) =>
+        p.Identifier == ControlOrder.Id || p.Identifier == ContextMarks.MarkId || p.Identifier == ContextMarks.UnmarkId
+        || p.IsIgnoreOrder || p.IsDeconstructOrder || p.IsDismissal;
+
+    static bool NeedsTarget(OrderPrefab p) => p.ItemComponentType != null || p.TargetItems.Any() || p.RequireItems.Any();
+
+    /// <summary>
+    /// Any order of the game by its identifier. Orders with their own tool go there (wait, follow, operate stations);
+    /// the rest are built like the command menu builds them: the option checked, the target device the nearest free
+    /// one (or the one named), reports sent to the whole crew.
+    /// </summary>
+    public string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority)
+    {
+        if (Find(botId) is not { } c) return "error: character gone";
+        var id = Tools.OrderAliases.TryGetValue(orderId, out var alias) ? alias : orderId.Replace("_", "").Replace(" ", "");
+        if (!OrderPrefab.Prefabs.TryGet(id.ToIdentifier(), out var prefab) || prefab == null)
+        {
+            var close = OrderPrefab.Prefabs.Where(p => !IsSpecialOrder(p) && (p.Identifier.Value.Contains(id) || id.Contains(p.Identifier.Value)))
+                .Select(p => p.Identifier.Value).Take(5).ToList();
+            return $"error: no order '{orderId}' in this game" + (close.Count > 0 ? $"; did you mean {string.Join(", ", close)}?" : "; inspect(kind='orders') lists them");
+        }
+        if (IsSpecialOrder(prefab)) return $"error: '{prefab.Identifier}' is not an order you give yourself" + (prefab.IsDismissal ? "; use return_to_default" : "");
+        switch (prefab.Identifier.Value)
+        {
+            case "wait":
+                return target != null ? GoToRoom(botId, target, priority) : SimpleOrder(botId, "wait", priority);
+            case "follow":
+                return target != null ? Follow(botId, target, priority) : "error: follow needs a target (a crew member)";
+            case "operatereactor": return Operate(botId, "reactor", option, priority);
+            case "steer" when target == null: return Operate(botId, "navigation", option, priority);
+            case "operateweapons" when target == null && option == null: return Operate(botId, "weapons", option, priority);
+        }
+
+        Identifier opt = Identifier.Empty;
+        if (!string.IsNullOrEmpty(option))
+        {
+            opt = prefab.AllOptions.FirstOrDefault(o => o.Value.Equals(option, StringComparison.OrdinalIgnoreCase)
+                                                       || prefab.GetOptionName(o).Value.Equals(option, StringComparison.OrdinalIgnoreCase));
+            if (opt.IsEmpty) return $"error: option '{option}' not valid for {prefab.Identifier}; valid: {string.Join(", ", prefab.Options.Select(x => x.Value))}";
+        }
+        else if (prefab.Options.Length > 0) opt = prefab.Options.First();
+        var name = prefab.Identifier.Value + (opt.IsEmpty ? "" : ":" + opt.Value);
+
+        Entity? targetEntity = null;
+        if (NeedsTarget(prefab))
+        {
+            var items = c.Submarine == null ? new List<Item>() : prefab.GetMatchingItems(c.Submarine, true, c.TeamID, c, opt);
+            if (items.Count == 0 && prefab.MustSetTarget) return $"error: nothing aboard to {prefab.Identifier} ({prefab.Name.Value})";
+            if (items.Count > 0)
+            {
+                IEnumerable<Item> pool = items;
+                if (target != null)
+                {
+                    var hull = target.Contains("[h") ? ResolveRoom(target) : null;
+                    var named = items.Where(i => hull != null ? i.CurrentHull == hull
+                        : ItemQueries.MatchScore(i.Prefab, target) > 0 || (i.CurrentHull != null && RoomId(i.CurrentHull).Contains(target, StringComparison.OrdinalIgnoreCase))).ToList();
+                    if (named.Count == 0) return $"error: no '{target}' to {prefab.Identifier}; targets aboard: {string.Join(", ", items.Take(6).Select(i => $"{i.Name}{(i.CurrentHull != null ? " in " + RoomId(i.CurrentHull) : "")}"))}";
+                    pool = named;
+                }
+                // a station another crew member already operates stays theirs (the game would take their order away)
+                var ordered = pool.OrderBy(i => prefab.Category == OrderCategory.Operate && OperatorOf(c, prefab.Identifier.Value, i) != null ? 1 : 0)
+                    .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)).ToList();
+                var item = ordered[0];
+                if (prefab.Category == OrderCategory.Operate && OperatorOf(c, prefab.Identifier.Value, item) is { } other && !HasAuthority(c))
+                    return $"error: {other.Name} already does {prefab.Identifier} there; do another job";
+                targetEntity = item;
+                name += $" ({item.Name}{(item.CurrentHull != null ? " in " + RoomId(item.CurrentHull) : "")})";
+            }
+        }
+
+        if (prefab.TargetAllCharacters)
+        {
+            // a report ("fire here", "breach here"): to the whole crew, for the room the bot is in
+            var hull = (targetEntity as Item)?.CurrentHull ?? c.CurrentHull;
+            if (hull == null && targetEntity == null) return "error: you are not inside the sub";
+            var report = new Order(prefab, opt, targetEntity ?? hull, null, orderGiver: c);
+            GameMain.GameSession?.CrewManager?.AddOrder(report, prefab.FadeOutTime);
+            if (report.IsReport) HumanAIController.ReportProblem(c, report);
+            try { GameMain.Server?.SendOrderChatMessage(new OrderChatMessage(report, null, c)); } catch { /* the crew still knows */ }
+            return $"ok, reported to the crew: {prefab.Name.Value}" + (hull != null ? $" in {RoomId(hull)}" : "");
+        }
+
+        var item0 = targetEntity as Item;
+        var order = new Order(prefab, opt, targetEntity, item0 != null ? prefab.GetTargetItemComponent(item0) : null, orderGiver: c);
+        return Issue(c, order, $"ok, {name}", priority);
+    }
+
+    /// <summary>Every order of the game, for inspect(kind='orders').</summary>
+    string DescribeOrders(Character c, string filter)
+    {
+        var list = OrderPrefab.Prefabs.Where(p => !IsSpecialOrder(p) && p.Identifier != ControlOrder.Id)
+            .Where(p => string.IsNullOrWhiteSpace(filter) || p.Identifier.Value.Contains(filter.Trim(), StringComparison.OrdinalIgnoreCase)
+                        || p.Name.Value.Contains(filter.Trim(), StringComparison.OrdinalIgnoreCase))
+            .OrderBy(p => p.TargetAllCharacters ? 1 : 0).ThenBy(p => p.Category?.ToString() ?? "~")
+            .Select(p =>
+            {
+                var s = $"{p.Identifier} ({p.Name.Value})";
+                if (p.Options.Length > 0) s += " options " + string.Join("/", p.Options.Select(o => o.Value));
+                if (NeedsTarget(p) && c.Submarine != null) s += $", {p.GetMatchingItems(c.Submarine, true, c.TeamID, c).Count} targets aboard";
+                if (p.TargetAllCharacters) s += ", report to all";
+                return s;
+            });
+        return "orders (give_order(order=<id>, option, target)): " + string.Join("; ", list);
+    }
+
     public string Dismiss(int botId)
     {
         if (Find(botId) is not { } c) return "error: character gone";
@@ -1260,6 +1366,8 @@ public sealed class GameAdapter : IGameApi
                 return Crafting.RecipeList(c, query);
             case "salvage":
                 return Crafting.Salvage(c, query);
+            case "orders":
+                return DescribeOrders(c, query);
             default:
                 return $"error: unknown kind '{kind}'";
         }

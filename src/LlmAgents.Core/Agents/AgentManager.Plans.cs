@@ -173,7 +173,7 @@ public sealed partial class AgentManager
 
     /// <summary>Steps that take the bot somewhere else or give it other work (not talk, lookups or gear locks).</summary>
     static bool MovesOn(string tool) =>
-        TaskTools.Contains(tool) || tool is "go_to_room" or "follow" or "operate" or "return_to_default"
+        TaskTools.Contains(tool) || tool is "go_to_room" or "follow" or "operate" or "give_order" or "return_to_default"
         || (Tools.SimpleOrders.ContainsKey(tool) && tool != "wait");
 
     /// <summary>go_to_room steps: go on with the plan once the bot is there.</summary>

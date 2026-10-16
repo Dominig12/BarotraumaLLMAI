@@ -20,7 +20,7 @@
 
 Поддерживаются локальные и облачные модели: Ollama (родной API), любой OpenAI-совместимый API (LM Studio, vLLM, OpenAI, OpenRouter...) и Anthropic. Подключения и лимиты настраиваются в `llm_config.json` или прямо в игре.
 
-> **Статус:** код собирается против reference-DLL текущей LuaCs (`luacsforbarotrauma_refs.zip`, latest), логика покрыта тестами (389 шт.) и прогнана в симуляторе с мок-LLM. Вызовы игры (`src/LlmAgents.Server/GameAdapter.cs`) сверены с исходниками LuaCs/Barotrauma; поведение в игре проверяется по логам.
+> **Статус:** код собирается против reference-DLL текущей LuaCs (`luacsforbarotrauma_refs.zip`, latest), логика покрыта тестами (401 шт.) и прогнана в симуляторе с мок-LLM. Вызовы игры (`src/LlmAgents.Server/GameAdapter.cs`) сверены с исходниками LuaCs/Barotrauma; поведение в игре проверяется по логам.
 
 ## Как это устроено
 
@@ -97,6 +97,7 @@ AgentManager.Update() каждые tickSeconds
 | `follow(target, priority?)` | приказ `follow` за членом экипажа |
 | `fix_leaks`, `repair_systems`, `extinguish_fires`, `fight_intruders`, `rescue_injured`, `clean_up`, `wait` (все с `priority?`) | соответствующие ванильные приказы |
 | `operate(role, option?, priority?)` | `reactor` (`powerup`/`shutdown`), `navigation`, `weapons`, `pumps` (`pumpout`/`pumpin`). Бот берёт свободный пост: на «все за пушки» каждый садится за своё орудие. Если пост уже занят другим, бот получает ошибку с именем занявшего и не сгоняет его (по прямому приказу игрока — сменяет) |
+| `give_order(order, option?, target?, priority?)` | **любой** ванильный приказ по идентификатору, в том числе без своего инструмента: `repairelectrical`, `repairmechanical`, `chargebatteries`, `loaditems`, `deconstructitems`, `assaultenemy`, режимы `steer`, `pumpwater:pumpin`, доклады (`reportfire`, `reportbreach`, `reportintruders`, `requestfirstaid`…). Опция проверяется по игре, цель — ближайшее свободное устройство или названное (`target` = имя или отсек). Занятый пост другого бота не отбирается. Доклады уходят всему экипажу, как у игрока. Список всех приказов этой игры с опциями и числом целей: `inspect(kind='orders')` |
 | `set_order_priority(order, priority)` | поменять приоритет своего приказа (1–3) или снять его (0) |
 | `return_to_default` | `dismissed`: снять приказы, вернуть ванильный ИИ |
 | `say(text)` | реплика: по радио, если надета рабочая гарнитура, иначе вслух (как у ванильных ботов; `global.speechChannel`) |
@@ -513,6 +514,7 @@ dotnet run --project tools/LlmAgents.Sim -- --provider cloud   # тот же с�
 - Блокировка костюма: в бою или при пробоине боты не снимают костюм; в консоли сервера не должно быть `diving gear lock disabled`.
 - Сценарии: в логе `task '…' ok: …` или `failed: …`. Больше всего непроверенных мест в `BotTasks.cs`: запуск фабрикатора, `ApplyTreatment` и загрузка стержня через `AIObjectiveContainItem`.
 - `go_to_room` (приказ `wait` с позицией), `follow` (цель берётся из `orderGiver`), `operate reactor` и `pumps`.
+- Приказы: «Займись электрикой» / «заряди батареи» / «загрузи боеприпасы» — в логе `give_order(order="repairelectrical"…) -> ok`, у бота в `currentOrder` этот приказ.
 - Пометки: средняя кнопка на ящике → «Пометить для ИИ», в логе `… marked … for the AI`, у бота в наблюдении `marks`; «Снять пометку ИИ» убирает её. «Разложи помеченный ящик» → `unpack`, в итоге `task 'unpack …' ok: put away …`. Ванильные «Игнорировать» и «На разбор» видны в `marks`.
 - Вещи: «Всем надеть костюмы» — каждый бот берёт свой скафандр (в логе нет пачки `could not get` в одну секунду); «Медик, возьми медикаменты» — `take_item` и `task 'take …' ok: took …`; «бери отсюда инструменты» — `take_item(…, from=…)`. «Все за пушки» — каждый за своим орудием, в `crew` у всех `operateweapons`.
 - Нет ли `MethodAccessException`: доступ к internal-членам игры идёт через `IgnoresAccessChecksTo` (`src/LlmAgents.Server/AccessChecks.cs`).
