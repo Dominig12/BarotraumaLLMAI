@@ -4,9 +4,24 @@
   Give it from the command menu (Movement category) or from the bot's entry in the crew list.
   Giving it again, or dismissing all of the bot's orders, takes control back.
   The server-side plugin intercepts this order; the vanilla AI never sees it.
+
+  "Mark for the AI" / "Remove the AI mark": middle mouse button on an item or a machine (the game's context wheel).
+  Like the vanilla "ignore" order it goes to the whole crew; the AI bots see marked things in their observation and
+  understand "this" / "the marked crate". The tags below decide where the game offers it; with the mod's client part
+  (LuaCs on the client) it is offered for every item and only the fitting entry of the two is shown.
 -->
 <Orders>
   <Order identifier="llmcontrol" category="Movement" color="64,200,255,255" autodismiss="false" mustmanuallyassign="true">
+    <Sprite texture="%ModDir%/Images/llmcontrol.png" sourcerect="0,0,128,128" origin="0.5,0.5" />
+  </Order>
+  <Order identifier="llmmark" targetallcharacters="true" mustsettarget="true" hidden="true" displayiconwhencontained="true" displaygiverintooltip="true"
+         color="64,200,255,255"
+         targetitems="crate,container,cabinet,smallitem,mediumitem,tool,weapon,medical,ammo,divinggear,diving,fuelrod,reactorfuel,oxygensource,mobilebattery,reactor,pump,fabricator,deconstructor,turret,periscope,junctionbox,battery,supercapacitor,oxygengenerator,door,navterminal,sonar">
+    <Sprite texture="%ModDir%/Images/llmcontrol.png" sourcerect="0,0,128,128" origin="0.5,0.5" />
+  </Order>
+  <Order identifier="llmunmark" targetallcharacters="true" mustsettarget="true" hidden="true" displaygiverintooltip="true"
+         color="160,160,160,255"
+         targetitems="crate,container,cabinet,smallitem,mediumitem,tool,weapon,medical,ammo,divinggear,diving,fuelrod,reactorfuel,oxygensource,mobilebattery,reactor,pump,fabricator,deconstructor,turret,periscope,junctionbox,battery,supercapacitor,oxygengenerator,door,navterminal,sonar">
     <Sprite texture="%ModDir%/Images/llmcontrol.png" sourcerect="0,0,128,128" origin="0.5,0.5" />
   </Order>
 </Orders>

@@ -270,6 +270,180 @@ internal sealed class TakeItemsTask : BotTask
     }
 }
 
+// ------------------------------------------------------------------------------------------- unpack
+
+/// <summary>
+/// Empties a crate (or any container) and puts every item where it belongs (<see cref="StoragePlanner"/>: onto stacks
+/// of the same items first, then next to similar items, then the usual places). A crate is carried along; from a fixed
+/// container the bot takes what fits in its inventory, delivers it and comes back. Items with no fitting place stay in
+/// the container. The empty crate goes to a crate shelf if there is one, else it is put down.
+/// </summary>
+internal sealed class UnpackTask : BotTask
+{
+    const int MaxDestinations = 12;
+    readonly Item box;
+    readonly ItemContainer boxContainer;
+    readonly bool carry;
+    readonly HashSet<Item> left = new();                // no fitting place: stays in the box
+    readonly HashSet<Item> unreachable = new();         // containers the bot could not get to
+    readonly List<(string What, string Where, string Why)> done = new();
+    readonly List<Item> load = new();                   // items taken from the box (not carrying it) for the current trip
+    ItemContainer? target;
+    string targetWhy = "";
+    int trips;
+    enum Phase { Fetch, Choose, Walk, Return, Finish }
+    Phase phase;
+    bool carrying;
+
+    public override string Name => $"unpack {box.Name}";
+    protected override double TimeoutSeconds => 420;
+    public override IEnumerable<Item> Claimed => new[] { box };
+
+    public UnpackTask(Character bot, HumanAIController ai, Item box, ItemContainer container, bool carry) : base(bot, ai)
+    {
+        this.box = box;
+        boxContainer = container;
+        this.carry = carry && box.GetComponent<Pickable>() != null;
+        phase = this.carry ? Phase.Fetch : Phase.Choose;
+    }
+
+    List<Item> Contents() => boxContainer.Inventory.AllItems.Where(i => !left.Contains(i)).ToList();
+
+    protected override string? Update()
+    {
+        if (box.Removed) return Report("the container is gone");
+        carrying = box.GetRootInventoryOwner() == Bot;
+        switch (phase)
+        {
+            case Phase.Fetch:
+                if (carrying) { ClearObjective(); phase = Phase.Choose; return null; }
+                if (box.GetRootInventoryOwner() is Character other) return Report($"{other.Name} has it");
+                if (!HasObjective) Run(new AIObjectiveGetItem(Bot, box, Ai.ObjectiveManager, equip: true) { SpeakIfFails = false }, $"picking up {box.Name}");
+                else if (ObjectiveFailed || ObjectiveDone)
+                {
+                    // could not carry it (hands full, too heavy...): unpack it where it is
+                    ClearObjective();
+                    phase = Phase.Choose;
+                }
+                return null;
+
+            case Phase.Choose:
+            {
+                if (trips >= MaxDestinations) { phase = Phase.Finish; return null; }
+                // what the bot already took out goes first
+                var next = load.FirstOrDefault(i => !i.Removed && i.GetRootInventoryOwner() == Bot) ?? Contents().FirstOrDefault();
+                if (next == null) { phase = Phase.Finish; return null; }
+                var exclude = new HashSet<Item>(unreachable) { box };
+                var choice = StoragePlanner.Choose(Bot, next, exclude);
+                if (choice == null)
+                {
+                    if (load.Remove(next)) PutBack(next);
+                    left.Add(next);
+                    return null;
+                }
+                target = choice.Container;
+                targetWhy = choice.Why;
+                if (!carrying && !load.Contains(next))
+                {
+                    // take what goes to the same place (and fits in the inventory) from the box first
+                    if (!IsNear(box, 140f)) { if (!HasObjective || ObjectiveDone) Run(GoTo(box, 80f), $"going to {box.Name}"); else if (ObjectiveFailed) return Report($"cannot reach {box.Name}"); return null; }
+                    ClearObjective();
+                    foreach (var i in Contents().Where(i => StoragePlanner.Choose(Bot, i, exclude)?.Container == target).Take(40))
+                        if (Bot.Inventory.TryPutItem(i, Bot, new List<InvSlotType> { InvSlotType.Any })) load.Add(i);
+                    if (load.Count == 0) { left.Add(next); return null; }   // no room in the inventory for it
+                }
+                trips++;
+                Run(GoTo(target.Item, 80f), $"taking things to {StoragePlanner.Describe(target)}");
+                phase = Phase.Walk;
+                return null;
+            }
+
+            case Phase.Walk:
+                if (target == null || target.Item.Removed) { phase = Phase.Choose; return null; }
+                if (IsNear(target.Item, 160f))
+                {
+                    ClearObjective();
+                    if (PutInto(target) == 0) unreachable.Add(target.Item);   // full after all: not again
+                    target = null;
+                    phase = carrying || Contents().Count == 0 ? Phase.Choose : Phase.Return;
+                    if (phase == Phase.Return && load.Count > 0) phase = Phase.Choose;   // deliver the rest first
+                    return null;
+                }
+                if (ObjectiveFailed || ObjectiveDone)
+                {
+                    unreachable.Add(target.Item);
+                    target = null;
+                    ClearObjective();
+                    phase = Phase.Choose;
+                }
+                return null;
+
+            case Phase.Return:
+                ClearObjective();
+                phase = Phase.Choose;     // Choose walks back to the box when it needs to
+                return null;
+
+            case Phase.Finish:
+            default:
+                // what could not be delivered goes back into the box
+                foreach (var i in load.Where(i => !i.Removed && i.GetRootInventoryOwner() == Bot).ToList()) PutBack(i);
+                PlaceBox();
+                return Report(null);
+        }
+    }
+
+    /// <summary>Everything for this container: from the carried box, or what the bot took out of it.</summary>
+    int PutInto(ItemContainer to)
+    {
+        int n = 0;
+        var source = carrying ? Contents() : load.Where(i => !i.Removed && i.GetRootInventoryOwner() == Bot).ToList();
+        var exclude = new HashSet<Item>(unreachable) { box };
+        foreach (var i in source)
+        {
+            if (StoragePlanner.Choose(Bot, i, exclude)?.Container != to) continue;
+            if (!to.Inventory.TryPutItem(i, Bot)) continue;
+            load.Remove(i);
+            done.Add((i.Prefab.Name.Value, StoragePlanner.Describe(to), targetWhy));
+            n++;
+        }
+        return n;
+    }
+
+    void PutBack(Item i)
+    {
+        if (!boxContainer.Inventory.TryPutItem(i, Bot)) i.Drop(Bot);
+    }
+
+    protected override void OnFinish() => PlaceBox();
+
+    /// <summary>The bot does not keep walking around with the box in its hands.</summary>
+    void PlaceBox()
+    {
+        if (box.Removed || box.GetRootInventoryOwner() != Bot) return;
+        var shelf = StoragePlanner.Choose(Bot, box, new HashSet<Item> { box });
+        if (shelf != null && IsNear(shelf.Container.Item, 600f) && shelf.Container.Inventory.TryPutItem(box, Bot))
+            boxPlace = StoragePlanner.Describe(shelf.Container);
+        else
+        {
+            box.Drop(Bot);
+            boxPlace = Bot.CurrentHull != null ? GameAdapter.RoomId(Bot.CurrentHull) : "here";
+        }
+    }
+
+    string? boxPlace;
+
+    string Report(string? problem)
+    {
+        var parts = done.GroupBy(d => (d.What, d.Where)).Select(g => $"{g.Key.What} x{g.Count()} -> {g.Key.Where}").ToList();
+        var stayed = boxContainer.Inventory.AllItems.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}").ToList();
+        var s = parts.Count == 0 ? $"failed: put nothing away from {box.Name}" : $"ok: put away from {box.Name}: {string.Join("; ", parts.Take(10))}";
+        if (problem != null) s += $" ({problem})";
+        if (stayed.Count > 0) s += $"; still in it (no fitting place or no time): {string.Join(", ", stayed.Take(8))}";
+        if (boxPlace != null) s += $"; {box.Name} left in {boxPlace}";
+        return s;
+    }
+}
+
 // ------------------------------------------------------------------------------------------- reactor
 
 internal sealed class RefuelReactorTask : BotTask

@@ -27,6 +27,8 @@ public static class OrderHints
         (R(@"раненых|лечи|вылечи|heal|treat|medic"), (_, _) => "rescue_injured() or treat(target=...)"),
         (R(@"не\s*снима|keep\s*(your\s*)?(gear|suit)"), (_, _) => "keep_gear(on=true)"),
         (R(@"костюм|скафандр|водолаз|diving\s*(suit|gear)|suit\s*up"), (_, _) => "equip(item=\"diving suit\") and keep_gear(on=true)"),
+        (R(@"разлож|распредел|разнес|разнос|рассортир|распаку|unpack|put\s+(it\s+|them\s+)?away|sort\s+(it|them|out)"), (_, _) => "unpack(container=<the crate, or 'marked' if they marked it>)"),
+        (R(@"\bэт(от|у|о|и)\b.*\b(помеч|отмеч)|помеченн|отмеченн|\bmarked\b"), (_, _) => "item=\"marked\" (what they marked with the middle mouse button, see 'marks')"),
         (R(@"разбер[иу]|разобрать|деконстр|deconstruct|salvage|scrap"), (_, room) => "deconstruct(item=\"all\", from=<container or room>)" + (room != null ? $", e.g. from=\"{room}\" if they mean their room" : "")),
         (R(@"скрафт|сделай|изготов|craft|fabricate|make\s+\w+"), (_, _) => "inspect(kind='recipes') then craft(item=<exact name>, salvage=true)"),
         (R(@"реактор.*(заряд|топлив|стерж)|(заряд|топлив|стерж).*реактор|refuel"), (_, _) => "refuel_reactor()"),

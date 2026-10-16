@@ -9,7 +9,7 @@ using Microsoft.Xna.Framework.Input;
 namespace LlmAgents.Client;
 
 /// <summary>
-/// Client half of the mod: only the in-game settings window. Opens with "!llm" in the chat (the server asks for it)
+/// Client half of the mod: the in-game settings window and the "mark for the AI" context menu entries. Opens with "!llm" in the chat (the server asks for it)
 /// or Ctrl+Shift+L. All settings live on the server; this window only shows and edits them.
 /// </summary>
 public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
@@ -32,6 +32,14 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
         catch (Exception e)
         {
             LoggerService?.LogError("[LlmAgents] settings window unavailable: " + e.Message);
+        }
+        try
+        {
+            ContextMarkMenu.Patch();
+        }
+        catch (Exception e)
+        {
+            LoggerService?.LogError("[LlmAgents] 'mark for the AI' menu entries unavailable: " + e.Message);
         }
         EventService?.Subscribe<IEventUpdate>(this);
     }
@@ -82,6 +90,7 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
     public void Dispose()
     {
         try { EventService?.Unsubscribe<IEventUpdate>(this); } catch { }
+        try { ContextMarkMenu.Unpatch(); } catch { }
         window?.Close();
         window = null;
     }

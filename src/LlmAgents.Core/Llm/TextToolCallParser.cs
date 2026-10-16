@@ -44,6 +44,10 @@ public static class TextToolCallParser
         ["pickup"] = "take_item",
         ["grab"] = "take_item",
         ["get_item"] = "take_item",
+        ["unload"] = "unpack",
+        ["sort_items"] = "unpack",
+        ["distribute"] = "unpack",
+        ["put_away"] = "unpack",
     };
 
     public static List<ToolCall> Parse(string? text, IReadOnlyList<ToolSpec> tools)

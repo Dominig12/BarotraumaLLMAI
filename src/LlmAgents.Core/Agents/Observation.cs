@@ -51,6 +51,8 @@ public sealed class Observation
     public List<CrewInfo> Crew { get; set; } = new();
     public List<ThreatInfo> Threats { get; set; } = new();
     public List<string> Leaks { get; set; } = new();
+    /// <summary>What players marked with the middle mouse button: for the AI, for deconstruction, to be ignored.</summary>
+    public List<string> Marks { get; set; } = new();
 
     // Filled in by the agent layer, not by the game adapter:
     public List<string> Inbox { get; set; } = new();

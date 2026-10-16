@@ -83,6 +83,8 @@ public sealed class FakeGame : IGameApi
     public string Unequip(int botId, string item) => Act(botId, $"unequip {item}");
     public string Drop(int botId, string item) => Act(botId, $"drop {item}");
     public string MoveItem(int botId, string item, string to) => Act(botId, $"move {item} -> {to}", "ok, started");
+    public string Unpack(int botId, string container, bool carry = true) =>
+        Act(botId, $"unpack {container}" + (carry ? "" : " (no carry)"), "ok, started: unpack " + container);
     public string TakeItem(int botId, string item, int count, string? from = null) =>
         Act(botId, $"take {item} x{count}" + (from != null ? $" from {from}" : ""), "ok, started: take " + item);
     public string KeepGear(int botId, bool on) => Act(botId, $"keepgear {on}");

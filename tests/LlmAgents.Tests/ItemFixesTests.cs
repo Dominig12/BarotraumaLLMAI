@@ -246,3 +246,68 @@ public class OrderHintTests
     [Fact]
     public void PlainTalkHasNoHint() => Assert.Null(OrderHints.Suggest("как дела?", "Daniil", null));
 }
+
+/// <summary>Marks (middle mouse button) and unpacking a crate.</summary>
+public class MarksAndUnpackTests
+{
+    [Theory]
+    [InlineData("помеченный ящик", MarkQuery.Ai, "ящик")]
+    [InlineData("marked", MarkQuery.Ai, "")]
+    [InlineData("the marked crate", MarkQuery.Ai, "crate")]
+    [InlineData("помеченное на разбор", MarkQuery.Deconstruct, "")]
+    [InlineData("marked for deconstruction", MarkQuery.Deconstruct, "")]
+    [InlineData("металлический ящик", MarkQuery.None, "металлический ящик")]
+    public void MarkQueries(string query, MarkQuery kind, string rest)
+    {
+        Assert.Equal(kind, MarkWords.Of(query));
+        if (kind != MarkQuery.None) Assert.Equal(rest, MarkWords.Rest(query));
+    }
+
+    [Theory]
+    [InlineData("на место", true)]
+    [InlineData("по местам", true)]
+    [InlineData("away", true)]
+    [InlineData("its place", true)]
+    [InlineData("медицинский шкаф", false)]
+    [InlineData("Daniil", false)]
+    public void ItsPlace(string to, bool expected) => Assert.Equal(expected, ItemWords.IsItsPlace(to));
+
+    [Theory]
+    [InlineData("Возьми металлический ящик и разнеси что в нём по подлодке", "unpack")]
+    [InlineData("Разложи помеченный ящик", "unpack")]
+    [InlineData("Разложи помеченный ящик", "item=\"marked\"")]
+    [InlineData("Отнеси это помеченное в медотсек", "item=\"marked\"")]
+    public void Hints(string text, string expected) =>
+        Assert.Contains(expected, OrderHints.Suggest(text, "Daniil", "Грузовой отсек [h3]"));
+
+    [Fact]
+    public void BattleStationsIsNotUnpacking() =>
+        Assert.DoesNotContain("unpack", OrderHints.Suggest("Все по местам!", "Daniil", null) ?? "");
+
+    [Theory]
+    [InlineData("{\"container\":\"metal crate\"}", "1:unpack metal crate")]
+    [InlineData("{\"container\":\"marked\",\"carry\":false}", "1:unpack marked (no carry)")]
+    [InlineData("{\"item\":\"ящик\"}", "1:unpack ящик")]
+    public void UnpackArguments(string args, string action)
+    {
+        var game = new FakeGame();
+        game.AddBot(1, "Tracy", "assistant");
+        var agent = new BotAgent(new BotHandle(1, "Tracy", "assistant"));
+        var settings = Fixtures.Settings();
+        using var mgr = new AgentManager(settings, game, new LlmRouter(settings, new FakeHandler(_ => (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("carry_on", "{}"))))), () => 0);
+        var r = Tools.Execute(new ToolCall("unpack", (JsonObject)JsonNode.Parse(args)!), agent, game, mgr);
+        Assert.StartsWith("ok, started", r);
+        Assert.Equal(action, game.Actions.Last());
+    }
+
+    [Fact]
+    public void UnpackIsATaskThePlanWaitsFor() => Assert.Contains("unpack", AgentManager.TaskTools);
+
+    [Fact]
+    public void MarksAreShownToTheModel()
+    {
+        var o = new Observation { Name = "Tracy", Marks = new() { "for the AI: Металлический ящик [metalcrate] in Грузовой отсек [h3] (marked by Daniil, 5s ago)" } };
+        Assert.Contains("\"marks\"", o.ToCompactJson());
+        Assert.DoesNotContain("\"marks\"", new Observation { Name = "Tracy" }.ToCompactJson());   // nothing marked: not shown
+    }
+}

@@ -84,6 +84,15 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
             Log.Error("'Full AI control' order disabled, could not patch the game: " + e.Message);
         }
 
+        try
+        {
+            ContextMarks.Patch();
+        }
+        catch (Exception e)
+        {
+            Log.Error("'mark for the AI' disabled, could not patch the game: " + e.Message);
+        }
+
         settingsBridge = new SettingsBridge(() => settingsService);
         TryRegisterSettingsWindow();
 
@@ -168,6 +177,8 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         adapter = new GameAdapter(settings);
         ControlOrder.Handler = adapter.OnControlOrder;
         ControlOrder.MenuHandler = adapter.OnMenuOrder;
+        ContextMarks.Changed = (item, by, on) =>
+            Log.Info($"{by} {(on ? "marked" : "unmarked")} {item.Name}{(item.CurrentHull != null ? " in " + GameAdapter.RoomId(item.CurrentHull) : "")} for the AI");
 
         // Long-term memory: one JSON file per campaign save in <mod>/memory (or memory.folder).
         string memDir = Path.IsPathRooted(settings.Memory.Folder) ? settings.Memory.Folder : Path.Combine(modDir!, settings.Memory.Folder);
@@ -286,6 +297,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         catch { /* shutting down */ }
         try { GearLock.Unpatch(); } catch { /* shutting down */ }
         try { ControlOrder.Unpatch(); ControlOrder.Handler = null; ControlOrder.MenuHandler = null; } catch { /* shutting down */ }
+        try { ContextMarks.Unpatch(); ContextMarks.Changed = null; } catch { /* shutting down */ }
         try { memory?.Flush(); } catch { /* shutting down */ }
         manager?.Dispose();
         manager = null;

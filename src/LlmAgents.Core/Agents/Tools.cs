@@ -139,7 +139,10 @@ public static class Tools
             Schema(("item", "string", "Item name or [id], or a kind: 'medical', 'ammo', 'tools', 'weapons', 'diving gear', 'oxygen'", null, true),
                    ("count", "integer", $"How many (1-{MaxTakeCount}, default 1)", null, false),
                    ("from", "string", "Optional: where from - a container ('medical cabinet'), a room id, or a crew member's name (= the room they are in, for 'take these from here')", null, false))),
-        new("move_item", "Carry an item somewhere: into a container (cabinet, locker...), to a room (left on the floor), or hand it to a crew member. To keep it yourself use take_item.",
+        new("unpack", "Empty a crate or container and put everything where it belongs on the sub: onto the same items first (stacks save space), then next to similar items, then their usual places. A crate is carried along. Items with no fitting place stay in it. The result lists what went where.",
+            Schema(("container", "string", "The crate or container: a name ('metal crate'), 'marked' (the one a player marked), or a room id", null, true),
+                   ("carry", "boolean", "Carry the crate along (default true); false = walk back and forth", null, false))),
+        new("move_item", "Carry an item somewhere: into a container (cabinet, locker...), to a room (left on the floor), or hand it to a crew member; to='its place' puts it where it belongs. To keep it yourself use take_item.",
             Schema(("item", "string", "Item to carry (yours or one on the sub)", null, true),
                    ("to", "string", "A container name (e.g. 'medical cabinet', 'locker'), a room id from 'rooms', or a crew member name", null, true))),
         new("keep_gear", "Lock or unlock your diving gear. While locked you never take the diving suit/mask off by yourself, even in dry rooms. Turn it on before or during combat and whenever the hull may be breached.",
@@ -316,6 +319,8 @@ public static class Tools
                         var from = Str(a, "from");
                         return game.TakeItem(agent.Id, v, Math.Clamp(count, 1, MaxTakeCount), string.IsNullOrWhiteSpace(from) ? null : from);
                     });
+                case "unpack":
+                    return Need(Str(a, "container") ?? Str(a, "item") ?? Str(a, "from"), "container", v => game.Unpack(agent.Id, v, Bool(a, "carry") != false));
                 case "move_item":
                 {
                     var item = Str(a, "item");

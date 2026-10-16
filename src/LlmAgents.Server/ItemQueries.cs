@@ -81,7 +81,25 @@ internal static class ItemQueries
         if (c.Submarine == null || i.Submarine != c.Submarine) return false;
         if (i.GetComponent<Pickable>() == null) return false;       // fixed machinery, walls...
         if (i.ParentInventory == null && i.body == null) return false; // attached to the hull
+        if (IsIgnored(i)) return false;                             // a player said "ignore this" (middle mouse button)
         return true;
+    }
+
+    /// <summary>The item or a container it is in was ordered to be ignored.</summary>
+    public static bool IsIgnored(Item i)
+    {
+        for (var x = i; x != null; x = x.Container)
+            if (x.OrderedToBeIgnored) return true;
+        return false;
+    }
+
+    /// <summary>Items players marked: for the AI ("помеченный ящик") or for deconstruction ("помеченное на разбор").</summary>
+    public static List<Item> Marked(Character c, MarkQuery kind)
+    {
+        var pool = kind == MarkQuery.Deconstruct
+            ? Item.DeconstructItems.Where(i => !i.Removed).ToList()
+            : ContextMarks.All().Select(m => m.Item).ToList();
+        return pool.Where(i => i.Submarine == c.Submarine || i.GetRootInventoryOwner() == c).ToList();
     }
 
     public static IEnumerable<Item> Available(Character c) => Item.ItemList.Where(i => IsAvailableTo(i, c));
@@ -92,6 +110,16 @@ internal static class ItemQueries
     /// </summary>
     public static List<Item> Find(Character c, string query, Func<Item, bool>? filter = null, ICollection<Item>? avoid = null, bool kinds = true)
     {
+        // "the marked crate": what players marked with the middle mouse button
+        var mark = MarkWords.Of(query);
+        if (mark != MarkQuery.None)
+        {
+            var list = Marked(c, mark).Where(i => IsAvailableTo(i, c) && (filter == null || filter(i))).ToList();
+            var rest = MarkWords.Rest(query);
+            if (rest.Length > 0 && list.Where(i => MatchScore(i.Prefab, rest) > 0).ToList() is { Count: > 0 } narrowed) list = narrowed;
+            return list.OrderBy(i => avoid != null && avoid.Contains(i) ? 1 : 0)
+                .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)).ToList();
+        }
         var scores = new Dictionary<ItemPrefab, int>();
         return Available(c)
             .Where(i => filter == null || filter(i))

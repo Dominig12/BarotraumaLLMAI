@@ -243,7 +243,44 @@ public sealed class GameAdapter : IGameApi
                 t.x.CurrentHull != null ? RoomId(t.x.CurrentHull) : null))
             .Take(6).ToList();
 
+        o.Marks = DescribeMarks(c);
         return o;
+    }
+
+    /// <summary>What players marked with the middle mouse button: for the AI, for deconstruction, to be left alone.</summary>
+    static List<string> DescribeMarks(Character c)
+    {
+        var list = new List<string>();
+        try
+        {
+            foreach (var m in ContextMarks.All().Where(m => m.Item.Submarine == c.Submarine || m.Item.GetRootInventoryOwner() is Character).Take(6))
+            {
+                var i = m.Item;
+                var where = i.GetRootInventoryOwner() is Character holder ? (holder == c ? "on you" : "carried by " + holder.Name)
+                          : i.Container != null ? ItemQueries.Where(i, c) : i.CurrentHull != null ? RoomId(i.CurrentHull) : "outside";
+                var s = $"for the AI: {ItemQueries.Label(i)} in {where} (marked by {m.By}, {Ago(m.At)})";
+                var inside = i.OwnInventory?.AllItems.ToList();
+                if (inside is { Count: > 0 })
+                    s += "; contains " + string.Join(", ", inside.GroupBy(x => x.Prefab).Take(6).Select(g => $"{g.Key.Name.Value} x{g.Count()}"));
+                list.Add(s);
+            }
+            var decon = Item.DeconstructItems.Where(i => !i.Removed && i.Submarine == c.Submarine).ToList();
+            if (decon.Count > 0)
+                list.Add($"to deconstruct ({decon.Count}): " + string.Join(", ", decon.GroupBy(i => i.Prefab).Take(6).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))
+                         + " - deconstruct(item='marked for deconstruction') breaks them down");
+            var ignored = Item.ItemList.Where(i => i.OrderedToBeIgnored && !i.Removed && i.Submarine == c.Submarine).ToList();
+            if (ignored.Count > 0)
+                list.Add("ignored by order (leave alone, do not take, use or deconstruct): "
+                         + string.Join(", ", ignored.GroupBy(i => i.Prefab).Take(6).Select(g => $"{g.Key.Name.Value} x{g.Count()}")));
+        }
+        catch (Exception e) { Log.Warn("marks: " + e.Message); }
+        return list;
+    }
+
+    static string Ago(double at)
+    {
+        var s = Math.Max(0, Timing.TotalTime - at);
+        return s < 90 ? $"{s:0}s ago" : $"{s / 60:0} min ago";
     }
 
     /// <summary>What the game's AI is doing for the bot right now: "fix leaks > go to: Ballast [h5]", "operate item: Reactor", "idle".</summary>
@@ -887,7 +924,7 @@ public sealed class GameAdapter : IGameApi
     /// Cabinets, lockers, shelves, crates: not machines (fabricator, reactor, turret loaders...) and not the magazine of a
     /// gun, the tank of a suit or the battery of a flashlight.
     /// </summary>
-    static bool IsStorage(Item i)
+    internal static bool IsStorage(Item i)
     {
         var ic = i.GetComponent<ItemContainer>();
         if (ic == null) return false;
@@ -917,6 +954,35 @@ public sealed class GameAdapter : IGameApi
         var groups = items.Where(i => ItemQueries.IsAvailableTo(i, c)).GroupBy(i => i.Prefab)
             .OrderByDescending(g => g.Count()).Take(max).Select(g => $"{ItemQueries.Label(g.Key)} x{g.Count()}").ToList();
         return groups.Count == 0 ? (format == "{0}" ? "nothing you can take" : "") : string.Format(format, string.Join(", ", groups));
+    }
+
+    /// <summary>Empty a crate or container and put everything where it belongs (stacks first). Multi-step task.</summary>
+    public string Unpack(int botId, string query, bool carry = true)
+    {
+        if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
+        bool HasStuff(Item i) => IsStorage(i) && i.OwnInventory?.AllItems.Any() == true;
+        // what the bot holds, a marked or named container, or the fullest container in the named room
+        var box = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>()).FirstOrDefault(i => HasStuff(i) && ItemQueries.MatchScore(i.Prefab, query) > 0);
+        box ??= ItemQueries.Find(c, query, HasStuff).FirstOrDefault();
+        if (box == null)
+        {
+            var named = Item.ItemList.Where(i => !i.Removed && i.Submarine == c.Submarine && HasStuff(i) && i.GetRootInventoryOwner() is not Character
+                                                 && !ItemQueries.IsIgnored(i) && ItemQueries.MatchScore(i.Prefab, query) > 0)
+                .OrderBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)).FirstOrDefault();
+            box = named ?? (ItemsAt(c, query) is { } place
+                ? place.Items.Select(i => i.Container).Where(x => x != null && HasStuff(x)).GroupBy(x => x).OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault()
+                : null);
+        }
+        if (box == null) return $"error: no container with items '{query}'; name it ('metal crate'), say 'marked' for the one a player marked, or inspect(kind='items', query=<room>)";
+        var ic = box.GetComponent<ItemContainer>();
+        if (ic == null) return $"error: {box.Name} holds nothing";
+        var plan = ic.Inventory.AllItems.GroupBy(i => i.Prefab)
+            .Select(g => (g.Key, n: g.Count(), to: StoragePlanner.Choose(c, g.First(), new HashSet<Item> { box })))
+            .ToList();
+        if (plan.All(p => p.to == null))
+            return $"error: no fitting place on the sub for anything in {box.Name} ({string.Join(", ", plan.Take(6).Select(p => $"{p.Key.Name.Value} x{p.n}"))}); use move_item with a container name";
+        var preview = string.Join("; ", plan.Take(6).Select(p => $"{p.Key.Name.Value} x{p.n} -> {(p.to != null ? StoragePlanner.Describe(p.to.Container) : "stays")}"));
+        return StartTask(c, new UnpackTask(c, ai, box, ic, carry), evenOverPlayerOrders: true) + $"; plan: {preview}";
     }
 
     public string RefuelReactor(int botId)
@@ -976,6 +1042,18 @@ public sealed class GameAdapter : IGameApi
                 .Take(MaxDeconstructBatch).ToList();
             if (items.Count == 0) return $"error: nothing {(all ? "" : $"matching '{query}' ")}that can be deconstructed in {where}";
             return StartTask(c, new DeconstructManyTask(c, ai, items, where)) +
+                   $"; {items.Count} item(s): {string.Join(", ", items.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))}";
+        }
+
+        // what players marked for deconstruction (or for the AI) with the middle mouse button
+        if (MarkWords.Of(query) is var mark && mark != MarkQuery.None)
+        {
+            var pool = ItemQueries.Marked(c, MarkQuery.Deconstruct);
+            if (mark == MarkQuery.Ai && pool.Count == 0) pool = ItemQueries.Marked(c, MarkQuery.Ai);
+            var items = pool.Where(i => ItemQueries.IsAvailableTo(i, c) && i.Prefab.AllowDeconstruct && i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i))
+                .OrderBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)).Take(MaxDeconstructBatch).ToList();
+            if (items.Count == 0) return "error: nothing marked that you can deconstruct (players mark items with the middle mouse button)";
+            return StartTask(c, new DeconstructManyTask(c, ai, items, "marked items")) +
                    $"; {items.Count} item(s): {string.Join(", ", items.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))}";
         }
 
@@ -1042,8 +1120,12 @@ public sealed class GameAdapter : IGameApi
 
     // --------------------------------------------------------------- inventory
 
+    /// <summary>What the bot carries, and what is inside the bags and crates it carries.</summary>
+    static IEnumerable<Item> Carried(Character c) =>
+        (c.Inventory?.AllItems ?? Enumerable.Empty<Item>()).SelectMany(i => new[] { i }.Concat(i.OwnInventory?.AllItems ?? Enumerable.Empty<Item>()));
+
     static Item? FindCarried(Character c, string query) =>
-        (c.Inventory?.AllItems ?? Enumerable.Empty<Item>())
+        Carried(c)
             .Select(i => (i, score: ItemQueries.MatchScore(i.Prefab, query)))
             .Where(t => t.score > 0)
             .OrderByDescending(t => t.score)
@@ -1089,6 +1171,14 @@ public sealed class GameAdapter : IGameApi
             return carried != null ? "error: your diving gear is locked (danger or keep_gear) and there is no spare one aboard" : NotFound(c, query);
         var replace = Replacer(c);
 
+        // "на место" / "away": where it belongs (onto the same items first)
+        if (ItemWords.IsItsPlace(to))
+        {
+            var place = StoragePlanner.Choose(c, item, new HashSet<Item>());
+            if (place == null) return $"error: no fitting place for {item.Name} on the sub; name a container or a room";
+            return StartTask(c, new MoveItemTask(c, ai, item, place.Container, null, null, StoragePlanner.Describe(place.Container), replace));
+        }
+
         // a crew member?
         var receiver = FindCrew(to, c, includeSelf: false);
         if (receiver != null) return StartTask(c, new MoveItemTask(c, ai, item, null, null, receiver, receiver.Name, replace));
@@ -1101,8 +1191,10 @@ public sealed class GameAdapter : IGameApi
         var container = Item.ItemList
             .Where(i => i.Submarine == c.Submarine && !i.Removed && i != item && i.GetRootInventoryOwner() is not Character)
             .Select(i => (i, ic: i.GetComponent<ItemContainer>(), score: ItemQueries.MatchScore(i.Prefab, to)))
-            .Where(t => t.ic != null && t.score > 0 && t.ic.Inventory.CanBePut(item))
+            .Where(t => t.ic != null && t.score > 0 && t.ic.Inventory.CanBePut(item) && !ItemQueries.IsIgnored(t.i))
             .OrderByDescending(t => t.score)
+            // of several matching cabinets, the one that already holds such items (stacks, saves space)
+            .ThenByDescending(t => t.ic!.Inventory.AllItems.Any(x => x.Prefab == item.Prefab) ? 1 : 0)
             .ThenBy(t => Vector2.DistanceSquared(t.i.WorldPosition, c.WorldPosition))
             .FirstOrDefault();
         if (container.ic != null)

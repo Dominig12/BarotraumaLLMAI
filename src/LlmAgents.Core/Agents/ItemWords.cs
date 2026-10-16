@@ -146,6 +146,16 @@ public static class ItemWords
         "инвентарь", "в инвентарь", "в свой инвентарь", "свой инвентарь", "себя", "мой инвентарь",
     };
 
+    static readonly string[] PlaceStems = { "на место", "на свое место", "на своё место", "по местам", "на места", "куда положено", "куда надо",
+        "где лежало", "its place", "where it belongs", "away", "storage", "back", "обратно", "на склад", "убрать", "убери" };
+
+    /// <summary>move_item(to=...) meaning "where it belongs": "на место", "away".</summary>
+    public static bool IsItsPlace(string to)
+    {
+        var t = to.Trim().Trim('.', '!', '"', '\'').ToLowerInvariant().Replace('ё', 'е');
+        return PlaceStems.Any(p => t == p.Replace('ё', 'е') || t.StartsWith(p.Replace('ё', 'е') + " ", StringComparison.Ordinal));
+    }
+
     /// <summary>move_item(to=...) meaning the bot itself: "me", "себе", its own name.</summary>
     public static bool IsSelf(string to, string ownName)
     {
@@ -153,4 +163,26 @@ public static class ItemWords
         return SelfWords.Contains(t) || t.Equals(ownName, StringComparison.OrdinalIgnoreCase)
             || (t.Length >= 4 && ownName.StartsWith(t, StringComparison.OrdinalIgnoreCase));
     }
+}
+
+/// <summary>Which marks a query means: "помеченный ящик", "the marked crate", "помеченное на разбор".</summary>
+public enum MarkQuery { None, Ai, Deconstruct }
+
+public static class MarkWords
+{
+    static readonly string[] MarkStems = { "помеч", "отмеч", "пометк", "отметк", "marked", "mark", "tagged" };
+    static readonly string[] DeconstructStems = { "разбор", "разобр", "разбир", "деконстр", "deconstr", "salvag", "scrap" };
+
+    public static MarkQuery Of(string query)
+    {
+        var words = ItemWords.Words(query);
+        if (!words.Any(w => MarkStems.Any(s => w.StartsWith(s, StringComparison.Ordinal)))) return MarkQuery.None;
+        return words.Any(w => DeconstructStems.Any(s => w.StartsWith(s, StringComparison.Ordinal))) ? MarkQuery.Deconstruct : MarkQuery.Ai;
+    }
+
+    /// <summary>The rest of the query once the mark words are gone: "помеченный ящик" -> "ящик" ("" = any marked item).</summary>
+    public static string Rest(string query) =>
+        string.Join(" ", ItemWords.Words(query).Where(w =>
+            !MarkStems.Any(s => w.StartsWith(s, StringComparison.Ordinal)) && !DeconstructStems.Any(s => w.StartsWith(s, StringComparison.Ordinal))
+            && w is not ("for" or "на" or "для" or "the" or "this" or "это" or "этот" or "эту" or "все" or "всё" or "all" or "ии" or "ai")));
 }

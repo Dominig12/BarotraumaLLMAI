@@ -4,4 +4,12 @@
   <OrderNameContextual.llmcontrol>Hand over full control to the AI</OrderNameContextual.llmcontrol>
   <OrderDialog.llmcontrol>[name], you are in full control now. Run things as you see fit.</OrderDialog.llmcontrol>
   <OrderDialogSelf.llmcontrol>I'll run things myself.</OrderDialogSelf.llmcontrol>
+  <OrderName.llmmark>Mark for the AI</OrderName.llmmark>
+  <OrderNameContextual.llmmark>Mark this for the AI crew</OrderNameContextual.llmmark>
+  <OrderDialog.llmmark>The AI crew should look at this.</OrderDialog.llmmark>
+  <OrderDialogSelf.llmmark>The AI crew should look at this.</OrderDialogSelf.llmmark>
+  <OrderName.llmunmark>Remove the AI mark</OrderName.llmunmark>
+  <OrderNameContextual.llmunmark>Remove the AI mark</OrderNameContextual.llmunmark>
+  <OrderDialog.llmunmark>Never mind that one.</OrderDialog.llmunmark>
+  <OrderDialogSelf.llmunmark>Never mind that one.</OrderDialogSelf.llmunmark>
 </infotexts>
