@@ -66,6 +66,19 @@ public static class SettingsSchema
             "сообщение, опасность миновала. Между этим работает ванильный ИИ. Всегда: то же плюс редкая плановая проверка. " +
             "По приказу: только приказы и сообщения. Боты с «Полным контролем ИИ» всегда думают и сами.",
             options: new() { "events", "always", "order" }, labels: new() { "По событиям (экономно)", "Всегда", "Только по приказу" }, group: Think);
+        var dir = s.Director;
+        const string DirectorGroup = "Директор";
+        Add(F(General, "Директор", FieldType.Bool, V(dir.Enabled), "director", "enabled"),
+            "Один ИИ без тела видит всю подлодку и раздаёт ботам планы: опасности, законченная работа и простой идут ему, а не каждому боту. " +
+            "Приказы игроков (чат, меню, полный контроль) боты по-прежнему выполняют сами, директор их не трогает.", group: DirectorGroup);
+        Add(F(General, "Модель директора", FieldType.Enum, V(dir.Provider), "director", "provider"),
+            "Сюда стоит поставить модель посильнее: одно решение на всю команду.", options: optionalProviders, labels: optionalProviderLabels, group: DirectorGroup);
+        Add(F(General, "Пауза между запросами директора, с", FieldType.Float, V(dir.MinSecondsBetweenCalls), "director", "minSecondsBetweenCalls"),
+            "Новая опасность ждёт не больше 5 с.", min: 0, max: 600, group: DirectorGroup);
+        Add(F(General, "Проверка, если кто-то без дела, с", FieldType.Float, V(dir.IdleCheckSeconds), "director", "idleCheckSeconds"),
+            "0 = только по событиям.", min: 0, max: 1800, group: DirectorGroup);
+        Add(F(General, "Ходов истории директора", FieldType.Int, V(dir.HistoryTurns), "director", "historyTurns"), min: 0, max: 20, group: DirectorGroup);
+
         Add(F(General, "Осмотреться в начале раунда", FieldType.Bool, V(s.Bots.ThinkAtRoundStart), "bots", "thinkAtRoundStart"),
             "Один запрос на бота в начале раунда (по очереди).", group: Think);
         Add(F(General, "Отвечать на приказы из меню команд", FieldType.Bool, V(s.Bots.ReactToMenuOrders), "bots", "reactToMenuOrders"),

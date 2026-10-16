@@ -129,5 +129,14 @@
     "maxPreferencesPerPlayer": 6,
     "roundSummary": true,
     "summaryProvider": ""
+  },
+  "director": {
+    "enabled": false,
+    "provider": "",
+    "minSecondsBetweenCalls": 15,
+    "idleCheckSeconds": 90,
+    "historyTurns": 4,
+    "fallbackAfterFailures": 3,
+    "fallbackSeconds": 120
   }
 }

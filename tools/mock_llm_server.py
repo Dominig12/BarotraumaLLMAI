@@ -162,6 +162,36 @@ def decide(obs: dict) -> list[dict]:
     return calls[:3]
 
 
+def direct(summary: str) -> list[dict]:
+    """Директор: по сводке подлодки раздаёт работу свободным ботам подходящей профессии."""
+    bots = []
+    for line in summary.splitlines():
+        if line.startswith("- ") and " (" in line and ") in " in line and "NOT ASSIGNABLE" not in line:
+            name = line[2:].split(" (")[0]
+            job = line.split(" (")[1].split(")")[0]
+            busy = "(director" in line and "NO WORK" not in line
+            bots.append((name, job, busy))
+    free = [b for b in bots if not b[2]]
+    calls, used = [], set()
+
+    def give(jobs, goal, steps):
+        for name, job, _ in free:
+            if job in jobs and name not in used:
+                used.add(name)
+                calls.append({"name": "assign", "arguments": {"bot": name, "goal": goal, "steps": steps}})
+                return
+
+    if "\nThreats:" in summary:
+        give(["securityofficer", "captain"], "отбить нападение", [{"do": "fight_intruders"}])
+    if "\nLeaks:" in summary:
+        give(["mechanic", "engineer"], "заварить течи", [{"do": "equip", "args": {"item": "diving suit"}}, {"do": "fix_leaks"}])
+    if "fire x" in summary:
+        give(["engineer", "mechanic", "assistant"], "потушить пожар", [{"do": "extinguish_fires"}])
+    if "\nHurt bots:" in summary or "injuries:" in summary:
+        give(["medicaldoctor"], "помочь раненым", [{"do": "rescue_injured"}])
+    return calls or [{"name": "carry_on", "arguments": {}}]
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("[mock] " + fmt % args + "\n")
@@ -193,7 +223,9 @@ class Handler(BaseHTTPRequestHandler):
                 "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": text}}],
                 "usage": {"prompt_tokens": 100, "completion_tokens": 40, "total_tokens": 140},
             })
-        if "route_message" in tool_names or (prompt_mode and "route_message" in system):
+        if "assign" in tool_names or (prompt_mode and "You are the DIRECTOR" in system):
+            calls = direct(last_user["content"])
+        elif "route_message" in tool_names or (prompt_mode and "route_message" in system):
             calls = [{"name": "route_message", "arguments": {"recipients": route(last_user["content"]), "reason": "mock"}}]
         else:
             try:

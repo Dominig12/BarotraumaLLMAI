@@ -185,6 +185,12 @@ public sealed class BotAgent
         }
     }
 
+    /// <summary>The latest results, left in place for the bot's next decision.</summary>
+    public List<string> RecentResults(int n)
+    {
+        lock (sync) return results.TakeLast(n).ToList();
+    }
+
     public List<string> TakeResults()
     {
         lock (sync)

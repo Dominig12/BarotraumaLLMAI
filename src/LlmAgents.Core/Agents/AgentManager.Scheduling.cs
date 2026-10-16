@@ -32,6 +32,7 @@ public sealed partial class AgentManager
     bool Accepts(BotAgent a, EventKind k)
     {
         if (a.AiControl) return true;
+        if (IsDirected(a)) return k != EventKind.Heartbeat;   // the director hears of everything about its work
         return Settings.Bots.Autonomy switch
         {
             "order" => k is not (EventKind.Danger or EventKind.Calm or EventKind.Heartbeat or EventKind.RoundStart),
@@ -40,7 +41,7 @@ public sealed partial class AgentManager
         };
     }
 
-    bool HeartbeatOn(BotAgent a) => a.AiControl || Settings.Bots.Autonomy == "always";
+    bool HeartbeatOn(BotAgent a) => !IsDirected(a) && (a.AiControl || Settings.Bots.Autonomy == "always");
 
     /// <summary>Adds an event if this bot reacts to it.</summary>
     void Notify(BotAgent a, EventKind kind, string text, double now)
@@ -56,6 +57,7 @@ public sealed partial class AgentManager
             try
             {
                 CollectEvents(agent, now);
+                RouteToDirector(agent);
                 var c = Due(agent, now);
                 if (c != null) candidates.Add(c);
             }

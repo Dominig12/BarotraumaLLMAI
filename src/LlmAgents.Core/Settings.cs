@@ -20,6 +20,7 @@ public sealed class ModSettings
     public BotSettings Bots { get; set; } = new();
     public ChatSettings Chat { get; set; } = new();
     public MemorySettings Memory { get; set; } = new();
+    public DirectorSettings Director { get; set; } = new();
 
     static readonly JsonSerializerOptions Json = new()
     {
@@ -56,6 +57,8 @@ public sealed class ModSettings
         Bots ??= new BotSettings();
         Chat ??= new ChatSettings();
         Memory ??= new MemorySettings();
+        Director ??= new DirectorSettings();
+        Director.Provider = (Director.Provider ?? "").Trim();
         Memory.Folder ??= "memory";
         Memory.SummaryProvider ??= "";
         Bots.Autonomy = (Bots.Autonomy ?? "events").Trim().ToLowerInvariant();
@@ -112,6 +115,10 @@ public sealed class ModSettings
                 throw new InvalidDataException($"bots.providerByJob['{kv.Key}'] = '{kv.Value}' not found in providers");
         if (!string.IsNullOrEmpty(Chat.Provider) && !names.Contains(Chat.Provider))
             throw new InvalidDataException($"chat.provider '{Chat.Provider}' not found in providers");
+        if (!string.IsNullOrEmpty(Director.Provider) && !names.Contains(Director.Provider))
+            throw new InvalidDataException($"director.provider '{Director.Provider}' not found in providers");
+        if (Director.MinSecondsBetweenCalls < 0 || Director.IdleCheckSeconds < 0 || Director.HistoryTurns < 0)
+            throw new InvalidDataException("director: intervals and historyTurns must be >= 0");
         if (!string.IsNullOrEmpty(Memory.SummaryProvider) && !names.Contains(Memory.SummaryProvider))
             throw new InvalidDataException($"memory.summaryProvider '{Memory.SummaryProvider}' not found in providers");
         if (Bots.Autonomy is not ("events" or "always" or "order"))
@@ -343,3 +350,26 @@ public sealed class MemorySettings
     /// <summary>Provider for round summaries. Empty = the bot's own provider.</summary>
     public string SummaryProvider { get; set; } = "";
 }
+
+/// <summary>
+/// The director: one agent without a body that sees the whole submarine and hands out the work. While it is on, bots
+/// do not think on their own about dangers, finished work or idle time: the director gets those events and gives each
+/// bot a plan. A player's word still goes to the bot itself (chat orders, the command menu, full AI control), and the
+/// director leaves such a bot alone until that order is done.
+/// </summary>
+public sealed class DirectorSettings
+{
+    public bool Enabled { get; set; } = false;
+    /// <summary>Provider for the director's requests. Empty = the default provider. A stronger model pays off here.</summary>
+    public string Provider { get; set; } = "";
+    /// <summary>At least this long between two requests (a new danger waits at most 5 s).</summary>
+    public double MinSecondsBetweenCalls { get; set; } = 15;
+    /// <summary>With nothing happening, a look this often, and only while some bot has nothing to do. 0 = never.</summary>
+    public double IdleCheckSeconds { get; set; } = 90;
+    /// <summary>Earlier decisions the director sees (one line each).</summary>
+    public int HistoryTurns { get; set; } = 4;
+    /// <summary>After this many failed requests in a row the bots think for themselves again for a while.</summary>
+    public int FallbackAfterFailures { get; set; } = 3;
+    public double FallbackSeconds { get; set; } = 120;
+}
+

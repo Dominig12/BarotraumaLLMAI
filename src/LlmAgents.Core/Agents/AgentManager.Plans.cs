@@ -267,6 +267,7 @@ public sealed partial class AgentManager
         agent.LogEvent(line);
         agent.AddEvent(EventKind.TaskFailed, line, now);
         TellGoalOutcome(agent, false, why);
+        EndDirectorGoal(agent, now);
         Log.Info($"[{agent.Name}] {line}");
     }
 
@@ -281,8 +282,17 @@ public sealed partial class AgentManager
         agent.PlanLookup = false;
         TellGoalOutcome(agent, true, last);
         agent.TaskTool = null;
-        if (look) agent.AddEvent(EventKind.TaskDone, "your plan is done: " + Tools.Clip(last, 160), now);
-        else if (agent.CurrentGoal is { Player: not null }) agent.SetGoal(null, now);
+        bool fromPlayer = agent.CurrentGoal is { Player: not null };
+        EndDirectorGoal(agent, now);
+        // a player's order carried out by vanilla orders goes on after the plan: with the director on, the goal stays
+        // (until it expires), so the director does not hand the bot other work in the middle of it
+        bool keepPlayerGoal = fromPlayer && !agent.PlanHadWait && Settings.Director.Enabled;
+        if (look && !IsDirected(agent)) agent.AddEvent(EventKind.TaskDone, "your plan is done: " + Tools.Clip(last, 160), now);
+        else if (fromPlayer && !keepPlayerGoal) agent.SetGoal(null, now);
+        // the director hears that a bot is free again (also after a player's order)
+        // (a plan of orders only is "done" at once while the bot works on them: no news)
+        if (IsDirected(agent) && (fromPlayer || agent.PlanHadWait))
+            agent.AddEvent(EventKind.TaskDone, (fromPlayer ? "finished a player's order, free for work: " : "plan done, free for work: ") + Tools.Clip(last, 160), now);
     }
 
     /// <summary>The player whose order the bot is carrying out hears how it went (not for walking and gear: they see that).</summary>

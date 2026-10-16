@@ -167,6 +167,15 @@ public sealed class SettingsServiceTests
     }
 
     [Fact]
+    public void DirectorIsSwitchedOnFromChat()
+    {
+        Assert.Equal("director.enabled = true", svc.HandleCommand("!llm set director.enabled true", true));
+        Assert.True(editor.Settings.Director.Enabled);
+        Assert.Equal("director.provider = b", svc.HandleCommand("!llm set director.provider b", true));
+        Assert.Equal("b", applied[^1].S.Director.Provider);
+    }
+
+    [Fact]
     public void WithoutPermissionNothingIsShownOrChanged()
     {
         var r = svc.Handle(new SettingsRequest { Op = "get" }, canEdit: false);

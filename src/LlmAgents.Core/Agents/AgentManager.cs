@@ -120,6 +120,7 @@ public sealed partial class AgentManager : IDisposable
         while (gameThread.TryDequeue(out _)) { }
         agentsCreated = 0;
         nextTick = double.NegativeInfinity;
+        ResetDirector();
     }
 
     // ---------------------------------------------------------------- game thread
@@ -140,6 +141,7 @@ public sealed partial class AgentManager : IDisposable
         CheckConditions(now);
         DispatchChats(now);       // chat routing gets LLM slots before the bots
         ScheduleDecisions(now);
+        ScheduleDirector(now);    // after the bots: players' orders to them get the slots first
 
         if (now >= nextFlush)
         {
@@ -246,6 +248,7 @@ public sealed partial class AgentManager : IDisposable
                 a.PlanText(), a.LastWhy, o?.Doing,
                 a.Events.Count > 0 ? string.Join("; ", a.Events.Select(e => EventPolicy.Label(e.Kind))) : null);
         }).ToList();
+        if (DirectorFeature() is { } df) features = features.Append(df).ToList();
         return new ModStatus(ModInfo.Version, Settings.Enabled, features, router.Status(), router.GlobalGate.UsedToday,
             Settings.Global.DailyRequestBudget, bots, Settings.Bots.DisabledCharacters.ToList(), MemoryOn ? memory.Scope : null,
             RequestsLastMinute, Settings.Bots.Autonomy);

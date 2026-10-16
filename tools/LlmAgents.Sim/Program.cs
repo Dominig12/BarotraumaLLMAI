@@ -32,7 +32,7 @@ string configPath = Path.Combine("Content", "llm_config.json");
 double seconds = 70, speed = 1;
 string? forceProvider = null;
 string memoryDir = "sim_memory";
-bool quiet = false, scriptedChat = true;
+bool quiet = false, scriptedChat = true, director = false;
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
@@ -44,15 +44,17 @@ for (int i = 0; i < args.Length; i++)
         case "--quiet": quiet = true; break;
         case "--no-chat": scriptedChat = false; break;
         case "--memory": memoryDir = args[++i]; break;
+        case "--director": director = true; break;
         case "-h":
         case "--help":
-            Console.WriteLine("usage: LlmAgents.Sim [--config path] [--seconds N] [--speed X] [--provider name] [--quiet]");
+            Console.WriteLine("usage: LlmAgents.Sim [--config path] [--seconds N] [--speed X] [--provider name] [--director] [--quiet]");
             return 0;
     }
 }
 
 var editor = LlmAgents.SettingsUi.ConfigEditor.Load(configPath);
 var settings = editor.Settings;
+if (director) settings.Director.Enabled = true;
 if (forceProvider != null)
 {
     settings.DefaultProvider = forceProvider;
@@ -96,6 +98,7 @@ ModSettings ApplySimOverrides(ModSettings s)
 {
     if (forceProvider != null) { s.DefaultProvider = forceProvider; s.Bots.ProviderByJob.Clear(); }
     s.Global.LogFile = "";
+    if (director) s.Director.Enabled = true;
     return s;
 }
 
