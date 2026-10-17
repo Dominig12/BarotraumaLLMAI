@@ -12,12 +12,6 @@ namespace LlmAgents.Agents;
 /// <param name="From">Who gave it (a player's name), for feedback when it cannot be carried out.</param>
 public sealed record PendingOrder(string Text, bool Authority, string? From = null);
 
-/// <summary>One step of a multi-step reply. Authority = the reply carried out a human player's order.</summary>
-/// <param name="Node">id of the plan-tree node this step comes from (null = a plain plan)</param>
-public sealed record PlanStep(ToolCall Call, bool Authority, string? Node = null);
-
-public enum PlanWait { None, Task, Arrival, Condition }
-
 /// <summary>What the bot is working toward. Source: "player Daniil", "you", "Rosendo (in command)"...
 /// Player: the human player who gave the order (told when it is done or failed).</summary>
 public sealed record AgentGoal(string Text, string Source, double SetAt, string? Player = null);
@@ -50,6 +44,8 @@ public sealed class BotAgent
 
     /// <summary>A request for this bot is running.</summary>
     public bool Pending { get; set; }
+    /// <summary>Number of the bot's latest request (answers to older ones are dropped).</summary>
+    public int RequestSeq { get; set; }
     public double LastRequestAt { get; set; } = double.NegativeInfinity;
     /// <summary>After a failed request: not before this time.</summary>
     public double RetryNotBefore { get; set; } = double.NegativeInfinity;
@@ -78,9 +74,6 @@ public sealed class BotAgent
     /// <summary>The latest observation (from the situation check), reused when a decision starts right after it.</summary>
     public Observation? LastObservation { get; set; }
     public double LastObservationAt { get; set; } = double.NegativeInfinity;
-
-    /// <summary>A plan review was already asked for the current plan.</summary>
-    public bool PlanReviewed { get; set; }
 
     /// <summary>The last decision changed something (an order, a task, an item...), not only talk or "already doing that".</summary>
     public bool ActedSinceDecision { get; set; }
@@ -169,8 +162,6 @@ public sealed class BotAgent
         while (playerOrders.TryDequeue(out var m)) list.Add(m);
         return list;
     }
-
-    public List<string> DrainPlayerOrders() => DrainOrders().Select(o => o.Text).ToList();
 
     /// <summary>Who gave the orders still waiting (for "your order is waiting" notices).</summary>
     public List<string> OrderSenders() => playerOrders.Select(o => o.From).Where(f => f != null).Select(f => f!).Distinct().ToList();
@@ -298,23 +289,20 @@ public sealed class BotAgent
         CurrentGoal = string.IsNullOrWhiteSpace(goal) ? null : new AgentGoal(Tools.Clip(goal.Trim(), MaxNoteLength), source, now, player);
     }
 
-    /// <summary>Steps of the last reply that still wait for their turn (carried out one after another).</summary>
-    public readonly List<PlanStep> Plan = new();
-    public PlanWait Waiting { get; set; } = PlanWait.None;
-    /// <summary>go_to_room step: the room to reach before the next step.</summary>
-    public string? WaitRoom { get; set; }
-    public double WaitingSince { get; set; }
-    public double PlanStartedAt { get; set; }
-    public double NextArrivalCheckAt { get; set; }
-    /// <summary>The current plan contained a task or a walk.</summary>
-    public bool PlanHadWait { get; set; }
+    /// <summary>The plan being carried out (null = none): no new decision unless something important happens.</summary>
+    public ActivePlan? Plan { get; private set; }
+
+    public bool Busy => Plan != null;
+
+    public void SetPlan(ActivePlan plan) => Plan = plan;
+
+    public void ClearPlan() => Plan = null;
+
+    public string? PlanText() => Plan?.Describe();
+
     /// <summary>Tool of the task the plan is waiting for (or last waited for): craft, equip, come_to...</summary>
     public string? TaskTool { get; set; }
-    /// <summary>The plan looked something up (inspect) in its middle: the answer is read when the plan is done.</summary>
-    public bool PlanLookup { get; set; }
-    /// <summary>Errors of the calls just run (reset for every reply).</summary>
-    public readonly List<string> BatchErrors = new();
-    /// <summary>The previous reply had errors and the bot was asked again; one retry, no loops.</summary>
+    /// <summary>A reply that failed at once was answered with one more request; the next failure gets none (no loops).</summary>
     public int ErrorStreak { get; set; }
 
     readonly Dictionary<ToolGroup, double> usedGroups = new();
@@ -327,47 +315,6 @@ public sealed class BotAgent
 
     public ToolGroup StickyGroups(double now) =>
         usedGroups.Where(kv => now - kv.Value < ToolSelection.StickySeconds).Aggregate((ToolGroup)0, (acc, kv) => acc | kv.Key);
-
-    /// <summary>A plan with conditions (the model's "plan" call); its steps go through <see cref="Plan"/> one by one.</summary>
-    public PlanTree? Tree { get; set; }
-    /// <summary>The steps of the tree carry the authority of the reply that set it.</summary>
-    public bool TreeAuthority { get; set; }
-    /// <summary>wait_until: give up at this time.</summary>
-    public double WaitDeadline { get; set; }
-    public double NextConditionCheckAt { get; set; }
-    /// <summary>A tree's go_to_room arrived: its "stay there" order goes when the next step takes the bot elsewhere.</summary>
-    public bool TravelPending { get; set; }
-
-    /// <summary>Carrying out a plan or waiting for a task: no new decision unless something important happens.</summary>
-    public bool Busy => Plan.Count > 0 || Waiting != PlanWait.None || Tree != null;
-
-    public string? PlanText()
-    {
-        if (!Busy) return null;
-        var parts = new List<string>();
-        if (Waiting == PlanWait.Task) parts.Add("now: waiting for the current task");
-        else if (Waiting == PlanWait.Arrival) parts.Add($"now: walking to {WaitRoom}");
-        else if (Waiting == PlanWait.Condition) parts.Add("now: waiting for a condition");
-        if (Tree != null)
-        {
-            parts.Add("tree: " + Tree.Describe());
-            return string.Join("; ", parts);
-        }
-        parts.AddRange(Plan.Select((p, i) => $"{i + 1}. {p.Call.Name}({Tools.ArgsToString(p.Call)})"));
-        return string.Join("; ", parts);
-    }
-
-    public void ClearPlan()
-    {
-        Plan.Clear();
-        Tree = null;
-        TravelPending = false;
-        Waiting = PlanWait.None;
-        WaitRoom = null;
-        PlanReviewed = false;
-        PlanHadWait = false;
-        PlanLookup = false;
-    }
 
     // ------------------------------------------------------------------ monitoring
 

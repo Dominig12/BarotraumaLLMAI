@@ -119,8 +119,12 @@ public sealed class FakeGame : IGameApi
     public readonly ConcurrentQueue<(string Player, string Text)> Notices = new();
     public void NotifyPlayer(string playerName, string text) => Notices.Enqueue((playerName, text));
 
+    /// <summary>Makes DrainReports throw, like a broken game call.</summary>
+    public bool BreakReports;
+
     public IReadOnlyList<GameReport> DrainReports()
     {
+        if (BreakReports) throw new InvalidOperationException("the game is broken");
         var r = PendingReports.ToList();
         PendingReports.Clear();
         return r;

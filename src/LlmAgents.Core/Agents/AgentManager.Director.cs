@@ -24,6 +24,8 @@ public sealed partial class AgentManager
     readonly List<string> directorNotes = new();
     readonly List<string> directorResults = new();
     bool directorPending;
+    /// <summary>Number of the latest director request (a late answer to an older one is dropped).</summary>
+    int directorSeq;
     double directorLastRequestAt = double.NegativeInfinity;
     double directorStartedAt = double.NaN;
     double directorFallbackUntil = double.NegativeInfinity;
@@ -151,10 +153,9 @@ public sealed partial class AgentManager
 
     void StartDirector(LlmRouter.Reservation reservation, double now)
     {
+        // copied, and taken only once the request is built: a failing game call loses nothing
         var events = directorEvents.ToList();
-        directorEvents.Clear();
         var results = directorResults.ToList();
-        directorResults.Clear();
         var bots = agents.Values.Where(a => game.IsAlive(a.Id)).OrderBy(a => a.Name)
             .Select(a => new DirectedBot(a, ObserveForDirector(a, now), NotAssignable(a))).ToList();
 
@@ -169,7 +170,10 @@ public sealed partial class AgentManager
         turns.Add(new LlmTurn("user", user));
         string historyLine = Director.HistoryLine(events);
 
+        directorEvents.Clear();
+        directorResults.Clear();
         directorPending = true;
+        int seq = ++directorSeq;
         directorLastRequestAt = now;
         CountRequest();
         if (Settings.Global.LogPrompts) Log.Info($"[director] -> {reservation.Provider}: {user}");
@@ -184,7 +188,11 @@ public sealed partial class AgentManager
             try { r = await r0.CompleteAsync(reservation, system, turns, Director.ToolSpecs, token).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
             catch (Exception e) { r = new RouteResult(RouteStatus.Failed, null, reservation.Provider, e.Message); }
-            OnGameThread(gen, t => ApplyDirector(events, results, historyLine, r, t));
+            OnGameThread(gen, t =>
+            {
+                if (seq == directorSeq) ApplyDirector(events, results, historyLine, r, t);
+                else Log.Warn("[director] a late answer to an old request was dropped");
+            });
         }));
     }
 
@@ -280,7 +288,7 @@ public sealed partial class AgentManager
         var plan = new ToolCall("plan", new JsonObject { ["steps"] = steps.DeepClone() });
         bot.LogEvent("director: " + goal);
         Log.Info($"[{bot.Name}] director assigns: {goal}");
-        ApplyPlan(bot, new List<ToolCall> { plan }, authority: false, new AgentGoal(goal, DirectorSource, now), now);
+        Guarded(bot, "plan", () => ApplyPlan(bot, new List<ToolCall> { plan }, authority: false, new AgentGoal(goal, DirectorSource, now), now));
         bot.LastDecision = "director: " + Tools.Clip(goal, 100);
         bot.Stats.DirectorAssignments++;
         bot.AddActivity("director", "assigned: " + Tools.Clip(goal, 200), clock());

@@ -73,10 +73,13 @@ public sealed partial class AgentManager
     {
         if (!alive) return "dead";
         if (a.Pending) return "thinking";
-        if (a.Waiting == PlanWait.Task) return "task";
-        if (a.Waiting == PlanWait.Arrival) return "walking";
-        if (a.Waiting == PlanWait.Condition) return "waiting";
-        if (a.Busy) return "plan";
+        switch (a.Plan?.Waiting)
+        {
+            case PlanWait.Task: return "task";
+            case PlanWait.Arrival: return "walking";
+            case PlanWait.Condition: return "waiting";
+            case not null: return "plan";
+        }
         if (a.FailedRequests > 0) return "retry";
         if (a.Events.Count > 0 || a.HasPlayerOrder || a.HasMail) return "queued";
         return "idle";
@@ -93,16 +96,15 @@ public sealed partial class AgentManager
             ControlBy = a.AiControl ? a.ControlBy ?? "?" : null,
             GoalSource = a.CurrentGoal is { } g ? GoalSource(g) : null,
             GoalAgo = a.CurrentGoal is { } g2 ? now - g2.SetAt : null,
-            PlanNow = a.Waiting switch
+            PlanNow = a.Plan?.Waiting switch
             {
                 PlanWait.Task => "waiting for the task" + (a.TaskTool != null ? $" ({a.TaskTool})" : ""),
-                PlanWait.Arrival => "walking to " + a.WaitRoom,
-                PlanWait.Condition => "waiting for a condition",
+                PlanWait.Arrival => "walking to " + a.Plan.WaitRoom,
+                PlanWait.Condition => "waiting for: " + a.Plan.Tree.CurrentWait?.Cond.Text,
                 _ => null,
             },
-            PlanSteps = a.Plan.Select(p => $"{p.Call.Name}({Tools.ArgsToString(p.Call)})").ToList(),
-            PlanTree = a.Tree?.Describe(1500),
-            PlanAgo = a.Busy ? now - a.PlanStartedAt : null,
+            PlanTree = a.Plan?.Tree.Describe(1500),
+            PlanAgo = a.Plan != null ? now - a.Plan.StartedAt : null,
             LastWhy = a.LastWhy,
             LastDecision = a.LastDecision,
             LastDecisionAgo = double.IsNaN(a.LastDecisionAt) ? null : now - a.LastDecisionAt,

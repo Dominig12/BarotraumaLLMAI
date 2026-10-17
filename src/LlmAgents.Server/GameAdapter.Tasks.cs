@@ -27,11 +27,25 @@ public sealed partial class GameAdapter
         nextTaskTick = Timing.TotalTime + TaskTickSeconds;
         foreach (var (id, task) in tasks.ToList())
         {
-            var result = task.Tick();
+            string? result;
+            try { result = task.Tick(); }
+            catch (Exception e)
+            {
+                // Tick catches the task's own faults; this is a fault around it (a character torn down mid-tick)
+                Log.ErrorThrottled("task:" + task.GetType().Name, $"task {task.GetType().Name} broke: {e}");
+                result = "failed: " + e.Message;
+            }
             if (result == null) continue;
             tasks.Remove(id);
-            reports.Add(new GameReport(id, $"task '{task.Name}' {result}"));
+            reports.Add(new GameReport(id, $"task '{NameOf(task)}' {result}"));
         }
+    }
+
+    /// <summary>The task's name for its report; a name that cannot be built (a removed item) must not lose the report.</summary>
+    static string NameOf(BotTask task)
+    {
+        try { return task.Name; }
+        catch { return task.GetType().Name.Replace("Task", "").ToLowerInvariant(); }
     }
 
     public void Reset()
@@ -59,7 +73,7 @@ public sealed partial class GameAdapter
     {
         if (!tasks.Remove(c.ID, out var t)) return;
         t.Cancel();
-        if (!quiet) reports.Add(new GameReport(c.ID, $"task '{t.Name}' cancelled"));
+        if (!quiet) reports.Add(new GameReport(c.ID, $"task '{NameOf(t)}' cancelled"));
     }
 
     /// <param name="evenOverPlayerOrders">Short self-care tasks (putting on gear) are fine while carrying out a player's order.</param>
@@ -68,7 +82,7 @@ public sealed partial class GameAdapter
         if (!evenOverPlayerOrders && PlayerOrderBlock(c, null) is { } blocked) return blocked;
         CancelTask(c, quiet: true);
         tasks[c.ID] = task;
-        return $"ok, started: {task.Name} (result will be reported)";
+        return $"ok, started: {NameOf(task)} (result will be reported)";
     }
 
     static bool Ai(Character c, out HumanAIController ai)

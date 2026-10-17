@@ -277,10 +277,19 @@ public sealed class PlanTree
         return result;
     }
 
-    /// <summary>The awaited condition came true.</summary>
-    public void Resume()
+    /// <summary>Some steps have not run yet (a plan whose last step failed has none).</summary>
+    public bool HasPendingSteps => All(Root).Any(n => n is Do or Wait && !done.Contains(n.Id));
+
+    /// <summary>The wait the plan is on (null = none).</summary>
+    public Wait? CurrentWait => stack.Count > 0 ? stack[^1].Node as Wait : null;
+
+    /// <summary>The awaited condition is true now: the wait is over and the plan moves on.</summary>
+    public bool TryResume(IConditionContext ctx)
     {
-        if (stack.Count > 0 && stack[^1].Node is Wait w) { done.Add(w.Id); Pop(); }
+        if (CurrentWait is not { } w || !w.Cond.IsTrue(ctx)) return false;
+        done.Add(w.Id);
+        Pop();
+        return true;
     }
 
     /// <summary>Replaces one node (and what is under it) with new steps. If it is running, the new steps run instead.</summary>

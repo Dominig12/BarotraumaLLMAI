@@ -35,6 +35,22 @@ public static class Log
     public static void Warn(string m) => Write(LogLevel.Warn, m);
     public static void Error(string m) => Write(LogLevel.Error, m);
 
+    static readonly ConcurrentDictionary<string, (DateTime At, int Skipped)> throttled = new();
+
+    /// <summary>An error that may repeat every frame (a broken game call): logged once per <paramref name="seconds"/> per
+    /// key, with the number of repeats skipped meanwhile, so one fault cannot flood the console and the file.</summary>
+    public static void ErrorThrottled(string key, string message, double seconds = 60)
+    {
+        var now = DateTime.UtcNow;
+        if (throttled.TryGetValue(key, out var last) && (now - last.At).TotalSeconds < seconds)
+        {
+            throttled[key] = (last.At, last.Skipped + 1);
+            return;
+        }
+        throttled[key] = (now, 0);
+        Error(last.Skipped > 0 ? $"{message} (and {last.Skipped} more time(s) since the last report)" : message);
+    }
+
     const int MaxQueued = 20000;
     static readonly BlockingCollection<(string Path, string Line)> queue = new(new ConcurrentQueue<(string, string)>());
     static readonly object startLock = new();

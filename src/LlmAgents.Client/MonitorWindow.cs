@@ -269,13 +269,12 @@ internal sealed class MonitorWindow
 
         Section(l, "План");
         if (d == null) l.Add(new Line("загрузка...", Dim));
-        else if (d.PlanNow == null && d.PlanSteps.Count == 0 && d.PlanTree == null) l.Add(new Line("плана нет", Dim));
+        else if (d.PlanTree == null) l.Add(new Line("плана нет", Dim));
         else
         {
             if (d.PlanAgo != null) l.Add(new Line($"начат {Ago(d.PlanAgo.Value)}", Dim));
             if (d.PlanNow != null) l.Add(new Line("▶ сейчас: " + d.PlanNow, Good));
             if (d.PlanTree != null) foreach (var part in TreeLines(d.PlanTree)) l.Add(new Line(part, part.Contains("<NOW>") ? Good : part.Contains("(done)") ? Dim : Text));
-            for (int i = 0; i < d.PlanSteps.Count; i++) l.Add(new Line($"{i + 1}. {d.PlanSteps[i]}", Text));
         }
 
         Section(l, "В игре");

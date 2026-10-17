@@ -204,10 +204,10 @@ public static class Tools
             + "in_room('X'), has('item'), wearing('item'), order('id'), threat('kind'), water('room'), fires('room'), near('name'), result('text'); "
             + "< > <= >= == !=, and, or, not. Replaces the current plan.",
             Schema(("steps", "array", "The steps", null, true)), ToolKind.Plan, ToolGroup.Plans,
-            _ => "error: plans with conditions need global.sequentialActions on"),
+            _ => "error: 'plan' is read with the whole reply; it cannot run inside a plan"),
         T("update_plan", "Replace one node of the running plan ('plan' shows ids like n3) with new steps; the rest goes on.",
             Schema(Arg("node", "Node id, e.g. 'n3'"), ("steps", "array", "New steps, as in plan", null, true)), ToolKind.Plan, ToolGroup.Plans,
-            _ => "error: plans with conditions need global.sequentialActions on"),
+            _ => "error: no plan is running to update; send the steps as a new reply"),
         T("keep_plan", "Only when 'plan' is shown: carry it on after this reply's other calls.", NoArgs(), ToolKind.Plan, ToolGroup.Core,
             c => c.Agent.Busy ? "ok, continuing the plan" : "ok (no plan left)"),
 
@@ -341,7 +341,7 @@ public static class Tools
     /// <summary>Tools offered only to bots under full AI control.</summary>
     public static readonly IReadOnlyCollection<string> ControlOnlyTools = Defs.Where(d => d.ControlOnly).Select(d => d.Name).ToList();
 
-    /// <summary>Tools that start a multi-step task; with sequentialActions the next step waits for its result.</summary>
+    /// <summary>Tools that start a multi-step task: the plan's next step waits for its result.</summary>
     public static readonly IReadOnlyCollection<string> TaskTools = Defs.Where(d => d.Kind == ToolKind.Task).Select(d => d.Name).ToHashSet();
 
     /// <summary>Calls that change nothing in the game (talk, notes, lookups, plan bookkeeping).</summary>
@@ -435,6 +435,8 @@ public static class Tools
 
     public static string Clip(string s, int max) => s.Length <= max ? s : s.Substring(0, max);
 
+    static readonly JsonSerializerOptions ReadableJson = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
     public static string ArgsToString(ToolCall c) =>
-        string.Join(", ", c.Arguments.Select(kv => $"{kv.Key}={kv.Value?.ToJsonString(new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping })}"));
+        string.Join(", ", c.Arguments.Select(kv => $"{kv.Key}={kv.Value?.ToJsonString(ReadableJson)}"));
 }

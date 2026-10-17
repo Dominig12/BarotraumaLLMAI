@@ -13,16 +13,20 @@ namespace LlmAgents.Agents;
 
 /// <summary>
 /// Owns all agents. <see cref="Update"/> must be called every frame on the game thread; it is cheap
-/// (it only does work every TickSeconds).
+/// (it only does work every TickSeconds), and each of its phases is isolated: a fault in one is logged (throttled)
+/// and the others go on.
 ///
 /// How it fits together (one file per part):
 /// - AgentManager.Scheduling: bots think when something happens (<see cref="EventKind"/>): an order, a new danger,
 ///   a finished task, a message... Events close together become one request. LLM requests run on the thread pool;
 ///   their results are applied back on the game thread, so agent state is only ever touched there.
-/// - AgentManager.Plans: a reply is a plan carried out step by step (a task or a walk finishes before the next step).
-/// - AgentManager.Chat: chat orders, routed by simple rules or by the LLM dispatcher; feedback to the sender.
+/// - AgentManager.Plans: every reply is a plan (<see cref="PlanTree"/>), carried out step by step by one engine.
+/// - AgentManager.Inputs: what players do through the game's UI (full AI control, command-menu orders).
+/// - AgentManager.Chat: chat lines, the conversation, and the dispatcher that decides who a message is for.
 /// - AgentManager.Crew: bot-to-bot messages and orders from a bot under full AI control.
+/// - AgentManager.Director: the optional director that hands out work to the whole crew.
 /// - AgentManager.Memory: long-term memory and the end-of-round summaries.
+/// - AgentManager.Monitor: the snapshot for the in-game bot monitor.
 /// </summary>
 public sealed partial class AgentManager : IDisposable
 {
@@ -42,7 +46,7 @@ public sealed partial class AgentManager : IDisposable
     int generation; // bumped on Reset, so late answers from a previous round are dropped
     int agentsCreated; // staggers the first look of bots at round start
 
-    /// <summary>Tools that start a multi-step task; with sequentialActions the next step waits for its result.</summary>
+    /// <summary>Tools that start a multi-step task: the plan's next step waits for its result.</summary>
     public static IReadOnlyCollection<string> TaskTools => Tools.TaskTools;
     /// <summary>Calls that only talk or note things down: they change nothing in the game.</summary>
     static IReadOnlyCollection<string> TalkTools => Tools.PassiveTools;
@@ -137,21 +141,71 @@ public sealed partial class AgentManager : IDisposable
         if (now < nextTick) return;
         nextTick = now + Settings.Global.TickSeconds;
 
-        RunGameThreadWork(now);   // answers of finished requests
-        SyncAgents(now);
-        DrainReports(now);
-        DrainControl(now);
-        DrainMenuOrders(now);
-        CheckArrivals(now);
-        CheckConditions(now);
-        DispatchChats(now);       // chat routing gets LLM slots before the bots
-        ScheduleDecisions(now);
-        ScheduleDirector(now);    // after the bots: players' orders to them get the slots first
+        // Every phase on its own: a fault in one (a broken game call, a bug) must not stop the others, or the bots
+        // would freeze until the round ends.
+        Phase("answers", () => RunGameThreadWork(now));     // answers of finished requests
+        Phase("agents", () => SyncAgents(now));
+        Phase("reports", () => DrainReports(now));
+        Phase("control", () => DrainControl(now));
+        Phase("menu orders", () => DrainMenuOrders(now));
+        Phase("waits", () => CheckWaits(now));
+        Phase("watchdog", () => Watchdog(now));
+        Phase("chat", () => DispatchChats(now));            // chat routing gets LLM slots before the bots
+        Phase("decisions", () => ScheduleDecisions(now));
+        Phase("director", () => ScheduleDirector(now));     // after the bots: players' orders to them get the slots first
 
         if (now >= nextFlush)
         {
             nextFlush = now + FlushSeconds;
-            if (MemoryOn) memory.Flush();
+            if (MemoryOn) Phase("memory", () => memory.Flush());
+        }
+    }
+
+    static void Phase(string name, Action work)
+    {
+        try { work(); }
+        catch (Exception e) { Log.ErrorThrottled("phase:" + name, $"update ({name}) failed: {e}"); }
+    }
+
+    /// <summary>One bot's piece of work. A fault stops only that bot's plan (so it cannot fail again every tick), and the
+    /// bot hears of it and thinks again.</summary>
+    void Guarded(BotAgent agent, string what, Action work)
+    {
+        try { work(); }
+        catch (Exception e)
+        {
+            Log.ErrorThrottled($"{agent.Id}:{what}", $"[{agent.Name}] {what} failed: {e}");
+            if (agent.Plan == null) return;
+            agent.ClearPlan();
+            agent.AddEvent(EventKind.TaskFailed, $"your plan was stopped by an internal error ({Tools.Clip(e.Message, 120)}); decide again", clock());
+        }
+    }
+
+    /// <summary>A request that never came back (it cannot happen by design: every request ends with an answer, a failure
+    /// or a timeout) must not silence the bot for the rest of the round.</summary>
+    void Watchdog(double now)
+    {
+        double limit = Settings.Providers.Select(p => p.TimeoutSeconds).DefaultIfEmpty(30).Max() * 2 + 60;
+        if (directorPending && now - directorLastRequestAt >= limit)
+        {
+            directorPending = false;
+            directorSeq++;
+            Log.Warn($"[director] its request has not come back for {now - directorLastRequestAt:0}s: it may be asked again");
+        }
+        foreach (var p in pendingChats.Where(p => p.InFlight && now - p.At >= limit).ToList())
+        {
+            pendingChats.Remove(p);
+            Log.Warn($"chat from {p.Cmd.SenderName}: the dispatcher never answered; the message goes to everyone who heard it");
+            var roster = BuildRoster(p.Cmd);
+            if (roster.Count > 0) DeliverToListeners(p, roster, "the dispatcher never answered");
+        }
+        foreach (var a in agents.Values)
+        {
+            if (!a.Pending || now - a.LastRequestAt < limit) continue;
+            a.Pending = false;
+            a.RequestSeq++;   // its answer, should it still come, is dropped
+            a.RetryNotBefore = now + Settings.Global.RetrySeconds;
+            Log.Warn($"[{a.Name}] its request has not come back for {now - a.LastRequestAt:0}s: the bot may think again");
         }
     }
 

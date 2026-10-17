@@ -56,7 +56,7 @@ public class CompactObservationTests
     }
 
     [Fact]
-    public async Task CompactIsWhatTheModelGetsUnlessDisabled()
+    public async Task CompactIsWhatTheModelGetsEvenWithTheOldSwitchOff()
     {
         foreach (var compact in new[] { true, false })
         {
@@ -72,7 +72,7 @@ public class CompactObservationTests
             var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
             mgr.Update(); await mgr.WhenIdle();
             var rooms = JsonNode.Parse(Fixtures.Obs(user!))!["rooms"]!.AsArray();
-            Assert.Equal(compact, rooms[0] is JsonValue);
+            Assert.True(rooms[0] is JsonValue);   // "compactObservation" is gone: always the short form
         }
     }
 }
@@ -165,7 +165,7 @@ public class ConfigDefaultsTests
         var added = e.AddMissingDefaults();
         Assert.Contains("memory", added);
         Assert.Contains("global.maxChatEchoPerMinute", added);
-        Assert.Contains("global.compactObservation", added);
+        Assert.Contains("global.planStepTimeoutSeconds", added);
         Assert.Contains("bots.autonomy", added);
         Assert.Contains("providers.local.toolMode", added);
         Assert.DoesNotContain(added, a => a.Contains("apiKey\"") || a == "providers.local.apiKey");
@@ -208,19 +208,21 @@ public class CompactHistoryTests
             lastSize = body.ToJsonString().Length;
             return (System.Net.HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("wait", "{}")));
         });
-        int Run(bool compact)
+        int Run()
         {
-            var settings = Fixtures.Settings($", \"compactObservation\": {(compact ? "true" : "false")}, \"historyTurns\": 6");
+            var settings = Fixtures.Settings(", \"historyTurns\": 6");
             settings.Bots.Autonomy = "always";   // a heartbeat every 10 s: 7 turns
             var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
             for (int i = 0; i < 7; i++) { mgr.Update(); mgr.WhenIdle().Wait(); clock.Advance(11); }
             return lastSize;
         }
-        int full = Run(false), compact = Run(true);
+        Run();
         var old = lastMessages![1]!["content"]!.GetValue<string>();
         Assert.Matches(@"^\(\d+ ?(s|min) ago\) why: ", old);   // each old turn: its age, why the bot was asked, where it was
         Assert.Contains("you were in Реакторный отсек [h163]", old);
-        Assert.True(compact < full / 2, $"compact request {compact} vs full {full}");
+        // the old turns are short lines, not the whole old observation
+        var now = lastMessages[^1]!["content"]!.GetValue<string>();
+        Assert.True(old.Length < now.Length / 4, $"old turn {old.Length} chars vs the new message {now.Length}");
         await Task.CompletedTask;
     }
 }

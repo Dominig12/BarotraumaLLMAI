@@ -140,8 +140,6 @@ public sealed class LlmRouter : IDisposable
                 if (o.Config.Model == e.Config.Model) e.LearnedMinOutput = o.LearnedMinOutput;
             }
     }
-    public LlmGate? GateOf(string provider) => providers.TryGetValue(provider, out var e) ? e.Gate : null;
-
     List<string> Order(string preferred)
     {
         var order = new List<string>();

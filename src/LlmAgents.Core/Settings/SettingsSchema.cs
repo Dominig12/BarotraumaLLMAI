@@ -99,9 +99,6 @@ public static class SettingsSchema
 
         Add(F(General, "Действий за решение", FieldType.Int, V(g.MaxActionsPerDecision), "global", "maxActionsPerDecision"),
             "Сколько шагов может быть в одном ответе модели (длина плана).", 1, 12, group: Plans);
-        Add(F(General, "Выполнять действия по очереди (план)", FieldType.Bool, V(g.SequentialActions), "global", "sequentialActions"),
-            "Ответ модели — план: задача (надеть, скрафтить, разобрать...) или переход в отсек завершается до начала следующего шага. " +
-            "План прерывают только приказы и новая опасность. Выключено: все действия ответа выполняются сразу (следующая задача отменяет предыдущую).", group: Plans);
         Add(F(General, "Пересмотр плана не реже, с", FieldType.Float, V(g.MaxPlanSeconds), "global", "maxPlanSeconds"),
             "Если план выполняется дольше, бот думает снова (и может продолжить план).", 20, 1200, group: Plans);
         Add(F(General, "Ожидание прихода в отсек, с", FieldType.Float, V(g.PlanStepTimeoutSeconds), "global", "planStepTimeoutSeconds"),
@@ -122,7 +119,7 @@ public static class SettingsSchema
         Add(F(General, "Черты характера из игры", FieldType.Bool, V(s.Bots.UseGamePersonality), "bots", "useGamePersonality"),
             "Если у бота нет характера из вкладки «Характеры», учитывать его черту из игры (вспыльчивый, ленивый...).", group: Speech);
         Add(F(General, "Канал речи", FieldType.Enum, V(g.SpeechChannel), "global", "speechChannel"),
-            options: new() { "auto", "radio", "local" }, labels: new() { "Авто (радио при гарнитуре)", "Радио", "Только вслух" }, group: Speech);
+            options: new() { "auto", "local" }, labels: new() { "Радио при гарнитуре, иначе вслух", "Только вслух" }, group: Speech);
         Add(F(General, "Сообщений боту в минуту", FieldType.Int, V(g.MaxMessagesPerMinute), "global", "maxMessagesPerMinute"),
             "Ограничение message_crew/order_crew, чтобы боты не болтали бесконечно. 0 = без ограничения.", 0, 30, group: Speech);
         Add(F(General, "Фразы ботов друг другу слышны игрокам", FieldType.Bool, V(g.ShowBotMessagesInChat), "global", "showBotMessagesInChat"), group: Speech);
@@ -132,8 +129,6 @@ public static class SettingsSchema
         Add(F(General, "Радиус опасности монстров, м", FieldType.Float, V(g.DangerMonsterRadiusMeters), "global", "dangerMonsterRadiusMeters"), min: 0, max: 500, group: Speech);
 
         Add(F(General, "Показывать приказы ботов клиентам", FieldType.Bool, V(g.SyncOrdersToClients), "global", "syncOrdersToClients"), group: Tech);
-        Add(F(General, "Сжатое наблюдение", FieldType.Bool, V(g.CompactObservation), "global", "compactObservation"),
-            "Короче запрос к модели: без пустых полей, экипаж одной строкой на человека. Быстрее и понятнее маленьким моделям.", group: Tech);
         Add(F(General, "Писать запросы в лог", FieldType.Bool, V(g.LogPrompts), "global", "logPrompts"), group: Tech);
         Add(F(General, "Писать сырые ответы в лог", FieldType.Bool, V(g.LogRawReplies), "global", "logRawReplies"), group: Tech);
 

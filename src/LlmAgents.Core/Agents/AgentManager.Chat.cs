@@ -180,6 +180,7 @@ public sealed partial class AgentManager
 
     void ApplyDispatch(PendingChat p, List<RosterEntry> roster, RouteResult r, double now)
     {
+        if (!pendingChats.Contains(p)) return;   // given up on already (see Watchdog)
         p.InFlight = false;
         CountTokens(r);
         dispatchRequests++;

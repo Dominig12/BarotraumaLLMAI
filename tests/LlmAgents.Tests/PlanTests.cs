@@ -209,16 +209,6 @@ public class PlanTests
     }
 
     [Fact]
-    public async Task WithoutSequentialActionsEverythingRunsAtOnce()
-    {
-        game.AddBot(1, "Ann", "mechanic");
-        var mgr = Create(@", ""sequentialActions"": false");
-        reply = _ => Plan(("equip", "{\"item\":\"diving suit\"}"), ("fix_leaks", "{}"));
-        await Run(mgr, 2);
-        Assert.Equal(new[] { "1:equip diving suit", "1:fix_leaks" }, Actions().Take(2));
-    }
-
-    [Fact]
     public async Task PlayerOrderBecomesTheGoalUntilDone()
     {
         game.AddBot(1, "Ann", "mechanic");

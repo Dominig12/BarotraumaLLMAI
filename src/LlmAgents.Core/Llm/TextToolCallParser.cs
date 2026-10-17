@@ -144,20 +144,6 @@ public static class TextToolCallParser
         catch (JsonException) { return new JsonObject(); }
     }
 
-    /// <summary>Yields balanced {...} / [...] substrings, outermost first.</summary>
-    static IEnumerable<string> JsonCandidates(string text)
-    {
-        for (int start = 0; start < text.Length; start++)
-        {
-            char open = text[start];
-            if (open != '{' && open != '[') continue;
-            int end = MatchBracket(text, start);
-            if (end < 0) continue;
-            yield return text.Substring(start, end - start + 1);
-            start = end;
-        }
-    }
-
     static int MatchBracket(string text, int start)
     {
         char open = text[start], close = open == '{' ? '}' : ']';

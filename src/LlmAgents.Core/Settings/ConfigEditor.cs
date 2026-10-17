@@ -151,6 +151,14 @@ public sealed class ConfigEditor
         (2, "providers.*.maxOutputTokens", 300, 800),
     };
 
+    /// <summary>Settings that no longer exist, taken out of older files (configVersion 4: every reply is a plan carried out
+    /// step by step, and the observation is always the compact one).</summary>
+    static readonly (int Version, string Path)[] Removed =
+    {
+        (4, "global.sequentialActions"),
+        (4, "global.compactObservation"),
+    };
+
     /// <summary>
     /// Upgrades a config written by an older version: values that are still the old defaults get the new defaults
     /// (a value the user changed is kept), then configVersion is set to the current one. Run before
@@ -181,6 +189,14 @@ public sealed class ConfigEditor
                 obj[key] = @new.DeepClone();
                 changed.Add($"{label}.{parts[^1]}: {old.ToJsonString()} -> {@new.ToJsonString()}");
             }
+        }
+        foreach (var (since, path) in Removed)
+        {
+            if (version >= since) continue;
+            var parts = path.Split('.');
+            if (copy[Prop(copy, parts[0])] is not JsonObject owner) continue;
+            var key = Prop(owner, parts[1]);
+            if (owner.Remove(key)) changed.Add($"{path}: removed (no longer a setting)");
         }
         copy[versionKey ?? "configVersion"] = ModSettings.CurrentConfigVersion;
         try

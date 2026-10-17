@@ -186,20 +186,26 @@ public static class PlanConditions
     /// <summary>A condition context over an observation.</summary>
     public sealed class ObservationContext : IConditionContext
     {
-        readonly Observation o;
+        readonly Lazy<Observation> observation;
         readonly double planSeconds;
         readonly bool? lastOk;
         readonly string? lastResult;
         readonly bool taskRunning;
 
         public ObservationContext(Observation o, double planSeconds, bool? lastOk, string? lastResult, bool taskRunning)
+            : this(() => o, planSeconds, lastOk, lastResult, taskRunning) { }
+
+        /// <param name="look">Called only when a condition needs the situation: a plan of plain steps never looks.</param>
+        public ObservationContext(Func<Observation> look, double planSeconds, bool? lastOk, string? lastResult, bool taskRunning)
         {
-            this.o = o;
+            observation = new Lazy<Observation>(look, isThreadSafe: false);
             this.planSeconds = planSeconds;
             this.lastOk = lastOk;
             this.lastResult = lastResult;
             this.taskRunning = taskRunning;
         }
+
+        Observation o => observation.Value;
 
         public double Number(string name) => name switch
         {

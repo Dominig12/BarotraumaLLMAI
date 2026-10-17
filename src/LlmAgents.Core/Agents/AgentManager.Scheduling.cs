@@ -115,10 +115,10 @@ public sealed partial class AgentManager
             CheckSituation(agent, now);
         }
 
-        if (agent.Busy && g.SequentialActions && !agent.PlanReviewed && now - agent.PlanStartedAt >= g.MaxPlanSeconds)
+        if (agent.Plan is { Reviewed: false } plan && now - plan.StartedAt >= g.MaxPlanSeconds)
         {
-            agent.PlanReviewed = true;
-            agent.AddEvent(EventKind.PlanReview, $"your plan has been running for {ModStatus.Ago(now - agent.PlanStartedAt).Replace(" ago", "")}: keep it (keep_plan) or change it", now);
+            plan.Reviewed = true;
+            agent.AddEvent(EventKind.PlanReview, $"your plan has been running for {ModStatus.Ago(now - plan.StartedAt).Replace(" ago", "")}: keep it (keep_plan) or change it", now);
         }
 
         if (HeartbeatOn(agent) && !agent.Busy && agent.Events.Count == 0 && !agent.Pending && now - agent.LastRequestAt >= HeartbeatInterval(agent))
@@ -170,8 +170,7 @@ public sealed partial class AgentManager
     {
         if (agent.Pending || agent.Events.Count == 0 || now < agent.RetryNotBefore) return null;
         var g = Settings.Global;
-        bool busy = agent.Busy && g.SequentialActions;
-        var eligible = agent.Events.Where(e => !busy || EventPolicy.InterruptsPlan(e.Kind)).ToList();
+        var eligible = agent.Events.Where(e => !agent.Busy || EventPolicy.InterruptsPlan(e.Kind)).ToList();
         if (eligible.Count == 0) return null;
 
         int tier = eligible.Min(e => EventPolicy.Tier(e.Kind));
@@ -187,24 +186,59 @@ public sealed partial class AgentManager
     // ---------------------------------------------------------------- one decision
 
     /// <summary>What was taken from the agent for one request (put back if the request fails).</summary>
-    sealed record DecisionRequest(BotAgent Agent, int Generation, double StartedAt, List<AgentEvent> Events, List<PendingOrder> Orders,
+    /// <param name="Seq">The agent's request number: an answer that is not for its latest request is dropped.</param>
+    sealed record DecisionRequest(BotAgent Agent, int Generation, int Seq, double StartedAt, List<AgentEvent> Events, List<PendingOrder> Orders,
         List<string> Inbox, List<string> Results, string HistoryLine, bool HeartbeatOnly, bool IsRetry);
 
     void StartDecision(BotAgent agent, LlmRouter.Reservation reservation, double now)
     {
         var g = Settings.Global;
+        // looked at first: if the game call fails, nothing has been taken from the bot yet
         var obs = agent.LastObservation != null && now - agent.LastObservationAt < 0.3 ? agent.LastObservation : game.Observe(agent.Id);
         agent.LastObservation = null;
 
         var events = agent.Events.OrderBy(e => EventPolicy.Tier(e.Kind)).ThenBy(e => e.At).ToList();
         agent.Events.Clear();
         var orders = agent.DrainOrders();
+        var inbox = agent.DrainInbox();
+        var results = agent.TakeResults();
+        try
+        {
+            var req = PrepareDecision(agent, obs, events, orders, inbox, results, reservation, now);
+            Track(Task.Run(async () =>
+            {
+                RouteResult r;
+                try
+                {
+                    r = await req.Router.CompleteAsync(reservation, req.System, req.History, req.Tools, req.Token, req.Boost, Tools.All).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { return; }
+                catch (Exception e) { r = new RouteResult(RouteStatus.Failed, null, reservation.Provider, e.Message); }
+                OnGameThread(req.Request.Generation, t => ApplyDecision(req.Request, r, t));
+            }));
+        }
+        catch
+        {
+            // the request never left: everything goes back, the bot tries again later
+            agent.Restore(inbox, results, orders, events);
+            agent.Pending = false;
+            throw;
+        }
+    }
+
+    sealed record PreparedDecision(DecisionRequest Request, LlmRouter Router, string System, List<LlmTurn> History,
+        IReadOnlyList<ToolSpec> Tools, int Boost, System.Threading.CancellationToken Token);
+
+    PreparedDecision PrepareDecision(BotAgent agent, Observation obs, List<AgentEvent> events, List<PendingOrder> orders,
+        List<string> inbox, List<string> results, LlmRouter.Reservation reservation, double now)
+    {
+        var g = Settings.Global;
         obs.Why = events.Select(e => $"[{EventPolicy.Label(e.Kind)}] {e.Text}").ToList();
         obs.PlayerOrders = orders.Select(o => o.Text).ToList();
-        obs.Inbox = agent.DrainInbox();
+        obs.Inbox = inbox;
         obs.Notes = agent.Notes(now);
         obs.Conversation = ConversationFor(agent, now);
-        obs.LastActionResults = agent.TakeResults();
+        obs.LastActionResults = results.ToList();
         obs.EarlierOrders = agent.PastOrders.Select(p => $"({ModStatus.Ago(now - p.At)}) {p.Text}").ToList();
         if (agent.AiControl) obs.Control = $"FULL AI CONTROL (given by {agent.ControlBy ?? "a player"})";
         if (MemoryOn) obs.Memory = MemoryFor(agent, obs);
@@ -215,49 +249,32 @@ public sealed partial class AgentManager
             agent.SetGoal(null, now);
         }
         if (agent.CurrentGoal is { } cur) obs.Goal = $"{cur.Text} ({GoalSource(cur)}, set {ModStatus.Ago(now - cur.SetAt)})";
-        if (g.SequentialActions) obs.Plan = agent.PlanText();
-        foreach (var o in orders) agent.LogEvent("order: " + GoalText(o.Text));
-
-        agent.Pending = true;
-        agent.LastRequestAt = now;
-        agent.LastWhy = string.Join("; ", events.Select(e => $"{EventPolicy.Label(e.Kind)}: {Tools.Clip(e.Text, 80)}"));
+        obs.Plan = agent.PlanText();
 
         ToolGroup? groups = Settings.Bots.ToolSelection == "all" ? null
             : ToolSelection.For(agent, obs, orders.Select(o => o.Text), now, MemoryOn);
         var tools = Tools.For(Settings.Bots.AllowedTools, agent.AiControl, MemoryOn, groups);
         var hidden = groups == null ? null : ToolSelection.HiddenLine(tools.Select(t => t.Name).ToList(), agent.AiControl);
-        string user = UserMessage(obs, g.CompactObservation ? obs.ToCompactJson() : obs.ToJson(), hidden);
-        var req = new DecisionRequest(agent, generation, now, events, orders, obs.Inbox, obs.LastActionResults,
-            // compact: earlier turns are one line each; otherwise the whole old message stays in the history
-            g.CompactObservation ? obs.HistorySummary() : user,
-            events.All(e => e.Kind == EventKind.Heartbeat), events.Any(e => e.Kind == EventKind.Retry));
-
+        string user = UserMessage(obs, obs.ToCompactJson(), hidden);
         Settings.Bots.ExtraPromptByJob.TryGetValue(agent.Job, out var extra);
         string system = Prompts.System(agent, g.MaxActionsPerDecision, extra, agent.AiControl, MemoryOn,
             persona: PersonaPrompt(agent), language: Settings.Bots.SpeechLanguage);
         var history = agent.HistorySnapshot(now);
         history.Add(new LlmTurn("user", user));
-        var token = cts.Token;
-        var r0 = router;
-        int boost = agent.OutputBoost;
-        CountRequest();
 
+        // from here on the request goes out
+        foreach (var o in orders) agent.LogEvent("order: " + GoalText(o.Text));
+        agent.Pending = true;
+        agent.RequestSeq++;
+        agent.LastRequestAt = now;
+        agent.LastWhy = string.Join("; ", events.Select(e => $"{EventPolicy.Label(e.Kind)}: {Tools.Clip(e.Text, 80)}"));
+        CountRequest();
         if (g.LogPrompts) Log.Info($"[{agent.Name}] -> {reservation.Provider}: {user}");
 
-        Track(Task.Run(async () =>
-        {
-            RouteResult r;
-            try
-            {
-                r = await r0.CompleteAsync(reservation, system, history, tools, token, boost, Tools.All).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) { return; }
-            catch (Exception e)
-            {
-                r = new RouteResult(RouteStatus.Failed, null, reservation.Provider, e.Message);
-            }
-            OnGameThread(req.Generation, t => ApplyDecision(req, r, t));
-        }));
+        // earlier turns are one short line each, not the whole old observation
+        var req = new DecisionRequest(agent, generation, agent.RequestSeq, now, events, orders, inbox, results, obs.HistorySummary(),
+            events.All(e => e.Kind == EventKind.Heartbeat), events.Any(e => e.Kind == EventKind.Retry));
+        return new PreparedDecision(req, router, system, history, tools, agent.OutputBoost, cts.Token);
     }
 
     /// <summary>The user message: why the bot is asked, new orders in plain words (small models miss them inside a long
@@ -286,6 +303,11 @@ public sealed partial class AgentManager
     void ApplyDecision(DecisionRequest req, RouteResult r, double now)
     {
         var agent = req.Agent;
+        if (req.Seq != agent.RequestSeq)
+        {
+            Log.Warn($"[{agent.Name}] a late answer to an old request was dropped");
+            return;
+        }
         agent.Pending = false;
         if (!agents.ContainsKey(agent.Id)) return;
         var g = Settings.Global;
@@ -363,7 +385,7 @@ public sealed partial class AgentManager
         // game adapter allows that anyway, but a locked diving suit still needs a human's word).
         bool authority = req.Orders.Any(o => o.Authority);
         agent.ActedSinceDecision = false;
-        ApplyPlan(agent, calls, authority, AutoGoal(req.Orders, calls), now);
+        Guarded(agent, "plan", () => ApplyPlan(agent, calls, authority, AutoGoal(req.Orders, calls), now));
         // heartbeats that change nothing come less and less often; anything else resets the pace
         agent.IdleStreak = req.HeartbeatOnly && !agent.ActedSinceDecision ? agent.IdleStreak + 1 : 0;
     }

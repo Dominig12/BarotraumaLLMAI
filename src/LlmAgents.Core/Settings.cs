@@ -11,7 +11,7 @@ public sealed class ModSettings
 {
     /// <summary>Version of the file's layout. Older files get their untouched old defaults upgraded (see ConfigEditor).</summary>
     public int ConfigVersion { get; set; } = CurrentConfigVersion;
-    public const int CurrentConfigVersion = 3;
+    public const int CurrentConfigVersion = 4;
     public bool Enabled { get; set; } = true;
     public string DefaultProvider { get; set; } = "local";
     public string FallbackProvider { get; set; } = "";
@@ -66,7 +66,8 @@ public sealed class ModSettings
         Bots.ToolSelection = (Bots.ToolSelection ?? "").Trim().ToLowerInvariant() == "all" ? "all" : "auto";
         Chat.Prefix ??= "";
         Chat.Provider ??= "";
-        Global.SpeechChannel = (Global.SpeechChannel ?? "auto").Trim().ToLowerInvariant();
+        var channel = (Global.SpeechChannel ?? "").Trim().ToLowerInvariant();
+        Global.SpeechChannel = channel is "" or "radio" ? "auto" : channel;
         Providers ??= new List<ProviderConfig>();
         foreach (var p in Providers)
         {
@@ -123,8 +124,8 @@ public sealed class ModSettings
             throw new InvalidDataException($"memory.summaryProvider '{Memory.SummaryProvider}' not found in providers");
         if (Bots.Autonomy is not ("events" or "always" or "order"))
             throw new InvalidDataException("bots.autonomy must be 'events', 'always' or 'order'");
-        if (Global.SpeechChannel is not ("auto" or "radio" or "local"))
-            throw new InvalidDataException("global.speechChannel must be 'auto', 'radio' or 'local'");
+        if (Global.SpeechChannel is not ("auto" or "local"))
+            throw new InvalidDataException("global.speechChannel must be 'auto' or 'local'");
         if (Global.TickSeconds <= 0) throw new InvalidDataException("global.tickSeconds must be > 0");
         if (Global.MaxActionsPerDecision < 1) throw new InvalidDataException("global.maxActionsPerDecision must be >= 1");
         if (Global.MailDelaySeconds < 0) throw new InvalidDataException("global.mailDelaySeconds must be >= 0");
@@ -167,16 +168,10 @@ public sealed class GlobalSettings
     public double RetrySeconds { get; set; } = 1.0;
     /// <summary>Per bot, private messages (message_crew) per minute. Prevents "Roger!" ping-pong between agents. 0 = unlimited.</summary>
     public int MaxMessagesPerMinute { get; set; } = 3;
-    /// <summary>Most tool calls one reply may contain (with sequentialActions: the length of a plan).</summary>
+    /// <summary>Most tool calls one reply may contain (the length of a plan).</summary>
     public int MaxActionsPerDecision { get; set; } = 6;
     /// <summary>Earlier turns the model sees (compact: one short line each, plus what it did then).</summary>
     public int HistoryTurns { get; set; } = 10;
-    /// <summary>
-    /// The calls of one reply are a plan carried out step by step: a multi-step task (equip, craft...) or go_to_room
-    /// finishes before the next step starts, and the bot is not asked again until the plan is done, a step fails,
-    /// a player gives an order or something new and urgent happens. false = all calls run at once (old behaviour).
-    /// </summary>
-    public bool SequentialActions { get; set; } = true;
     /// <summary>A bot whose routine decisions keep changing nothing ("wait", "already doing that") thinks less and less often
     /// (x2, x4... up to maxIdleIntervalSeconds) until something happens. Saves requests and stops "standing by" chatter.</summary>
     public bool IdleBackoff { get; set; } = true;
@@ -200,12 +195,8 @@ public sealed class GlobalSettings
     public bool ShowBotMessagesInChat { get; set; } = true;
     /// <summary>At most this many bot-to-bot messages per minute are spoken in the chat (crew-wide); the rest are only delivered. 0 = no limit.</summary>
     public int MaxChatEchoPerMinute { get; set; } = 6;
-    /// <summary>Shorter observation for the LLM (no empty fields, one line per crew member). Faster and clearer for small models.</summary>
-    public bool CompactObservation { get; set; } = true;
-    /// <summary>
-    /// Where bots speak: "auto" = radio if the bot wears a working headset, otherwise out loud (like vanilla bots);
-    /// "radio" = same as auto (radio is always preferred); "local" = always out loud, nearby only.
-    /// </summary>
+    /// <summary>Where bots speak: "auto" = radio if the bot wears a working headset, otherwise out loud (like vanilla
+    /// bots); "local" = always out loud, nearby only. ("radio", an old value, is the same as "auto".)</summary>
     public string SpeechChannel { get; set; } = "auto";
     /// <summary>While the sub is in danger (monsters nearby, breaches, water aboard, intruders) bots never take off their diving gear.</summary>
     public bool KeepDivingGearInDanger { get; set; } = true;

@@ -438,6 +438,20 @@ public class ConfigMigrationTests
         Assert.Equal("always", editor.Settings.Bots.Autonomy);          // a version 2 change: not applied again
         Assert.Equal(12, editor.Settings.Chat.DispatchWaitSeconds);
         Assert.Equal(12, editor.Settings.Global.MaxNotes);
-        Assert.Contains("configVersion: 2 -> 3", changed);
+        Assert.Contains("configVersion: 2 -> 4", changed);
+    }
+
+    [Fact]
+    public void Version3LosesTheSettingsThatAreGone()
+    {
+        var json = OldConfig.Replace("\"enabled\": true,", "\"configVersion\": 3, \"enabled\": true,")
+            .Replace("\"global\": {", "\"global\": { \"sequentialActions\": false, \"compactObservation\": true, \"speechChannel\": \"radio\",");
+        var editor = new ConfigEditor(json);
+        var changed = editor.MigrateDefaults();
+        Assert.Contains("global.sequentialActions: removed (no longer a setting)", changed);
+        Assert.Contains("global.compactObservation: removed (no longer a setting)", changed);
+        Assert.DoesNotContain("sequentialActions", editor.ToJson());
+        Assert.Equal("auto", editor.Settings.Global.SpeechChannel);      // "radio" was the same as "auto"
+        Assert.Equal("always", editor.Settings.Bots.Autonomy);           // older changes are not applied again
     }
 }

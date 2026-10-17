@@ -89,11 +89,11 @@ public class MonitorTests
         {
             Version = "1",
             Bots = { new MonitorBot { Id = 3, Name = "Олег", State = "plan", Goal = "насос" } },
-            Details = new MonitorBotDetails { Id = 3, PlanSteps = { "go_to_room(room=\"Engine\")" }, Activity = { new MonitorActivity { Ago = 2, Kind = "do", Text = "x" } } },
+            Details = new MonitorBotDetails { Id = 3, PlanTree = "n1 go_to_room(room=\"Engine\") <NOW>", Activity = { new MonitorActivity { Ago = 2, Kind = "do", Text = "x" } } },
         };
         var back = SettingsNet.Deserialize<MonitorSnapshot>(SettingsNet.Serialize(s))!;
         Assert.Equal("Олег", back.Bots[0].Name);
-        Assert.Equal("go_to_room(room=\"Engine\")", back.Details!.PlanSteps[0]);
+        Assert.Equal("n1 go_to_room(room=\"Engine\") <NOW>", back.Details!.PlanTree);
         Assert.Equal("do", back.Details.Activity[0].Kind);
         Assert.True(SettingsNet.Deserialize<MonitorRequest>("{\"bot\":5,\"activity\":true}") is { Bot: 5, Activity: true });
     }

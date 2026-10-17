@@ -274,15 +274,11 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         // was loaded in the middle of a round and the hook will not come).
         if (sessionSeenAt < 0) sessionSeenAt = Timing.TotalTime;
         if (!roundStarted && Timing.TotalTime - sessionSeenAt < 5) return;
-        try
-        {
-            adapter?.Tick();
-            manager.Update();
-        }
-        catch (Exception e)
-        {
-            Log.Error("update failed: " + e);
-        }
+        // the tasks and the agents each on their own: a fault in one must not stop the other
+        try { adapter?.Tick(); }
+        catch (Exception e) { Log.ErrorThrottled("tick:tasks", "task update failed: " + e); }
+        try { manager.Update(); }
+        catch (Exception e) { Log.ErrorThrottled("tick:agents", "agent update failed: " + e); }
     }
 
     public void Dispose()

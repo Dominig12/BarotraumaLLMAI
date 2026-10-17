@@ -97,7 +97,6 @@ public sealed class MonitorBotDetails
     public double? GoalAgo { get; set; }
     /// <summary>What the plan waits for right now ("walking to Engine [h3]"...).</summary>
     public string? PlanNow { get; set; }
-    public List<string> PlanSteps { get; set; } = new();
     public string? PlanTree { get; set; }
     public double? PlanAgo { get; set; }
     public string? LastWhy { get; set; }
