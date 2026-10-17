@@ -90,3 +90,11 @@ public static class SettingsNet
     public static string Serialize<T>(T value) => JsonSerializer.Serialize(value, Json);
     public static T? Deserialize<T>(string json) => JsonSerializer.Deserialize<T>(json, Json);
 }
+
+/// <summary>"Who is under full AI control": the client asks with an empty message, the server answers with a count and
+/// the characters' entity ids (UInt16 each).</summary>
+public static class ControlNet
+{
+    public const string MessageId = "llmagents.control";
+    public const int MaxIds = 64;
+}

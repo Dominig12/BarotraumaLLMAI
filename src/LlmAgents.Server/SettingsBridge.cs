@@ -16,9 +16,14 @@ namespace LlmAgents;
 internal sealed class SettingsBridge
 {
     readonly Func<SettingsService?> service;
+    readonly Func<GameAdapter?> adapter;
     INetworkingService? net;
 
-    public SettingsBridge(Func<SettingsService?> service) { this.service = service; }
+    public SettingsBridge(Func<SettingsService?> service, Func<GameAdapter?> adapter)
+    {
+        this.service = service;
+        this.adapter = adapter;
+    }
 
     /// <summary>Registers the network message. Kept separate so a LuaCs API change only disables the window, not the mod.</summary>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
@@ -27,6 +32,26 @@ internal sealed class SettingsBridge
         net = LuaCsSetup.Instance?.NetworkingService;
         if (net == null) throw new InvalidOperationException("LuaCs networking service not available");
         net.Receive(SettingsNet.MessageId, (NetMessageReceived)OnMessage);
+        net.Receive(ControlNet.MessageId, (NetMessageReceived)OnControlRequest);
+    }
+
+    /// <summary>The client part asks (every few seconds during a round) which bots are under full AI control, to
+    /// mark them in the crew list. Anyone may ask: the crew list is visible to everybody anyway.</summary>
+    void OnControlRequest(IReadMessage msg, Client client)
+    {
+        try
+        {
+            if (net == null || client == null) return;
+            var ids = adapter()?.ControlledIds.ToList() ?? new System.Collections.Generic.List<ushort>();
+            var m = net.Start(ControlNet.MessageId);
+            m.WriteUInt16((ushort)Math.Min(ids.Count, ControlNet.MaxIds));
+            foreach (var id in ids.Take(ControlNet.MaxIds)) m.WriteUInt16(id);
+            net.SendToClient(m, client.Connection, DeliveryMethod.Unreliable);
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"control status for {client?.Name} failed: {e.Message}");
+        }
     }
 
     public static bool CanEdit(Client? c)

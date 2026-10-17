@@ -4,10 +4,12 @@
   <OrderNameContextual.llmcontrol>Передать полный контроль ИИ</OrderNameContextual.llmcontrol>
   <OrderDialog.llmcontrol>[name], командуй сам. Действуй по обстановке.</OrderDialog.llmcontrol>
   <OrderDialogSelf.llmcontrol>Беру всё на себя.</OrderDialogSelf.llmcontrol>
+  <tooltip.llmcontrolled>Под полным контролем ИИ (повторный приказ забирает контроль)</tooltip.llmcontrolled>
   <OrderName.llmmark>Пометить для ИИ</OrderName.llmmark>
   <OrderNameContextual.llmmark>Пометить для ИИ-экипажа</OrderNameContextual.llmmark>
   <OrderDialog.llmmark>Экипаж, обратите внимание на это.</OrderDialog.llmmark>
   <OrderDialogSelf.llmmark>Экипаж, обратите внимание на это.</OrderDialogSelf.llmmark>
+  <tooltip.llmmarked>Помечено для ИИ-экипажа (средняя кнопка мыши: снять пометку)</tooltip.llmmarked>
   <OrderName.llmunmark>Снять пометку ИИ</OrderName.llmunmark>
   <OrderNameContextual.llmunmark>Снять пометку ИИ</OrderNameContextual.llmunmark>
   <OrderDialog.llmunmark>Это больше не важно.</OrderDialog.llmunmark>

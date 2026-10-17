@@ -63,6 +63,9 @@ public sealed partial class GameAdapter : IGameApi
 
     public bool IsControlled(Character c) => controlled.Contains(c.ID);
 
+    /// <summary>Bots under full AI control (for the clients' crew list).</summary>
+    public IReadOnlyCollection<ushort> ControlledIds => controlled;
+
     static string JobOf(Character c) => c.JobIdentifier.IsEmpty ? "none" : c.JobIdentifier.Value;
 
     static Character? Find(int id) => Entity.FindEntityByID((ushort)id) as Character;

@@ -9,7 +9,7 @@ using Microsoft.Xna.Framework.Input;
 namespace LlmAgents.Client;
 
 /// <summary>
-/// Client half of the mod: the in-game settings window and the "mark for the AI" context menu entries. Opens with "!llm" in the chat (the server asks for it)
+/// Client half of the mod: the in-game settings window, the "mark for the AI" context menu entries and marks, and the AI control icon in the crew list. Opens with "!llm" in the chat (the server asks for it)
 /// or Ctrl+Shift+L. All settings live on the server; this window only shows and edits them.
 /// </summary>
 public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
@@ -19,6 +19,7 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
 
     SettingsWindow? window;
     INetworkingService? net;
+    ControlMarks? controlMarks;
 
     public void PreInitPatching() { }
 
@@ -32,6 +33,14 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
         catch (Exception e)
         {
             LoggerService?.LogError("[LlmAgents] settings window unavailable: " + e.Message);
+        }
+        try
+        {
+            if (net != null) controlMarks = new ControlMarks(net);
+        }
+        catch (Exception e)
+        {
+            LoggerService?.LogError("[LlmAgents] crew list marks for AI control unavailable: " + e.Message);
         }
         try
         {
@@ -85,12 +94,16 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
             if (PlayerInput.IsCtrlDown() && PlayerInput.IsShiftDown() && PlayerInput.KeyHit(Keys.L)) window?.Toggle();
         }
         catch { /* input not ready (loading screens) */ }
+        try { controlMarks?.Update(); }
+        catch { /* the crew list is not there (loading, menus) */ }
     }
 
     public void Dispose()
     {
         try { EventService?.Unsubscribe<IEventUpdate>(this); } catch { }
         try { ContextMarkMenu.Unpatch(); } catch { }
+        try { controlMarks?.Clear(); } catch { }
+        controlMarks = null;
         window?.Close();
         window = null;
     }
