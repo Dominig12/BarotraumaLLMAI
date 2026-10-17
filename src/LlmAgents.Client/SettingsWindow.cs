@@ -29,7 +29,13 @@ internal sealed class SettingsWindow
     static readonly Color OkColor = new(150, 230, 150);
     static readonly Color HeaderColor = new(120, 200, 255);
 
-    public SettingsWindow(Action<SettingsRequest> send) { this.send = send; }
+    readonly Action? openMonitor;
+
+    public SettingsWindow(Action<SettingsRequest> send, Action? openMonitor = null)
+    {
+        this.send = send;
+        this.openMonitor = openMonitor;
+    }
 
     public bool IsOpen => box != null && !box.Closed;
 
@@ -101,25 +107,31 @@ internal sealed class SettingsWindow
         {
             RelativeSpacing = 0.01f,
         };
-        new GUIButton(new RectTransform(new Vector2(0.15f, 1f), buttons.RectTransform), "Обновить")
+        new GUIButton(new RectTransform(new Vector2(0.13f, 1f), buttons.RectTransform), "Обновить")
         {
             ToolTip = "Загрузить свежие значения и статус ботов с сервера (несохранённые правки пропадут).",
             OnClicked = (_, _) => { send(new SettingsRequest { Op = "get" }); SetStatus("Обновляю..."); return true; },
         };
-        new GUIButton(new RectTransform(new Vector2(0.2f, 1f), buttons.RectTransform), "Применить")
+        new GUIButton(new RectTransform(new Vector2(0.16f, 1f), buttons.RectTransform), "Применить")
         {
             OnClicked = (_, _) => { Apply(); return true; },
         };
-        new GUIButton(new RectTransform(new Vector2(0.2f, 1f), buttons.RectTransform), "Отменить изменения")
+        new GUIButton(new RectTransform(new Vector2(0.19f, 1f), buttons.RectTransform), "Отменить изменения")
         {
             OnClicked = (_, _) => { pending.Clear(); RebuildFields(); SetStatus("Изменения отменены"); return true; },
         };
-        new GUIButton(new RectTransform(new Vector2(0.2f, 1f), buttons.RectTransform), "Перечитать файлы")
+        new GUIButton(new RectTransform(new Vector2(0.17f, 1f), buttons.RectTransform), "Перечитать файлы")
         {
             ToolTip = "Перечитать llm_config.json и personas.json с диска (если правили их руками).",
             OnClicked = (_, _) => { send(new SettingsRequest { Op = "reload" }); SetStatus("Перечитываю..."); return true; },
         };
-        new GUIButton(new RectTransform(new Vector2(0.13f, 1f), buttons.RectTransform), "Закрыть")
+        if (openMonitor != null)
+            new GUIButton(new RectTransform(new Vector2(0.15f, 1f), buttons.RectTransform), "Монитор ботов")
+            {
+                ToolTip = "Чем заняты боты: цели, планы, действия, статистика (Ctrl+Shift+M).",
+                OnClicked = (_, _) => { openMonitor(); return true; },
+            };
+        new GUIButton(new RectTransform(new Vector2(0.11f, 1f), buttons.RectTransform), "Закрыть")
         {
             OnClicked = (_, _) => { Close(); return true; },
         };

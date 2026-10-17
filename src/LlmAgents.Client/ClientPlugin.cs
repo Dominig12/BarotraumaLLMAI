@@ -19,6 +19,7 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
 
     SettingsWindow? window;
     MonitorWindow? monitor;
+    MonitorButton? monitorButton;
     INetworkingService? net;
     ControlMarks? controlMarks;
 
@@ -26,8 +27,9 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
 
     public void Initialize()
     {
-        window = new SettingsWindow(Send);
         monitor = new MonitorWindow(SendMonitor);
+        window = new SettingsWindow(Send, () => monitor?.Open());
+        monitorButton = new MonitorButton(() => monitor?.Toggle());
         try
         {
             RegisterNet();
@@ -122,6 +124,8 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
         catch { /* input not ready (loading screens) */ }
         try { monitor?.Update(); }
         catch { /* GUI not ready */ }
+        try { monitorButton?.Update(); }
+        catch { /* the crew list is not there */ }
         try { controlMarks?.Update(); }
         catch { /* the crew list is not there (loading, menus) */ }
     }
@@ -136,5 +140,7 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
         window = null;
         monitor?.Close();
         monitor = null;
+        try { monitorButton?.Remove(); } catch { }
+        monitorButton = null;
     }
 }
