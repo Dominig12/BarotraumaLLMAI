@@ -34,6 +34,7 @@
   <!-- Only the message types are shared with the server; the rest of Core is not needed on the client. -->
   <ItemGroup>
     <Compile Include="..\LlmAgents.Core\Settings\SettingsProtocol.cs" Link="Core\SettingsProtocol.cs" />
+    <Compile Include="..\LlmAgents.Core\Settings\MonitorProtocol.cs" Link="Core\MonitorProtocol.cs" />
   </ItemGroup>
 
   <ItemDefinitionGroup>

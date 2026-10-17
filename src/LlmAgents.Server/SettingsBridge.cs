@@ -17,12 +17,14 @@ internal sealed class SettingsBridge
 {
     readonly Func<SettingsService?> service;
     readonly Func<GameAdapter?> adapter;
+    readonly Func<MonitorRequest, MonitorSnapshot?> monitor;
     INetworkingService? net;
 
-    public SettingsBridge(Func<SettingsService?> service, Func<GameAdapter?> adapter)
+    public SettingsBridge(Func<SettingsService?> service, Func<GameAdapter?> adapter, Func<MonitorRequest, MonitorSnapshot?> monitor)
     {
         this.service = service;
         this.adapter = adapter;
+        this.monitor = monitor;
     }
 
     /// <summary>Registers the network message. Kept separate so a LuaCs API change only disables the window, not the mod.</summary>
@@ -33,6 +35,36 @@ internal sealed class SettingsBridge
         if (net == null) throw new InvalidOperationException("LuaCs networking service not available");
         net.Receive(SettingsNet.MessageId, (NetMessageReceived)OnMessage);
         net.Receive(ControlNet.MessageId, (NetMessageReceived)OnControlRequest);
+        net.Receive(MonitorNet.MessageId, (NetMessageReceived)OnMonitorRequest);
+    }
+
+    readonly System.Collections.Generic.Dictionary<string, DateTime> monitorLogged = new();
+
+    /// <summary>The bot monitor window (about once a second while it is open). Everyone may look: it shows what the
+    /// crew does, nothing of the configuration.</summary>
+    void OnMonitorRequest(IReadMessage msg, Client client)
+    {
+        try
+        {
+            if (net == null || client == null) return;
+            var req = SettingsNet.Deserialize<MonitorRequest>(msg.ReadString()) ?? new MonitorRequest();
+            var snap = monitor(req) ?? new MonitorSnapshot
+            {
+                Version = ModInfo.Version,
+                Message = "LLM-агенты не запущены: проверьте llm_config.json и консоль сервера.",
+            };
+            var m = net.Start(MonitorNet.MessageId);
+            m.WriteString(SettingsNet.Serialize(snap));
+            net.SendToClient(m, client.Connection, DeliveryMethod.Reliable);
+            var now = DateTime.UtcNow;
+            if (!monitorLogged.TryGetValue(client.Name, out var at) || (now - at).TotalSeconds > 300)
+                Log.Info($"bot monitor opened by {client.Name}");
+            monitorLogged[client.Name] = now;
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"monitor request from {client?.Name} failed: {e.Message}");
+        }
     }
 
     /// <summary>The client part asks (every few seconds during a round) which bots are under full AI control, to
@@ -112,6 +144,14 @@ internal sealed class SettingsBridge
         }
         bool canEdit = CanEdit(sender);
         var args = SettingsService.Tokenize(text.Trim());
+        if (args.Count == 2 && args[1].ToLowerInvariant() is "monitor" or "монитор" or "mon")
+        {
+            // the monitor is for everybody; the client part opens it (Ctrl+Shift+M also works)
+            try { Send(sender, SettingsNet.Serialize(new SettingsResponse { Type = "monitor" })); }
+            catch (Exception e) { Log.Warn("could not ask the client to open the monitor: " + e.Message); }
+            Reply(sender, "Монитор ботов: окно открывается, если у вас стоит клиентская часть мода (LuaCs). Клавиши: Ctrl+Shift+M.");
+            return true;
+        }
         if (args.Count <= 1 && canEdit)
         {
             // ask the client's settings window (if it has our client plugin) to open; vanilla clients ignore this

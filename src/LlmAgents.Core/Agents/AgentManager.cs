@@ -122,6 +122,9 @@ public sealed partial class AgentManager : IDisposable
         nextTick = double.NegativeInfinity;
         ResetDirector();
         conversation.Clear();
+        tokensIn = tokensOut = 0;
+        dispatchRequests = 0;
+        roundStartedAt = double.NaN;
     }
 
     // ---------------------------------------------------------------- game thread
@@ -130,6 +133,7 @@ public sealed partial class AgentManager : IDisposable
     {
         if (!Settings.Enabled) return;
         double now = clock();
+        if (double.IsNaN(roundStartedAt)) roundStartedAt = now;
         if (now < nextTick) return;
         nextTick = now + Settings.Global.TickSeconds;
 
@@ -174,7 +178,7 @@ public sealed partial class AgentManager : IDisposable
             seen.Add(h.Id);
             if (!agents.TryGetValue(h.Id, out var agent))
             {
-                agent = new BotAgent(h);
+                agent = new BotAgent(h) { Clock = clock };
                 agents[h.Id] = agent;
                 Log.Info($"agent created: {h.Name} ({h.Job}) -> provider '{ProviderFor(agent)}'" + (personas.PromptFor(h.Name) != null ? " (persona)" : ""));
                 // full AI control given in an earlier round stays until a player takes it back
@@ -214,6 +218,16 @@ public sealed partial class AgentManager : IDisposable
     // ---------------------------------------------------------------- status
 
     readonly Queue<double> requestTimes = new();
+    long tokensIn, tokensOut;
+    double roundStartedAt = double.NaN;
+
+    /// <summary>Tokens of every request (bots, dispatcher, director) for the monitor.</summary>
+    void CountTokens(RouteResult r)
+    {
+        if (r.Response == null) return;
+        tokensIn += r.Response.InputTokens;
+        tokensOut += r.Response.OutputTokens;
+    }
 
     /// <summary>Counts an LLM request for "requests per minute" in the status.</summary>
     void CountRequest()

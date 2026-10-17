@@ -93,7 +93,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
             Log.Error("'mark for the AI' disabled, could not patch the game: " + e.Message);
         }
 
-        settingsBridge = new SettingsBridge(() => settingsService, () => adapter);
+        settingsBridge = new SettingsBridge(() => settingsService, () => adapter, r => manager?.Monitor(r.Bot, Features(), r.Activity));
         TryRegisterSettingsWindow();
 
         try
@@ -131,7 +131,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     internal bool OnChatCommand(Barotrauma.Networking.Client sender, string text)
     {
         if (sender == null || !SettingsService.IsCommand(text)) return false;
-        settingsBridge ??= new SettingsBridge(() => settingsService, () => adapter);
+        settingsBridge ??= new SettingsBridge(() => settingsService, () => adapter, r => manager?.Monitor(r.Bot, Features(), r.Activity));
         return settingsBridge.TryHandleChat(sender, text);
     }
 

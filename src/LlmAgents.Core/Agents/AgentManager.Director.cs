@@ -29,6 +29,8 @@ public sealed partial class AgentManager
     double directorFallbackUntil = double.NegativeInfinity;
     int directorFailures;
     int directorDecisions;
+    string? directorLastSummary;
+    double directorLastAt = double.NaN;
 
     const string DirectorSource = "director";
 
@@ -189,6 +191,7 @@ public sealed partial class AgentManager
     void ApplyDirector(List<DirectorEvent> events, List<string> results, string historyLine, RouteResult r, double now)
     {
         directorPending = false;
+        CountTokens(r);
         var d = Settings.Director;
         if (r.Status != RouteStatus.Ok || r.Response == null)
         {
@@ -211,6 +214,8 @@ public sealed partial class AgentManager
         var calls = r.Response.ToolCalls.ToList();
         var summary = calls.Count == 0 ? "(no tool call)" : string.Join("; ", calls.Select(c => $"{c.Name}({Tools.Clip(Tools.ArgsToString(c), 300)})"));
         directorHistory.Add((now, historyLine, summary));
+        directorLastSummary = summary;
+        directorLastAt = now;
         while (directorHistory.Count > Math.Max(0, d.HistoryTurns)) directorHistory.RemoveAt(0);
         Log.Info($"[director] <- {r.Provider}: {summary}");
         if (r.Response.Truncated) WarnTruncated(r.Provider, r.Response);
@@ -277,6 +282,8 @@ public sealed partial class AgentManager
         Log.Info($"[{bot.Name}] director assigns: {goal}");
         ApplyPlan(bot, new List<ToolCall> { plan }, authority: false, new AgentGoal(goal, DirectorSource, now), now);
         bot.LastDecision = "director: " + Tools.Clip(goal, 100);
+        bot.Stats.DirectorAssignments++;
+        bot.AddActivity("director", "assigned: " + Tools.Clip(goal, 200), clock());
         bot.LastDecisionAt = now;
         return bot.Busy ? "ok, " + bot.Name + " is on it" : "ok, done at once: " + Tools.Clip(string.Join(" | ", bot.RecentResults(2)), 200);
     }
@@ -298,6 +305,8 @@ public sealed partial class AgentManager
         directorStartedAt = double.NaN;
         directorFallbackUntil = double.NegativeInfinity;
         directorFailures = 0;
+        directorLastSummary = null;
+        directorLastAt = double.NaN;
     }
 
     FeatureStatus? DirectorFeature()

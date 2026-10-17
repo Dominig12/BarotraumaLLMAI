@@ -157,6 +157,8 @@ public sealed class BotAgent
 
     public void ReceivePlayerOrder(string order, bool authority = true, string? from = null)
     {
+        System.Threading.Interlocked.Increment(ref Stats.OrdersReceived);
+        AddActivity("order", order, Clock?.Invoke() ?? double.NaN);
         playerOrders.Enqueue(new PendingOrder(order, authority, from));
         while (playerOrders.Count > MaxInbox && playerOrders.TryDequeue(out _)) { }
     }
@@ -367,6 +369,30 @@ public sealed class BotAgent
         PlanLookup = false;
     }
 
+    // ------------------------------------------------------------------ monitoring
+
+    /// <summary>What the bot did lately, for the in-game monitor: decisions, calls with results, task reports, orders.</summary>
+    public sealed record ActivityEntry(double At, string Kind, string Text);
+
+    public const int MaxActivity = 60;
+    /// <summary>The manager's clock (times of activity entries recorded from outside the manager).</summary>
+    public Func<double>? Clock { get; set; }
+    readonly List<ActivityEntry> activity = new();
+
+    public void AddActivity(string kind, string text, double at)
+    {
+        lock (sync)
+        {
+            activity.Add(new ActivityEntry(at, kind, Tools.Clip(text, 400)));
+            while (activity.Count > MaxActivity) activity.RemoveAt(0);
+        }
+    }
+
+    public List<ActivityEntry> Activity() { lock (sync) return activity.ToList(); }
+
+    /// <summary>Counters for the monitor (this round).</summary>
+    public readonly BotStats Stats = new();
+
     // ------------------------------------------------------------------ history
 
     readonly List<(double At, string User, string Assistant)> history = new();
@@ -394,5 +420,24 @@ public sealed class BotAgent
             history.Add((at, user, assistantSummary));
             while (history.Count > Math.Max(0, maxTurns)) history.RemoveAt(0);
         }
+    }
+}
+
+/// <summary>A bot's counters for the monitor. Game thread only.</summary>
+public sealed class BotStats
+{
+    public int Requests, FailedRequests, TokensIn, TokensOut, ReasoningTokens;
+    public double LatencySum;
+    public int Answered;
+    public int ToolCalls, ToolErrors, TasksDone, TasksFailed, OrdersReceived, DirectorAssignments;
+    public readonly Dictionary<string, int> PerTool = new();
+
+    public double AvgLatency => Answered == 0 ? 0 : LatencySum / Answered;
+
+    public void Call(string tool, bool error)
+    {
+        ToolCalls++;
+        if (error) ToolErrors++;
+        PerTool[tool] = PerTool.TryGetValue(tool, out var n) ? n + 1 : 1;
     }
 }

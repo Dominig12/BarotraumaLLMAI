@@ -33,6 +33,7 @@ public sealed partial class AgentManager
     public ConversationLog Conversation => conversation;
 
     const int DispatchAttempts = 2;
+    int dispatchRequests;
 
     /// <summary>A human player wrote in the chat (game thread).</summary>
     public void SubmitChat(ChatCommand cmd)
@@ -180,6 +181,8 @@ public sealed partial class AgentManager
     void ApplyDispatch(PendingChat p, List<RosterEntry> roster, RouteResult r, double now)
     {
         p.InFlight = false;
+        CountTokens(r);
+        dispatchRequests++;
         var parsed = r.Status == RouteStatus.Ok ? ChatDispatcher.ParseRecipients(r.Response, roster) : null;
         if (parsed != null)
         {

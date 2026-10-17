@@ -248,6 +248,7 @@ public sealed class SettingsService
         "!llm list [вкладка] — ключи и значения; !llm get <ключ>; !llm set <ключ> <значение>\n" +
         "!llm persona <имя> — характер бота; !llm persona <имя> preset <id> | prompt <текст> | provider <модель> | clear\n" +
         "!llm presets — список характеров; !llm preset <id> <текст> — создать/изменить; !llm preset <id> delete\n" +
+        "!llm monitor — монитор ботов (задачи, планы, статистика; Ctrl+Shift+M), для всех игроков\n" +
         "!llm reload — перечитать файлы. Имена с пробелами — в кавычках.";
 
     /// <summary>Runs a "!llm ..." command and returns the reply for the sender.</summary>

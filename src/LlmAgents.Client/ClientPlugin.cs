@@ -10,7 +10,7 @@ namespace LlmAgents.Client;
 
 /// <summary>
 /// Client half of the mod: the in-game settings window, the "mark for the AI" context menu entries and marks, and the AI control icon in the crew list. Opens with "!llm" in the chat (the server asks for it)
-/// or Ctrl+Shift+L. All settings live on the server; this window only shows and edits them.
+/// or Ctrl+Shift+L. The bot monitor: "!llm monitor" or Ctrl+Shift+M. All settings live on the server; this window only shows and edits them.
 /// </summary>
 public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
 {
@@ -18,6 +18,7 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
     public IEventService EventService { get; set; } = null!;
 
     SettingsWindow? window;
+    MonitorWindow? monitor;
     INetworkingService? net;
     ControlMarks? controlMarks;
 
@@ -26,6 +27,7 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
     public void Initialize()
     {
         window = new SettingsWindow(Send);
+        monitor = new MonitorWindow(SendMonitor);
         try
         {
             RegisterNet();
@@ -58,6 +60,28 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
     {
         net = LuaCsSetup.Instance?.NetworkingService ?? throw new InvalidOperationException("LuaCs networking service not available");
         net.Receive(SettingsNet.MessageId, (NetMessageReceived)OnMessage);
+        net.Receive(MonitorNet.MessageId, (NetMessageReceived)OnMonitorMessage);
+    }
+
+    void OnMonitorMessage(IReadMessage msg)
+    {
+        try
+        {
+            var snap = SettingsNet.Deserialize<MonitorSnapshot>(msg.ReadString());
+            if (snap != null) monitor?.OnSnapshot(snap);
+        }
+        catch (Exception e)
+        {
+            LoggerService?.LogError("[LlmAgents] bad monitor message: " + e.Message);
+        }
+    }
+
+    void SendMonitor(MonitorRequest request)
+    {
+        if (net == null || GameMain.Client == null) return;
+        var m = net.Start(MonitorNet.MessageId);
+        m.WriteString(SettingsNet.Serialize(request));
+        net.SendToServer(m, DeliveryMethod.Reliable);
     }
 
     public void OnLoadCompleted() { }
@@ -67,7 +91,8 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
         try
         {
             var response = SettingsNet.Deserialize<SettingsResponse>(msg.ReadString());
-            if (response != null) window?.OnResponse(response);
+            if (response?.Type == "monitor") monitor?.Open();
+            else if (response != null) window?.OnResponse(response);
         }
         catch (Exception e)
         {
@@ -92,8 +117,11 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
         try
         {
             if (PlayerInput.IsCtrlDown() && PlayerInput.IsShiftDown() && PlayerInput.KeyHit(Keys.L)) window?.Toggle();
+            if (PlayerInput.IsCtrlDown() && PlayerInput.IsShiftDown() && PlayerInput.KeyHit(Keys.M)) monitor?.Toggle();
         }
         catch { /* input not ready (loading screens) */ }
+        try { monitor?.Update(); }
+        catch { /* GUI not ready */ }
         try { controlMarks?.Update(); }
         catch { /* the crew list is not there (loading, menus) */ }
     }
@@ -106,5 +134,7 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
         controlMarks = null;
         window?.Close();
         window = null;
+        monitor?.Close();
+        monitor = null;
     }
 }

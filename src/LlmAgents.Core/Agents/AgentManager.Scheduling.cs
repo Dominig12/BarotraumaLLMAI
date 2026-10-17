@@ -290,8 +290,12 @@ public sealed partial class AgentManager
         if (!agents.ContainsKey(agent.Id)) return;
         var g = Settings.Global;
 
+        agent.Stats.Requests++;
+        CountTokens(r);
         if (r.Status != RouteStatus.Ok || r.Response == null)
         {
+            agent.Stats.FailedRequests++;
+            agent.AddActivity("error", $"request failed ({r.Provider}, {r.Status}): {Tools.Clip(r.Detail, 200)}", now);
             agent.FailedRequests++;
             Log.Warn($"[{agent.Name}] no decision ({r.Status}): {r.Detail}");
             agent.AddError($"no decision ({r.Status}): {Tools.Clip(r.Detail, 150)}");
@@ -303,6 +307,11 @@ public sealed partial class AgentManager
             return;
         }
         agent.FailedRequests = 0;
+        agent.Stats.TokensIn += r.Response.InputTokens;
+        agent.Stats.TokensOut += r.Response.OutputTokens;
+        agent.Stats.ReasoningTokens += r.Response.ReasoningTokens;
+        agent.Stats.LatencySum += Math.Max(0, now - req.StartedAt);
+        agent.Stats.Answered++;
 
         var calls = r.Response.ToolCalls.Take(g.MaxActionsPerDecision).ToList();
         if (r.Response.Truncated)
@@ -327,6 +336,8 @@ public sealed partial class AgentManager
         agent.AddExchange(req.HistoryLine, summary, g.HistoryTurns, req.StartedAt);
         agent.LastDecision = summary;
         agent.LastDecisionAt = now;
+        agent.AddActivity("think", $"{(string.IsNullOrEmpty(agent.LastWhy) ? "" : "why: " + Tools.Clip(agent.LastWhy!, 160) + " → ")}{Tools.Clip(summary, 220)}" +
+            $"  [{r.Provider}, {now - req.StartedAt:0.0}s, {r.Response.InputTokens}+{r.Response.OutputTokens} tok]", now);
         agent.Decisions++;
         if (g.LogPrompts) Log.Info($"[{agent.Name}] <- {r.Provider}: {summary}" +
             (g.LogRawReplies && !string.IsNullOrWhiteSpace(r.Response.Text) ? $"  [raw: {Tools.Clip(JsonUtil.OneLine(r.Response.Text), 500)}]" : ""));

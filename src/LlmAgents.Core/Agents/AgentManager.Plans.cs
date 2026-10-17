@@ -321,6 +321,8 @@ public sealed partial class AgentManager
         NoteSpeech(agent, step.Call, result);
         var line = $"{step.Call.Name}({Tools.ArgsToString(step.Call)}) -> {result}";
         if (step.Call.Name != "keep_plan") agent.RecordResult(line);
+        agent.Stats.Call(step.Call.Name, result.StartsWith("error"));
+        if (step.Call.Name != "keep_plan") agent.AddActivity(result.StartsWith("error") ? "error" : "do", line, clock());
         if (!TalkTools.Contains(step.Call.Name) && result.StartsWith("ok") && !result.Contains("already"))
             agent.ActedSinceDecision = true;
         if (result.StartsWith("error"))
@@ -409,6 +411,8 @@ public sealed partial class AgentManager
             agent.LogEvent(r.Text);
             bool failed = r.Text.Contains("failed") || r.Text.Contains("cancelled");
             if (failed) agent.AddError(r.Text);
+            if (failed) agent.Stats.TasksFailed++; else agent.Stats.TasksDone++;
+            agent.AddActivity(failed ? "task-failed" : "task", r.Text, now);
             Log.Info($"[{agent.Name}] {r.Text}");
             if (agent.Waiting == PlanWait.Task && agent.Tree != null)
             {
