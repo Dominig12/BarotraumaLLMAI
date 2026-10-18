@@ -11,6 +11,7 @@ public readonly record struct InventoryQuery(string Text, int? EntityId)
     {
         var instance = Instance.Match(query);
         if (!instance.Success) return new InventoryQuery(query.Trim(), null);
+        if (Instance.Matches(query).Count != 1) return new InventoryQuery(query.Trim(), -1);
         // An out-of-range ID must never fall back to a broad name search.
         int id = int.TryParse(instance.Groups["id"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) ? parsed : -1;
         return new InventoryQuery(Instance.Replace(query, " ").Trim(), id);

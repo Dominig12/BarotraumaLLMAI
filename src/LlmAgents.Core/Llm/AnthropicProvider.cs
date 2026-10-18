@@ -89,9 +89,8 @@ public sealed class AnthropicProvider : ILlmProvider
                         break;
                     case "tool_use":
                         var name = JsonUtil.Str(b?["name"]);
-                        if (string.IsNullOrEmpty(name)) break;
-                        var input = b?["input"] as JsonObject;
-                        calls.Add(new ToolCall(name!, input != null ? (JsonObject)input.DeepClone() : new JsonObject()));
+                        if (string.IsNullOrEmpty(name)) throw new FormatException("tool call is missing its name");
+                        calls.Add(new ToolCall(name!, NativeToolArguments.Read(b?["input"], allowJsonString: false)));
                         break;
                 }
             }

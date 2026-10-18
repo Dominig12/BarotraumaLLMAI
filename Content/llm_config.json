@@ -97,7 +97,7 @@
     "allowedTools": [],
     "autonomy": "events",
     "speechLanguage": "",
-    "toolSelection": "auto",
+    "toolSelection": "all",
     "useGamePersonality": true,
     "controlDecisionIntervalSeconds": 20,
     "thinkAtRoundStart": true,

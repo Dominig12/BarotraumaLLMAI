@@ -189,14 +189,15 @@ public class DirectorTests
         Assert.DoesNotContain("- plan(", list);
         Assert.DoesNotContain("- remember(", list);
         Assert.DoesNotContain("- order_crew(", list);
-        Assert.True(Director.SystemPrompt("Russian").Length < 9000);
+        Assert.Contains("Arguments JSON Schema:", Director.SystemPrompt("Russian"));
     }
 
     [Theory]
-    [InlineData("Ann", "Ann Lee")]
+    [InlineData("Ann", null)]
     [InlineData("ann lee", "Ann Lee")]
     [InlineData("Ли", null)]
-    [InlineData("Олег", "Олег Сидоров")]
+    [InlineData("Олег", null)]
+    [InlineData("Олег Сидоров", "Олег Сидоров")]
     public void Finds_bots_by_name(string query, string? expected)
     {
         var bots = new[] { new BotAgent(new BotHandle(1, "Ann Lee", "mechanic")), new BotAgent(new BotHandle(2, "Олег Сидоров", "engineer")) };

@@ -245,6 +245,8 @@ public sealed partial class AgentManager
 
     string RunDirectorCall(ToolCall call, double now)
     {
+        var spec = Director.ToolSpecs.FirstOrDefault(t => t.Name == call.Name);
+        if (spec != null && Tools.ValidateAgainstSchema(call.Arguments, spec.Parameters) is { } invalid) return "error: " + invalid;
         switch (call.Name)
         {
             case "carry_on":
@@ -268,24 +270,20 @@ public sealed partial class AgentManager
 
     string Assign(ToolCall call, double now)
     {
-        var name = Tools.Str(call.Arguments, "bot") ?? Tools.Str(call.Arguments, "name");
+        var name = Tools.Str(call.Arguments, "bot");
         var bot = Director.FindBot(agents.Values.Where(a => game.IsAlive(a.Id)), name);
         if (bot == null)
             return $"error: no AI bot named '{name}' (bots: {string.Join(", ", agents.Values.Select(a => a.Name))})";
         if (NotAssignable(bot) is { } why) return $"error: {bot.Name} is not assignable ({why})";
         var goal = Tools.Str(call.Arguments, "goal") ?? "work from the director";
-        var stepsNode = call.Arguments["steps"] ?? call.Arguments["plan"];
-        if (stepsNode is JsonValue v && v.TryGetValue<string>(out var json))
-        {
-            // some models send the array as a string
-            try { stepsNode = JsonNode.Parse(json); } catch { /* reported below */ }
-        }
+        var stepsNode = call.Arguments["steps"];
         if (stepsNode == null) return "error: missing 'steps'";
-        var steps = stepsNode as JsonArray ?? new JsonArray(stepsNode.DeepClone());
+        if (stepsNode is not JsonArray steps) return "error: 'steps' must be an array";
+        var plan = new ToolCall("plan", new JsonObject { ["steps"] = steps.DeepClone() });
+        if (Tools.ValidateArguments(plan) is { } invalid) return "error: " + invalid;
         try { PlanTree.Build(steps.DeepClone(), PlanToolNames); }
         catch (FormatException e) { return "error: the plan could not be read: " + Tools.Clip(e.Message, 200) + ". Send it again, fixed"; }
 
-        var plan = new ToolCall("plan", new JsonObject { ["steps"] = steps.DeepClone() });
         bot.LogEvent("director: " + goal);
         Log.Info($"[{bot.Name}] director assigns: {goal}");
         Guarded(bot, "plan", () => ApplyPlan(bot, new List<ToolCall> { plan }, authority: false, new AgentGoal(goal, DirectorSource, now), now));

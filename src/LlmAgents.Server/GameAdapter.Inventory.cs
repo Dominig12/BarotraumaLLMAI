@@ -34,7 +34,7 @@ public sealed partial class GameAdapter
         Carried(c)
             .Where(i => ItemQueries.Matches(c, i, filter))
             .Select(i => (i, score: ItemQueries.MatchScore(i, query)))
-            .Where(t => t.score > 0)
+            .Where(t => t.score == 3)
             .OrderByDescending(t => t.score)
             .ThenByDescending(t => c.HasEquippedItem(t.i) ? 1 : 0)
             .Select(t => t.i)
@@ -141,7 +141,7 @@ public sealed partial class GameAdapter
         var container = Item.ItemList
             .Where(i => i.Submarine == c.Submarine && !i.Removed && i != item && i.GetRootInventoryOwner() is not Character)
             .Select(i => (i, ic: i.GetComponent<ItemContainer>(), score: ItemQueries.MatchScore(i, to)))
-            .Where(t => t.ic != null && t.score > 0 && t.ic.Inventory.CanBePut(item) && !ItemQueries.IsIgnored(t.i))
+            .Where(t => t.ic != null && t.score == 3 && t.ic.Inventory.CanBePut(item) && !ItemQueries.IsIgnored(t.i))
             .OrderByDescending(t => t.score)
             // of several matching cabinets, the one that already holds such items (stacks, saves space)
             .ThenByDescending(t => t.ic!.Inventory.AllItems.Any(x => x.Prefab == item.Prefab) ? 1 : 0)
@@ -171,9 +171,9 @@ public sealed partial class GameAdapter
         var claimed = ClaimedByOthers(c);
         var holder = Item.ItemList.Where(i => !i.Removed && !ItemQueries.IsIgnored(i) && !claimed.Contains(i)
                     && (i.GetRootInventoryOwner() == c || i.Submarine == c.Submarine && i.GetRootInventoryOwner() is not Character)
-                    && i.GetComponent<ItemContainer>() != null && ItemQueries.MatchScore(i, into) > 0)
+                    && i.GetComponent<ItemContainer>() != null && ItemQueries.MatchScore(i, into) == 3)
             .OrderByDescending(i => ItemQueries.MatchScore(i, into))
-            .ThenBy(i => i.OwnInventory?.AllItems.Any(x => ItemQueries.MatchScore(x, query) > 0) == true ? 1 : 0)
+            .ThenBy(i => i.OwnInventory?.AllItems.Any(x => ItemQueries.MatchScore(x, query) == 3) == true ? 1 : 0)
             .ThenByDescending(i => i.GetRootInventoryOwner() == c ? 1 : 0)
             .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)).FirstOrDefault();
         if (holder == null) return $"error: no available container '{into}' aboard or in your inventory";
@@ -182,7 +182,7 @@ public sealed partial class GameAdapter
         // Claims are strict here: two loading tasks cannot reserve the same C4 block.
         var item = ItemQueries.Find(c, query, i => i != holder && i.Container != holder && !claimed.Contains(i) && ic.CanBeContained(i)
                     && (i.Container == null || IsStorage(i.Container) || InMachineOutput(i)), claimed, selection: filter).FirstOrDefault();
-        var loaded = ic.Inventory.AllItems.FirstOrDefault(i => ItemQueries.MatchScore(i, query) > 0 && !ItemRules.IsSpent(i.MaxCondition > 0 ? i.Condition / i.MaxCondition : 1));
+        var loaded = ic.Inventory.AllItems.FirstOrDefault(i => ItemQueries.MatchScore(i, query) == 3 && !ItemRules.IsSpent(i.MaxCondition > 0 ? i.Condition / i.MaxCondition : 1));
         if (loaded != null && (item == null || !ic.Inventory.CanBePut(item)
             && loaded.Condition / Math.Max(1, loaded.MaxCondition) >= item.Condition / Math.Max(1, item.MaxCondition)))
             return $"ok ({ItemQueries.InstanceLabel(holder)} already contains {query})";
@@ -207,7 +207,7 @@ public sealed partial class GameAdapter
         Item? only = null;
         if (!string.IsNullOrWhiteSpace(query))
         {
-            only = Carried(c).Where(i => i.GetComponent<ItemContainer>() != null && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query!) > 0).FirstOrDefault();
+            only = Carried(c).Where(i => i.GetComponent<ItemContainer>() != null && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query!) == 3).FirstOrDefault();
             if (only == null) return $"error: no carried refillable container matches '{query}'; item selects the holder, not its fuel or ammo";
         }
         var needs = InventoryView.NeedRefill(c, only).Where(n => ItemQueries.Matches(c, n.Holder, filter)).ToList();

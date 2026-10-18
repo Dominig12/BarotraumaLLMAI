@@ -33,8 +33,8 @@ internal static class ItemQueries
     }
 
     /// <summary>
-    /// 0 = no match, higher = better (exact identifier / name beats substring). Plain words work too: other word forms
-    /// ("скафандры"), a copied "Name [id]", and kinds of items ("медикаменты", "оружие", "водолазный костюм").
+    /// 3 = exact copied identifier/name, 2 = literal substring for discovery, 0 = no match.
+    /// Query words are never interpreted as categories, conditions, marks or instructions.
     /// </summary>
     /// <param name="kinds">false = the query must name the item itself (crafting and deconstructing: "medical" must not
     /// pick some medicine to make or break down).</param>
@@ -50,7 +50,6 @@ internal static class ItemQueries
         var en = enName != null ? Norm(enName) : "";
         if (id == q || name == q || en == q) return 3;
         if (id.Contains(q) || name.Contains(q) || (en.Length > 0 && en.Contains(q))) return 2;
-        if (q.Length >= 4 && (q.Contains(id) || q.Contains(name) || (en.Length > 0 && q.Contains(en)))) return 1;
         if (p.Tags.Any(t => t.Value.Equals(query.Trim(), StringComparison.OrdinalIgnoreCase))) return 1;
         return 0;
     }
@@ -157,7 +156,7 @@ internal static class ItemQueries
     /// Best matching available items, own inventory first, then by distance. Items another bot is already going for
     /// (<paramref name="avoid"/>) come after the free ones, so two bots do not run for the same diving suit.
     /// </summary>
-    public static List<Item> Find(Character c, string query, Func<Item, bool>? filter = null, ICollection<Item>? avoid = null, bool kinds = true, ItemFilter? selection = null)
+    public static List<Item> Find(Character c, string query, Func<Item, bool>? filter = null, ICollection<Item>? avoid = null, bool kinds = true, ItemFilter? selection = null, bool exact = true)
     {
         var parsed = InventoryQuery.Parse(query);
         var scores = new Dictionary<ItemPrefab, int>();
@@ -171,7 +170,7 @@ internal static class ItemQueries
                         ? 3 : MatchScore(i.Prefab, parsed.Text, kinds);
                 return (i, score);
             })
-            .Where(t => t.score > 0)
+            .Where(t => t.score > 0 && (!exact || t.score == 3 || parsed.Text == "*"))
             .OrderByDescending(t => t.score)
             .ThenBy(t => t.i.GetRootInventoryOwner() == c ? 0 : 1)
             .ThenBy(t => avoid != null && avoid.Contains(t.i) ? 1 : 0)
@@ -184,7 +183,7 @@ internal static class ItemQueries
     public static Item? Replacement(Character c, Item failed, ICollection<Item> tried, ICollection<Item>? avoid = null, string? query = null, ItemFilter? selection = null) =>
         InventoryTaskRules.SelectReplacement(Available(c).OrderBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)),
             failed, tried, avoid ?? Array.Empty<Item>(),
-            i => i.Prefab == failed.Prefab && i.GetRootInventoryOwner() != c && (query == null || MatchScore(i, query) > 0) && Matches(c, i, selection));
+            i => i.Prefab == failed.Prefab && i.GetRootInventoryOwner() != c && (query == null || MatchScore(i, query) == 3) && Matches(c, i, selection));
 
     public static string Where(Item i, Character c)
     {
@@ -192,7 +191,7 @@ internal static class ItemQueries
         var container = i.Container;
         var hull = (container ?? i).CurrentHull;
         var place = hull != null ? GameAdapter.RoomId(hull) : "outside";
-        return container != null ? $"{container.Name} in {place}" : place;
+        return container != null ? $"{InstanceLabel(container)} in {place}" : place;
     }
 
     public static int Price(ItemPrefab p) => p.DefaultPrice?.Price ?? 100;

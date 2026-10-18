@@ -120,7 +120,7 @@ public static class Situation
         }
         // the diving suit you wear is out of air: a full tank (refill) before it matters
         if (o.Gear != null && (o.Gear.Contains("NO oxygen tank") || SuitTank.Match(o.Gear) is { Success: true } m && int.Parse(m.Groups[1].Value) < 15))
-            flags.Add(new("tank", "your diving gear is almost out of oxygen: refill(item='diving suit')", o.RoomWaterPercent > 50));
+            flags.Add(new("tank", "your worn diving gear is almost out of oxygen; refill() replaces depleted supplies in your actual carried gear", o.RoomWaterPercent > 50));
         // ballast flora: the mechanics, whoever is in charge, and anyone it grows next to (the vanilla AI does not fight it)
         if (o.Infestations.Count > 0)
         {

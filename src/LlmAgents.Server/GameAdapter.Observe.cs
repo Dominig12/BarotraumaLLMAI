@@ -110,7 +110,7 @@ public sealed partial class GameAdapter
             .Where(t => t.d < ThreatRadiusMeters)
             .OrderBy(t => t.d)
             .Select(t => new ThreatInfo(
-                t.x.IsHuman ? "hostile " + t.x.Name : t.x.SpeciesName.Value,
+                (t.x.IsHuman ? "hostile " + t.x.Name : t.x.SpeciesName.Value) + $" [c{t.x.ID}]",
                 (int)Math.Round(t.d),
                 t.x.CurrentHull != null ? RoomId(t.x.CurrentHull) : null))
             .Take(6).ToList();
@@ -133,7 +133,7 @@ public sealed partial class GameAdapter
                 var i = m.Item;
                 var where = i.GetRootInventoryOwner() is Character holder ? (holder == c ? "on you" : "carried by " + holder.Name)
                           : i.Container != null ? ItemQueries.Where(i, c) : i.CurrentHull != null ? RoomId(i.CurrentHull) : "outside";
-                var s = $"for the AI: {ItemQueries.Label(i)} in {where} (marked by {m.By}, {Ago(m.At)})";
+                var s = $"for the AI: {ItemQueries.InstanceLabel(i)} in {where} (marked by {m.By}, {Ago(m.At)}; select exact #ID or mark='ai')";
                 var inside = i.OwnInventory?.AllItems.ToList();
                 if (inside is { Count: > 0 })
                     s += "; contains " + string.Join(", ", inside.GroupBy(x => x.Prefab).Take(6).Select(g => $"{g.Key.Name.Value} x{g.Count()}"));
@@ -142,7 +142,7 @@ public sealed partial class GameAdapter
             var decon = Item.DeconstructItems.Where(i => !i.Removed && i.Submarine == c.Submarine).ToList();
             if (decon.Count > 0)
                 list.Add($"to deconstruct ({decon.Count}): " + string.Join(", ", decon.GroupBy(i => i.Prefab).Take(6).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))
-                         + " - deconstruct(item='marked for deconstruction') breaks them down");
+                         + " - deconstruct(mark='deconstruct') breaks them down");
             var ignored = Item.ItemList.Where(i => i.OrderedToBeIgnored && !i.Removed && i.Submarine == c.Submarine).ToList();
             if (ignored.Count > 0)
                 list.Add("ignored by order (leave alone, do not take, use or deconstruct): "

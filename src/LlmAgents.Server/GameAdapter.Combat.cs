@@ -26,7 +26,7 @@ public sealed partial class GameAdapter
                 var root = live.FirstOrDefault(b => b.IsRoot)?.CurrentHull;
                 var rooms = live.GroupBy(b => b.CurrentHull!).OrderByDescending(g => g.Count()).Take(4)
                     .Select(g => $"{g.Count()} in {RoomId(g.Key)}{(g.Key == root ? " (root)" : "")}");
-                list.Add($"ballast flora: {live.Count} branches - {string.Join(", ", rooms)}. It spreads and attacks; burn it: attack(target='ballast flora') with a welding tool or a flamer");
+                list.Add($"ballast flora: {live.Count} branches - {string.Join(", ", rooms)}. Burn with attack(target_type='ballast_flora', target='{RoomId(f.Parent)}')");
             }
         }
         catch (Exception e) { Log.Warn("flora: " + e.Message); }
@@ -37,28 +37,25 @@ public sealed partial class GameAdapter
     static List<Item> FireTools(Character c, string? query) =>
         Carried(c).Concat(ItemQueries.Available(c)).Distinct()
             .Where(i => i.GetComponent<RepairTool>() is { FireDamage: > 0 })
-            .Where(i => query == null || ItemQueries.MatchScore(i.Prefab, query) > 0)
+            .Where(i => query == null || ItemQueries.MatchScore(i, query) > 0)
             .OrderByDescending(i => i.GetRootInventoryOwner() == c ? 1 : 0)
             .ThenByDescending(i => i.GetComponent<RepairTool>()!.FireDamage)
             .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition))
             .ToList();
 
     /// <summary>Attack with a chosen tool or weapon: ballast flora (burnt with a fire tool) or a creature / intruder. Multi-step task.</summary>
-    public string Attack(int botId, string target, string? weapon)
+    public string Attack(int botId, string target, string? weapon, string targetType = "character")
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
-        var t = target.Trim().ToLowerInvariant();
-        bool flora = ItemRules.MeansFlora(t);
+        if (targetType is not ("character" or "ballast_flora")) return "error: 'target_type' must be character or ballast_flora";
         var hostiles = Character.CharacterList.Where(x => !x.IsDead && !x.Removed && x != c && IsHostileTo(x, c) && x.Submarine == c.Submarine)
             .OrderBy(x => Vector2.DistanceSquared(x.WorldPosition, c.WorldPosition)).ToList();
         var floraLeft = AIObjectiveBurnFlora.LiveBranches(c.Submarine).Count();
-        if (!flora && t is "" or "nearest" or "any" or "all" or "ближайший" or "все" or "угроза" or "threat")
-            flora = hostiles.Count == 0 && floraLeft > 0;
-
-        if (flora)
+        if (targetType == "ballast_flora")
         {
             if (floraLeft == 0) return "ok (no ballast flora aboard)";
             var hull = IsRoomRef(target) ? ResolveRoom(target) : null;
+            if (target != "*" && hull == null) return "error: ballast_flora target must be '*' or an observed room [hID]";
             if (hull != null && !AIObjectiveBurnFlora.LiveBranches(c.Submarine, hull).Any()) return $"error: no ballast flora in {RoomId(hull)}";
             var tools = FireTools(c, weapon);
             if (tools.Count == 0)
@@ -68,11 +65,12 @@ public sealed partial class GameAdapter
             return StartTask(c, new AttackTask(c, ai, tools[0], null, hull), evenOverPlayerOrders: true) + $" (with {tools[0].Name})";
         }
 
-        if (hostiles.Count == 0) return floraLeft > 0 ? "error: no creature or intruder aboard; for the ballast flora use target='ballast flora'" : "ok (nothing hostile aboard)";
-        var enemy = hostiles.FirstOrDefault(x => x.DisplayName.Contains(target.Trim(), StringComparison.OrdinalIgnoreCase)
-                                                || x.SpeciesName.Value.Contains(target.Trim(), StringComparison.OrdinalIgnoreCase)
-                                                || target.Contains(x.SpeciesName.Value, StringComparison.OrdinalIgnoreCase))
-                    ?? hostiles[0];
+        var candidates = hostiles.Where(x => target.Trim().Equals($"[c{x.ID}]", StringComparison.OrdinalIgnoreCase)
+            || target.Trim().EndsWith($" [c{x.ID}]", StringComparison.OrdinalIgnoreCase)
+            || x.Name.Equals(target.Trim(), StringComparison.OrdinalIgnoreCase) || x.SpeciesName.Value.Equals(target.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+        if (candidates.Count == 0) return $"error: no hostile character matches '{target}'; copy an exact [cID] from threats";
+        if (candidates.Count > 1) return "error: several hostiles match; select an exact [cID]: " + string.Join(", ", candidates.Select(x => $"{x.Name} [c{x.ID}]"));
+        var enemy = candidates[0];
         Item? gun = null;
         if (weapon != null)
         {

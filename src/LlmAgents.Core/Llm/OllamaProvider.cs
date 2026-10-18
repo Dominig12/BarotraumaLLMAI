@@ -102,8 +102,8 @@ public sealed class OllamaProvider : ILlmProvider
             {
                 var fn = c?["function"];
                 var name = JsonUtil.Str(fn?["name"]);
-                if (string.IsNullOrEmpty(name)) continue;
-                calls.Add(new ToolCall(name!, Args(fn?["arguments"])));
+                if (string.IsNullOrEmpty(name)) throw new FormatException("tool call is missing its name");
+                calls.Add(new ToolCall(name!, NativeToolArguments.Read(fn?["arguments"], allowJsonString: true)));
             }
         }
         if (calls.Count == 0) calls = TextToolCallParser.Parse(text, tools);
@@ -111,16 +111,6 @@ public sealed class OllamaProvider : ILlmProvider
             Truncated: JsonUtil.Str(root["done_reason"]) == "length");
     }
 
-    static JsonObject Args(JsonNode? node)
-    {
-        try
-        {
-            if (node is JsonObject o) return (JsonObject)o.DeepClone();
-            var s = JsonUtil.Str(node);
-            return string.IsNullOrWhiteSpace(s) ? new JsonObject() : JsonNode.Parse(s!) as JsonObject ?? new JsonObject();
-        }
-        catch (JsonException) { return new JsonObject(); }
-    }
 
     public async Task<LlmResponse> CompleteAsync(LlmRequest req, CancellationToken ct)
     {

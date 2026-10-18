@@ -63,7 +63,8 @@ public class LogFixesTests
         Assert.StartsWith("ok (said to player Смертельное Рандеву", r);
         Assert.Contains("1:say Смертельное Рандеву, Надо пополнить топливо реактора", game.Actions);
 
-        Assert.StartsWith("ok (said to player", mgr.DeliverMessage(milton, "Smertelnoe Randevu", "translit works")); // typed in latin
+        Assert.StartsWith("error: no AI crew member", mgr.DeliverMessage(milton, "Smertelnoe Randevu", "do not guess a recipient"));
+        Assert.DoesNotContain(game.Actions, a => a.Contains("do not guess a recipient"));
         Assert.StartsWith("error: no AI crew member", mgr.DeliverMessage(milton, "Nobody", "x"));
     }
 }

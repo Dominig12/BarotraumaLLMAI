@@ -286,11 +286,4 @@ public class ItemRulesTests
     [InlineData(0, 1, 1)]
     public void Craft_runs_count_items_not_crafts(int items, int perCraft, int runs) => Assert.Equal(runs, ItemRules.CraftRuns(items, perCraft));
 
-    [Theory]
-    [InlineData("ballast flora", true)]
-    [InlineData("Балластная флора", true)]
-    [InlineData("побеги в балласте", true)]
-    [InlineData("crawler", false)]
-    [InlineData(null, false)]
-    public void Flora_words(string? target, bool flora) => Assert.Equal(flora, ItemRules.MeansFlora(target));
 }

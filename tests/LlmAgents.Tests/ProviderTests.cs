@@ -42,7 +42,7 @@ public class ProviderTests
     public void OpenAiParsesStringArguments()
     {
         var r = OpenAiCompatibleProvider.ParseResponse(
-            Fixtures.OpenAiToolResponse(("go_to_room", "{\"room\":\"Engine Room [h10]\"}"), ("fix_leaks", "")), Known);
+            Fixtures.OpenAiToolResponse(("go_to_room", "{\"room\":\"Engine Room [h10]\"}"), ("fix_leaks", "{}")), Known);
         Assert.Equal(2, r.ToolCalls.Count);
         Assert.Equal("Engine Room [h10]", r.ToolCalls[0].Arguments["room"]!.GetValue<string>());
         Assert.Empty(r.ToolCalls[1].Arguments);

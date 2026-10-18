@@ -11,7 +11,7 @@ namespace LlmAgents;
 /// order from the game's context wheel. Like the vanilla "ignore" order it goes to the whole crew, so the server runs it
 /// through CrewManager.AddOrder; a prefix there keeps the mark here (who, when) and keeps the icon on the item until the
 /// mark is taken off. Bots see the marks in their observation ('marks'), together with the vanilla marks
-/// ("mark for deconstruction", "ignore"), and tools accept item="marked".
+/// ("mark for deconstruction", "ignore"), and tools select them with the explicit mark argument.
 /// </summary>
 internal static class ContextMarks
 {

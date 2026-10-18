@@ -182,7 +182,7 @@ internal static class Crafting
         }
         // best name match; among several recipes for the same item, the one with the fewest missing ingredients
         var best = all.Select(t => (t.Fabricator, t.Recipe, score: ItemQueries.MatchScore(t.Recipe.TargetItem, query, kinds: false)))
-            .Where(t => t.score > 0)
+            .Where(t => t.score == 3)
             .OrderByDescending(t => t.score)
             .ThenBy(t => Missing(t.Recipe, Stock(c, t.Fabricator)).Sum(m => m.Missing))
             .ThenBy(t => t.Fabricator.IsActive ? 1 : 0)

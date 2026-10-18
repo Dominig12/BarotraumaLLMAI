@@ -73,16 +73,14 @@ public sealed partial class AgentManager
         game.Speak(from.Id, Tools.Clip($"[→ {label}] {text}", MaxChatEcho));
     }
 
-    /// <summary>A human player aboard whose name matches (exact, part, or transliterated), or null.</summary>
+    /// <summary>A human player aboard whose exact name was selected by the model, or null.</summary>
     string? FindPlayer(BotAgent from, string to)
     {
         List<string> players;
         try { players = game.Observe(from.Id).Crew.Where(c => c.IsPlayer).Select(c => c.Name).ToList(); }
         catch { return null; }
         var t = to.Trim();
-        return players.FirstOrDefault(p => p.Equals(t, StringComparison.OrdinalIgnoreCase))
-            ?? players.FirstOrDefault(p => p.Contains(t, StringComparison.OrdinalIgnoreCase) || t.Contains(p, StringComparison.OrdinalIgnoreCase))
-            ?? players.FirstOrDefault(p => Translit.ToLatin(p).Equals(Translit.ToLatin(t), StringComparison.OrdinalIgnoreCase));
+        return players.FirstOrDefault(p => p.Equals(t, StringComparison.OrdinalIgnoreCase));
     }
 
     List<BotAgent>? ResolveTargets(BotAgent from, string to, out string label, out string? error)
@@ -90,7 +88,7 @@ public sealed partial class AgentManager
         var others = agents.Values.Where(a => a.Id != from.Id).ToList();
         error = null;
         label = to;
-        if (string.Equals(to, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(to, "everyone", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(to, "all", StringComparison.Ordinal))
         {
             label = "all";
             if (others.Count > 0) return others;
@@ -103,7 +101,6 @@ public sealed partial class AgentManager
         var partial = others.Where(a => a.Name.Contains(to, StringComparison.OrdinalIgnoreCase)).ToList();
         var targets = exact != null ? new List<BotAgent> { exact }
                     : byJob.Count > 0 ? byJob
-                    : partial.Count == 1 ? partial
                     : new List<BotAgent>();
         if (targets.Count == 0)
         {

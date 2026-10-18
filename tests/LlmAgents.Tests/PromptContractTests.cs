@@ -9,6 +9,17 @@ namespace LlmAgents.Tests;
 
 public class PromptContractTests
 {
+    [Fact]
+    public void ACallCannotBypassTheConfiguredAllowedToolsByNamingItDirectly()
+    {
+        var settings = Fixtures.Settings();
+        settings.Bots.AllowedTools.Add("say");
+        var game = new FakeGame().AddBot(1, "Ann", "mechanic");
+        using var mgr = new AgentManager(settings, game, new LlmRouter(settings), () => 0);
+        var result = Tools.Execute(new ToolCall("craft", new JsonObject { ["item"] = "steel" }), new BotAgent(game.Bots[0]), game, mgr);
+        Assert.Contains("allowedTools", result);
+        Assert.Empty(game.Actions);
+    }
     static JsonObject Args(string json) => JsonNode.Parse(json)!.AsObject();
     static JsonObject Properties(string tool) => Tools.Def(tool)!.Schema["properties"]!.AsObject();
 

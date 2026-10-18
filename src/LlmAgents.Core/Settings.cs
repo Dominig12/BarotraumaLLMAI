@@ -63,7 +63,7 @@ public sealed class ModSettings
         Memory.SummaryProvider ??= "";
         Bots.Autonomy = (Bots.Autonomy ?? "events").Trim().ToLowerInvariant();
         Bots.SpeechLanguage = (Bots.SpeechLanguage ?? "").Trim();
-        Bots.ToolSelection = (Bots.ToolSelection ?? "").Trim().ToLowerInvariant() == "all" ? "all" : "auto";
+        Bots.ToolSelection = "all"; // Kept for loading older configs; every permitted tool is always described.
         Chat.Prefix ??= "";
         Chat.Provider ??= "";
         var channel = (Global.SpeechChannel ?? "").Trim().ToLowerInvariant();
@@ -311,9 +311,8 @@ public sealed class BotSettings
     /// <summary>Language bots speak in (say, message_crew), e.g. "Russian". Empty = the language the players use.</summary>
     public string SpeechLanguage { get; set; } = "";
 
-    /// <summary>"auto": each request describes the tools the bot's job and situation need (fewer prompt tokens);
-    /// "all": every request describes every tool.</summary>
-    public string ToolSelection { get; set; } = "auto";
+    /// <summary>Legacy config field, normalized to "all". Tools are never selected by words or bot profession.</summary>
+    public string ToolSelection { get; set; } = "all";
     /// <summary>Without a persona, the game's own personality trait of the character (Hothead, Lazy...) shapes the bot.</summary>
     public bool UseGamePersonality { get; set; } = true;
     /// <summary>Heartbeat for bots under full AI control (they plan on their own even when nothing happens).</summary>

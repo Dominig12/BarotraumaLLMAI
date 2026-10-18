@@ -54,7 +54,7 @@ public sealed partial class GameAdapter
                         found = place.Items.Where(i => ItemQueries.IsAvailableTo(i, c) && ItemQueries.MatchScore(i, itemQuery) > 0 && ItemQueries.Matches(c, i, filter)).ToList();
                     else return $"error: no exact source '{source}'; use a container #ID, room [hID], or crew name";
                 }
-                else found = ItemQueries.Find(c, itemQuery, selection: filter);
+                else found = ItemQueries.Find(c, itemQuery, selection: filter, exact: false);
                 found = found.Take(byKind ? 100 : 50).ToList();
                 var noneFree = byKind || filter?.From != null || filter?.Category != null ? null : ItemQueries.NoneFree(c, query, found.FirstOrDefault());
                 if (noneFree != null)

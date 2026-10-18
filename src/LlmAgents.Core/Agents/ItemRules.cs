@@ -75,13 +75,4 @@ public static class ItemRules
         return Math.Max(1, (Math.Max(1, items) + perCraft - 1) / perCraft);
     }
 
-    // ------------------------------------------------------------------ flora
-
-    static readonly string[] FloraWords = { "flora", "флор", "ballast", "балластн", "росток", "растени", "plant", "vine", "лиан", "побег" };
-
-    public static bool MeansFlora(string? target)
-    {
-        var t = (target ?? "").ToLowerInvariant();
-        return FloraWords.Any(w => t.Contains(w));
-    }
 }

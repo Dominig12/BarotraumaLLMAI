@@ -316,7 +316,7 @@ public static class Tools
             c => WithItem(c, "item", (v, f) => c.Game.Equip(c.Id, v, f))) with { MovesOn = true },
         T("take_item", "Fetch matching items into your inventory; walks to their source automatically. Does not equip them. Use category, condition and mark fields for broad selections.",
             ItemArgs(Arg("item", ItemReference, false), Arg("count", $"Maximum individual items to take, 1-{MaxTakeCount}, default 1; limited by available inventory space.", required: false, type: "integer"),
-                   Arg("from", "Optional exact container #ID/name, room [hID], or character [cID]/exact name. A cooperating AI crewmate can hand items over; otherwise search is limited to that character's room. Omit to search accessible items aboard.", required: false)),
+                   Arg("from", "Optional exact container #ID/name, room [hID], or character [cID]/exact name. A cooperating AI crewmate hands over carried items; conscious human players must hand items over themselves. Omit to search accessible items aboard.", required: false)),
             ToolKind.Task, ToolGroup.Core, c => WithItem(c, "item",
                 (v, f) => c.Game.TakeItem(c.Id, v, c.Int("count", 1), c.Str("from"), f))) with { MovesOn = true },
         T("move_item", "Fetch and deliver matching items. destination explicitly chooses the destination kind; storage automatically stows items in suitable storage, self carries them. "
@@ -395,7 +395,7 @@ public static class Tools
                 return c.Game.Treat(c.Id, target, c.Str("item"));
             })) with { MovesOn = true },
         T("attack", "Attack a hostile character, or burn ballast flora using an explicitly selected target_type. Flora requires a welding tool or flamer and is not handled by ordinary fight_intruders orders.",
-            Schema(Arg("target", "Exact observed target [cID]/name for character; '*' for ballast_flora selects active infestations, or use room [hID]/pump #ID to restrict the roots."),
+            Schema(Arg("target", "Exact observed target [cID]/name for character; '*' for ballast_flora selects active infestations, or use room [hID] to restrict the roots."),
                    Arg("target_type", "Explicit target kind, default character. Set ballast_flora to burn infestations; target words do not change this kind.", false, en: new[] { "character", "ballast_flora" }),
                    Arg("weapon", "Optional exact tool/weapon #ID, prefab identifier or copied exact name; omit to choose suitable gear automatically.", required: false)),
             ToolKind.Task, ToolGroup.Combat, c => c.Need(c.Str("target"), "target", v => c.Game.Attack(c.Id, v, c.Str("weapon"), c.Str("target_type") ?? "character"))) with { MovesOn = true },
@@ -411,7 +411,7 @@ public static class Tools
             + "recipes: available recipes (optional exact-name/identifier filter); recipe: ingredients, batch output and requirements of one recipe (query required); "
             + "salvage: deconstruction yields for a material; inventory: your slots, carried contents and condition; bodies: corpses/incapacitated characters, [cID], locations and loot; "
             + "patient: injuries and treatment (no query = all injured); orders: available vanilla order IDs/options; tools: complete usage schema for a tool. "
-            + "For spent ammo use kind=items, category=ammo, condition=empty; low includes at most 30%, used includes any below 100%. linked_to limits item search to a machine's explicitly linked inventories.",
+            + "Selection filters and from apply only to kind=items; other kinds use query. For spent ammo use kind=items, category=ammo, condition=empty; low includes at most 30%, used includes any below 100%. linked_to limits item search to a machine's explicitly linked inventories.",
             ItemArgs(Arg("kind", "Lookup kind", en: InspectKinds.ToArray()), Arg("query", "Optional exact #ID/prefab/name, room [hID], body [cID], recipe/material identifier or tool name as appropriate. Omit for an overview. Never put category/condition/mark instructions into query; use their fields.", required: false),
                 Arg("from", "For kind=items, restrict the contents searched to an exact container #ID/name, room [hID], or character [cID]/exact name. Use from for a source and query for the item selector; omit to search accessible items aboard.", false)),
             ToolKind.Lookup, ToolGroup.Core, c =>
@@ -419,9 +419,9 @@ public static class Tools
                 var kind = c.Str("kind")?.ToLowerInvariant();
                 var query = c.Str("query");
                 if (kind == null || !InspectKinds.Contains(kind)) return $"error: kind must be one of {string.Join(", ", InspectKinds)}";
-                if (kind == "tools") return ToolHelp(query);
                 if (string.IsNullOrEmpty(query) && kind == "recipe") return "error: missing 'query' (exact recipe to look up)";
-                return WithFilter(c, f => Clip(c.Game.Inspect(c.Id, kind, query ?? "", f), MaxInspectLength));
+                return WithFilter(c, f => kind != "items" && f?.HasCriteria == true ? "error: selection filters and 'from' apply only to inspect kind='items'; use 'query' for other kinds"
+                    : kind == "tools" ? ToolHelp(query) : Clip(c.Game.Inspect(c.Id, kind, query ?? "", f), MaxInspectLength));
             }),
     };
 
@@ -493,6 +493,8 @@ public static class Tools
         ? ValidateNode(call.Arguments, d.Schema, "arguments")
         : $"unknown tool '{call.Name}'";
 
+    public static string? ValidateAgainstSchema(JsonObject arguments, JsonObject schema) => ValidateNode(arguments, schema, "arguments");
+
     static string? ValidateNode(JsonNode? node, JsonObject schema, string path, JsonObject? root = null)
     {
         root ??= schema;
@@ -557,13 +559,15 @@ public static class Tools
         return null;
     }
 
-    /// <summary>Runs on the game thread. Never throws. Every tool runs, also one not offered in this request.</summary>
+    /// <summary>Runs on the game thread after checking the allowed tool set and the declared argument contract.</summary>
     public static string Execute(ToolCall call, BotAgent agent, IGameApi game, AgentManager mgr)
     {
         try
         {
             var def = Def(call.Name);
             if (def == null) return $"error: unknown tool '{call.Name}'";
+            if (mgr.Settings.Bots.AllowedTools.Count > 0 && !mgr.Settings.Bots.AllowedTools.Contains(call.Name, StringComparer.OrdinalIgnoreCase))
+                return $"error: tool '{call.Name}' is not in allowedTools";
             if (ValidateArguments(call) is { } error) return "error: " + error;
             return def.Run(new ToolContext(call, agent, game, mgr));
         }

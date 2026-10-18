@@ -101,8 +101,8 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
             {
                 var fn = c?["function"];
                 var name = JsonUtil.Str(fn?["name"]);
-                if (string.IsNullOrEmpty(name)) continue;
-                calls.Add(new ToolCall(name!, ParseArgs(fn?["arguments"])));
+                if (string.IsNullOrEmpty(name)) throw new FormatException("tool call is missing its name");
+                calls.Add(new ToolCall(name!, NativeToolArguments.Read(fn?["arguments"], allowJsonString: true)));
             }
         }
         if (calls.Count == 0) calls = TextToolCallParser.Parse(text, tools);
@@ -172,16 +172,4 @@ public sealed class OpenAiCompatibleProvider : ILlmProvider
         return (resp.StatusCode, text);
     }
 
-    // OpenAI returns arguments as a JSON *string*; some servers (e.g. Ollama) return an object. Accept both.
-    static JsonObject ParseArgs(JsonNode? node)
-    {
-        try
-        {
-            if (node is JsonObject o) return (JsonObject)o.DeepClone();
-            var s = JsonUtil.Str(node);
-            if (string.IsNullOrWhiteSpace(s)) return new JsonObject();
-            return JsonNode.Parse(s!) as JsonObject ?? new JsonObject();
-        }
-        catch (JsonException) { return new JsonObject(); }
-    }
 }

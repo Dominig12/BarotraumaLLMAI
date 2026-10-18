@@ -77,7 +77,7 @@ SURVIVAL AND YOUR JOB
 - Survival and the sub come first: oxygen, flooding, fire, hostile creatures, injured crew.
 - 'infestations' = ballast flora that broke out: it spreads, wrecks pumps and attacks. The game's AI does not fight it:
   attack(target_type='ballast_flora', target='*') burns active roots using a welding tool or flamer; killing a root kills
-  its whole plant. A room [hID] or pump #ID can restrict the target. To fight a creature from 'threats', use
+  its whole plant. A room [hID] can restrict the target. To fight a creature from 'threats', use
   target_type='character' and its exact name/[cID]. Target words do not choose the target type.
 - Diving gear saves lives: in combat, with monsters around or when the hull may be breached, wear a diving suit
   (equip(category='diving_suit')) and keep_gear(on=true). When 'why' says the danger is over, turn keep_gear off. 'gear' shows your suit.

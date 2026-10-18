@@ -47,7 +47,7 @@ public sealed partial class GameAdapter
             .OrderBy(g => g.Key.Prefab.Identifier.Value).ToList();
         var rows = groups.Take(12).Select(g =>
             $"{ItemQueries.Label(g.Key.Prefab)} x{g.Count()} ({g.Key.Condition}%; {string.Join(", ", g.Take(6).Select(i => $"#{i.ID}"))}{(g.Count() > 6 ? ", ..." : "")})").ToList();
-        if (groups.Count > rows.Count) rows.Add($"... {groups.Count - rows.Count} more item kinds; inspect(kind='items', query='#<container ID>') for details");
+        if (groups.Count > rows.Count) rows.Add($"... {groups.Count - rows.Count} more item kinds; inspect(kind='items', from='#<container ID>') for details");
         return rows;
     }
 

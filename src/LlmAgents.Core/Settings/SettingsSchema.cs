@@ -109,9 +109,6 @@ public static class SettingsSchema
             "Старая цель снимается, чтобы давно выполненный приказ не держал бота весь раунд (бот может поставить её снова). 0 = никогда.", 0, 120, group: Plans);
         Add(F(General, "Ходов истории", FieldType.Int, V(g.HistoryTurns), "global", "historyTurns"),
             "Сколько прошлых ходов (кратко: почему думал, что было и что сделал, с давностью) модель видит в каждом запросе.", 0, 40, group: Plans);
-        Add(F(General, "Набор инструментов", FieldType.Enum, V(s.Bots.ToolSelection), "bots", "toolSelection"),
-            "Авто: в запрос идут инструменты, нужные по профессии и обстановке (меньше токенов, малые модели ошибаются реже); остальные перечислены одной строкой и тоже работают.",
-            options: new() { "auto", "all" }, labels: new() { "Авто", "Все" }, group: Plans);
         Add(F(General, "Заметок в промпте", FieldType.Int, V(g.MaxNotes), "global", "maxNotes"), "Сколько последних заметок remember видно в каждом запросе; более старые находит recall.", min: 1, max: 40, group: Plans);
 
         Add(F(General, "Язык речи ботов", FieldType.String, V(s.Bots.SpeechLanguage), "bots", "speechLanguage"),

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Text.Json;
 using LlmAgents.Llm;
 
 namespace LlmAgents.Agents;
@@ -32,7 +33,7 @@ public static class Director
             p[name] = schema;
             if (required) req.Add(name);
         }
-        return new JsonObject { ["type"] = "object", ["properties"] = p, ["required"] = req };
+        return new JsonObject { ["type"] = "object", ["properties"] = p, ["required"] = req, ["additionalProperties"] = false };
     }
 
     static JsonObject Str(string desc) => new() { ["type"] = "string", ["description"] = desc };
@@ -62,10 +63,8 @@ public static class Director
             var props = d.Schema["properties"] as JsonObject;
             var required = (d.Schema["required"] as JsonArray)?.Select(n => n?.GetValue<string>()).ToHashSet() ?? new HashSet<string?>();
             var args = props == null ? "" : string.Join(", ", props.Select(kv => kv.Key + (required.Contains(kv.Key) ? "" : "?")));
-            var desc = d.Description;
-            int dot = desc.IndexOf(". ", StringComparison.Ordinal);
-            if (dot > 0) desc = desc[..dot];
-            sb.Append("- ").Append(d.Name).Append('(').Append(args).Append(") - ").Append(Tools.Clip(desc, 90)).Append('\n');
+            sb.Append("- ").Append(d.Name).Append('(').Append(args).Append(") - ").Append(d.Description).Append('\n');
+            sb.Append("  Arguments JSON Schema: ").Append(d.Schema.ToJsonString()).Append('\n');
         }
         return sb.ToString();
     }
@@ -83,12 +82,16 @@ public static class Director
         + "Rules:\n"
         + "- Danger first: breaches and flooding, fire, intruders and monsters, ballast flora, a failing reactor, injured crew. Send the bots whose job fits "
         + "(mechanics and engineers repair and weld, security and the captain fight, medics heal), the nearest ones, enough of them, not everyone.\n"
-        + "- In danger, bots that go into water or fight wear diving gear: equip(item='diving suit') and keep_gear(on=true) as the first steps.\n"
+        + "- In danger, bots that go into water or fight wear diving gear: equip(category='diving_suit') and keep_gear(on=true) as the first steps.\n"
         + "- Stations matter: keep someone at the reactor, the navigation and the guns when it is needed (operate). The vanilla orders (fix_leaks, extinguish_fires, "
         + "repair_systems, fight_intruders, rescue_injured...) keep a bot busy on its own; a plan of one such step is often all it takes.\n"
         + "- Do not assign bots marked 'not assignable': a human player gave them an order, or they are under full AI control. Plan around them.\n"
         + "- Change a bot's work only when the situation asks for it; a bot in the middle of a good plan keeps it. Nothing to change: carry_on().\n"
         + "- Room names and item names exactly as in the summary. Short plans; a failed plan comes back to you with the reason.\n"
+        + "- Interpret all player intent yourself, then use exact tool names, keys and typed arguments from the schemas below. No aliases, string numbers, inferred categories or location phrases. "
+        + "Use category/condition/mark for selection, destination for transfer type, target_type for combat type. Prefer exact #ID, [hID] and [cID]; bot uses the exact full roster name.\n"
+        + "- Actual machine links appear in machines. Only a directed ingredient_source link automatically supplies a fabricator; proximity and entity_link do not establish supply. "
+        + "craft(machine='#ID') uses linked stock natively. Do not schedule fetching these ingredients manually. Products remain in output or the locations reported after completion.\n"
         + "- say steps are for speaking in the game: short, in character, in the language the players use"
         + (string.IsNullOrWhiteSpace(language) ? "" : $" ({language})") + ".\n"
         + "Reply only with tool calls.\n\n"
@@ -110,6 +113,8 @@ public static class Director
         }
 
         var all = bots.Select(b => b.Obs).ToList();
+        var machines = all.SelectMany(o => o.Machines).GroupBy(m => m.Id).Select(g => g.First()).ToList();
+        if (machines.Count > 0) sb.Append("\nMachines and real directed links:\n").Append(JsonSerializer.Serialize(machines, new JsonSerializerOptions(JsonSerializerDefaults.Web))).Append('\n');
         var sub = all.Select(o => o.Submarine).FirstOrDefault(s => s != null);
         sb.Append("\nSubmarine: ").Append(sub == null ? "unknown" : string.Join(", ", new[]
         {
@@ -187,15 +192,12 @@ public static class Director
     public static string HistoryLine(IReadOnlyList<DirectorEvent> why) =>
         why.Count == 0 ? "routine look" : Tools.Clip(string.Join(" | ", why.Select(e => $"{EventPolicy.Label(e.Kind)} {e.Bot}: {Tools.Clip(e.Text, 80)}")), 600);
 
-    /// <summary>The bot a name means: exact, then the first name, then a part of it.</summary>
+    /// <summary>The exact full roster name selected by the director.</summary>
     public static BotAgent? FindBot(IEnumerable<BotAgent> bots, string? name)
     {
         if (string.IsNullOrWhiteSpace(name)) return null;
         name = name.Trim();
         var list = bots.ToList();
-        return list.FirstOrDefault(b => b.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-            ?? list.FirstOrDefault(b => b.Name.Split(' ')[0].Equals(name.Split(' ')[0], StringComparison.OrdinalIgnoreCase))
-            ?? list.FirstOrDefault(b => b.Name.Contains(name, StringComparison.OrdinalIgnoreCase))
-            ?? list.FirstOrDefault(b => Translit.ToLatin(b.Name).Contains(Translit.ToLatin(name), StringComparison.OrdinalIgnoreCase));
+        return list.FirstOrDefault(b => b.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
     }
 }

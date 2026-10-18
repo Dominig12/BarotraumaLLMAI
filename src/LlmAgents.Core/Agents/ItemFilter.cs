@@ -12,6 +12,7 @@ public sealed record ItemFilter(string? Category = null, string Condition = "any
     public static readonly string[] Categories = { "weapon", "ammo", "medical", "tool", "diving_gear", "diving_suit", "diving_mask", "oxygen", "reactor_fuel", "extinguisher", "battery", "material" };
     public static readonly string[] Conditions = { "any", "empty", "low", "used" };
     public static readonly string[] Marks = { "none", "ai", "deconstruct" };
+    public bool HasCriteria => Category != null || Condition != "any" || MinConditionPercent != null || MaxConditionPercent != null || Mark != "none" || LinkedTo != null || From != null;
 
     public bool MatchesCondition(float condition, float maximum)
     {

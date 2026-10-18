@@ -197,9 +197,9 @@ public sealed partial class GameAdapter
                 IEnumerable<Item> pool = items;
                 if (target != null)
                 {
-                    var hull = IsRoomRef(target) ? ResolveRoom(target) : null;
+                    var hull = ResolveRoom(target);
                     var named = items.Where(i => hull != null ? i.CurrentHull == hull
-                        : ItemQueries.MatchScore(i.Prefab, target) > 0 || (i.CurrentHull != null && RoomId(i.CurrentHull).Contains(target, StringComparison.OrdinalIgnoreCase))).ToList();
+                        : ItemQueries.MatchScore(i, target) == 3).ToList();
                     if (named.Count == 0) return $"error: no '{target}' to {prefab.Identifier}; targets aboard: {string.Join(", ", items.Take(6).Select(i => $"{i.Name}{(i.CurrentHull != null ? " in " + RoomId(i.CurrentHull) : "")}"))}";
                     pool = named;
                 }

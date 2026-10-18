@@ -78,8 +78,8 @@ public interface IGameApi
     string RefuelReactor(int botId);
     /// <summary>salvage = deconstruct scrap aboard for missing ingredients first.</summary>
     string Craft(int botId, string item, int amount, bool salvage = false, string? machine = null);
-    /// <summary>from = a container or room: deconstruct the matching items in it (item "all" = everything there).</summary>
-    /// <param name="count">0 = the default: one of a named item, everything for 'all' / 'marked'.</param>
+    /// <summary>from = exact container or room; item "*" explicitly selects matching items there.</summary>
+    /// <param name="count">0 = the default: one named item, or all items scoped by from/mark with item="*".</param>
     string Deconstruct(int botId, string item, string? from = null, int count = 0, ItemFilter? filter = null);
     /// <summary>item null = choose the cheapest treatment that is good enough.</summary>
     string Treat(int botId, string target, string? item);
@@ -88,12 +88,12 @@ public interface IGameApi
     /// <summary>Move a worn/held item into the bot's own inventory.</summary>
     string Unequip(int botId, string item, ItemFilter? filter = null);
     string Drop(int botId, string item, ItemFilter? filter = null);
-    /// <summary>to = container name, room id, or crew member name ("me" = take it). Multi-step task.</summary>
+    /// <summary>destination explicitly selects auto/container/room/character/storage/self; to is an exact reference.</summary>
     /// <param name="count">0 = the whole stack.</param>
     string MoveItem(int botId, string item, string to, int count = 0, string destination = "auto", ItemFilter? filter = null);
     /// <summary>
-    /// Pick up to <paramref name="count"/> matching items into the inventory; a kind ("medical") takes a mix. Multi-step task.
-    /// from = a container, a room or a crew member (the room they are in); null = anywhere, nearest first.
+    /// Pick up to <paramref name="count"/> matching items; filter selects categories/condition/marks explicitly.
+    /// from = an exact container, room, or crew member's inventory; null = accessible items aboard.
     /// </summary>
     string TakeItem(int botId, string item, int count, string? from = null, ItemFilter? filter = null) => "error: not supported in this game backend";
     /// <summary>Attack ballast flora (burnt with a fire tool) or a creature / intruder, with a chosen tool or weapon. Multi-step task.</summary>
