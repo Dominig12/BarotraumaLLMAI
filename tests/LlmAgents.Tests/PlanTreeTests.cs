@@ -246,5 +246,5 @@ public class PlanTreeTests
 
     [Fact]
     public void ThePromptShowsAValidExample() =>
-        Assert.Contains("{\"do\":\"equip\",\"args\":{\"item\":\"welding tool\"}}", Prompts.System(new BotAgent(new BotHandle(1, "Sophie", "mechanic")), 6));
+        Assert.Contains("{\"do\":\"equip\",\"args\":{\"category\":\"diving_suit\"}}", Prompts.System(new BotAgent(new BotHandle(1, "Sophie", "mechanic")), 6));
 }

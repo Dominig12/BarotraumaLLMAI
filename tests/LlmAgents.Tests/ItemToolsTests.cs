@@ -67,10 +67,10 @@ public class ItemToolsTests
         var r = Run("inspect", "{\"kind\":\"patient\",\"query\":\"Mose\"}");
         Assert.StartsWith("patient Mose:", r);
         Assert.Equal(Tools.MaxInspectLength, r.Length);
-        Assert.StartsWith("error: kind must be", Run("inspect", "{\"kind\":\"weather\",\"query\":\"x\"}"));
+        Assert.StartsWith("error: 'kind' must be", Run("inspect", "{\"kind\":\"weather\",\"query\":\"x\"}"));
         Assert.StartsWith("items :", Run("inspect", "{\"kind\":\"items\"}"));
         Assert.StartsWith("error: missing 'item'", Run("craft", "{}"));
-        Assert.StartsWith("error: 'on' must be", Run("keep_gear", "{\"on\":\"maybe\"}"));
+        Assert.StartsWith("error: 'on' must be boolean", Run("keep_gear", "{\"on\":\"maybe\"}"));
         Assert.StartsWith("error: missing 'to'", Run("move_item", "{\"item\":\"x\"}"));
     }
 

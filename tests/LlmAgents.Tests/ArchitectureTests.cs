@@ -63,7 +63,7 @@ public class ArchitectureTests
         manager.GetAgent(1)!.ReceivePlayerOrder(order);
         for (int i = 0; i < 16; i++) { manager.Update(); await manager.WhenIdle(); clock.Advance(0.5); }
         Assert.True(offered.Count >= 2);
-        var expected = Tools.For(settings.Bots.AllowedTools, false, false).Select(t => t.Name).ToArray();
+        var expected = Tools.For(settings.Bots.AllowedTools, false, true).Select(t => t.Name).ToArray();
         Assert.All(offered, names => Assert.Equal(expected, names));
     }
 

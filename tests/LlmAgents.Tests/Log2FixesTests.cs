@@ -60,14 +60,14 @@ public class Log2FixesTests
     }
 
     [Fact]
-    public void NoneMeansNoValueAndDeconstructTakesFrom()
+    public void OptionalValuesAreOmittedExplicitlyAndDeconstructTakesFrom()
     {
         var game = new FakeGame().AddBot(1, "Ann", "medicaldoctor");
         var mgr = new AgentManager(Fixtures.Settings(), game, new LlmRouter(Fixtures.Settings()), () => 0);
         var ann = new BotAgent(game.Bots[0]);
-        Tools.Execute(new ToolCall("treat", new JsonObject { ["target"] = "Bob", ["item"] = "None" }), ann, game, mgr);
+        Tools.Execute(new ToolCall("treat", new JsonObject { ["target"] = "Bob" }), ann, game, mgr);
         Assert.Contains("1:treat Bob", game.Actions);
-        Tools.Execute(new ToolCall("deconstruct", new JsonObject { ["item"] = "all", ["from"] = "Электрика [h140]" }), ann, game, mgr);
-        Assert.Contains("1:deconstruct all from Электрика [h140]", game.Actions);
+        Tools.Execute(new ToolCall("deconstruct", new JsonObject { ["item"] = "*", ["from"] = "Электрика [h140]" }), ann, game, mgr);
+        Assert.Contains("1:deconstruct * from Электрика [h140]", game.Actions);
     }
 }

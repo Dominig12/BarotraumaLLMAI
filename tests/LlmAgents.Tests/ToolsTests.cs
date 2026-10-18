@@ -41,7 +41,7 @@ public class ToolsTests
     [InlineData("wait", "{}", "1:wait")]
     [InlineData("go_to_room", "{\"room\":\"Command Room [h11]\"}", "1:goto Command Room [h11]")]
     [InlineData("follow", "{\"target\":\"Bob\"}", "1:follow Bob")]
-    [InlineData("operate", "{\"role\":\"Reactor\",\"option\":\"PowerUp\"}", "1:operate reactor powerup")]
+    [InlineData("operate", "{\"role\":\"reactor\",\"option\":\"powerup\"}", "1:operate reactor powerup")]
     [InlineData("operate", "{\"role\":\"pumps\"}", "1:operate pumps")]
     [InlineData("return_to_default", "{}", "1:dismiss")]
     [InlineData("say", "{\"text\":\"Пробоина!\"}", "1:say Пробоина!")]
@@ -54,9 +54,10 @@ public class ToolsTests
     [Theory]
     [InlineData("go_to_room", "{}", "missing 'room'")]
     [InlineData("go_to_room", "{\"room\":\"Moon\"}", "unknown room")]
-    [InlineData("operate", "{\"role\":\"toilet\"}", "role must be one of")]
+    [InlineData("operate", "{\"role\":\"toilet\"}", "'role' must be one of")]
+    [InlineData("operate", "{\"role\":\"Reactor\"}", "'role' must be one of")]
     [InlineData("say", "{\"text\":\"\"}", "missing 'text'")]
-    [InlineData("message_crew", "{\"to\":\"Bob\"}", "required")]
+    [InlineData("message_crew", "{\"to\":\"Bob\"}", "missing 'text'")]
     [InlineData("launch_nukes", "{}", "unknown tool")]
     public void RejectsBadCalls(string name, string args, string error)
     {
@@ -67,10 +68,10 @@ public class ToolsTests
     }
 
     [Fact]
-    public void ToleratesNonStringArguments()
+    public void RejectsNonStringArgumentsWithoutConvertingThemToSpeech()
     {
-        Assert.StartsWith("ok", Run("say", "{\"text\": 42}"));
-        Assert.Equal("1:say 42", game.Actions.Single());
+        Assert.StartsWith("error: 'text' must be string", Run("say", "{\"text\": 42}"));
+        Assert.Empty(game.Actions);
     }
 
     [Fact]

@@ -243,7 +243,7 @@ public class PlanTests
         var a = mgr.GetAgent(1)!;
         Assert.StartsWith("ok, goal", Tools.Execute(new ToolCall("set_goal", new JsonObject { ["goal"] = "keep the reactor fuelled" }), a, game, mgr));
         Assert.Equal("keep the reactor fuelled", a.Goal);
-        Assert.Contains("finished", Tools.Execute(new ToolCall("set_goal", new JsonObject { ["done"] = "true" }), a, game, mgr));
+        Assert.Contains("finished", Tools.Execute(new ToolCall("set_goal", new JsonObject { ["done"] = true }), a, game, mgr));
         Assert.Null(a.Goal);
     }
 

@@ -208,7 +208,7 @@ public sealed class MemoryAndControlTests
         Assert.Equal("ok", Run(mgr, 1, "remember", "{\"note\":\"short-lived\"}"));
         Assert.Equal("ok, kept for future rounds", Run(mgr, 1, "remember", "{\"note\":\"pump 2 is broken\",\"long_term\":true}"));
         Assert.Equal("ok", Run(mgr, 1, "note_relationship", "{\"person\":\"Bob\",\"feeling\":\"trust\",\"note\":\"fixed my suit\"}"));
-        Assert.StartsWith("error: feeling", Run(mgr, 1, "note_relationship", "{\"person\":\"Bob\",\"feeling\":\"love\",\"note\":\"x\"}"));
+        Assert.StartsWith("error: 'feeling'", Run(mgr, 1, "note_relationship", "{\"person\":\"Bob\",\"feeling\":\"love\",\"note\":\"x\"}"));
         Assert.StartsWith("error: that is you", Run(mgr, 1, "note_relationship", "{\"person\":\"Ann\",\"feeling\":\"like\",\"note\":\"x\"}"));
         Assert.StartsWith("ok", Run(mgr, 1, "note_preference", "{\"player\":\"Daniil\",\"preference\":\"wants short reports\"}"));
         Assert.StartsWith("ok", Run(mgr, 2, "note_preference", "{\"player\":\"Eve\",\"preference\":\"likes music\"}"));

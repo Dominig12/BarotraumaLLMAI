@@ -42,7 +42,7 @@ public class LogFixesTests
         var mgr = new AgentManager(Fixtures.Settings(), game, new LlmRouter(Fixtures.Settings()), () => 0);
         var ann = new BotAgent(game.Bots[0]);
         var r = Tools.Execute(new ToolCall("inspect", new JsonObject { ["kind"] = "'recipe'", ["query"] = "'fuel rod'" }), ann, game, mgr);
-        Assert.StartsWith("error: kind must be", r);
+        Assert.StartsWith("error: 'kind' must be", r);
         Assert.StartsWith("recipe fuel rod:", Tools.Execute(new ToolCall("inspect", new JsonObject { ["kind"] = "recipe", ["query"] = "fuel rod" }), ann, game, mgr));
         // patient without a query = everyone who is hurt
         Assert.StartsWith("patient :", Tools.Execute(new ToolCall("inspect", new JsonObject { ["kind"] = "patient" }), ann, game, mgr));

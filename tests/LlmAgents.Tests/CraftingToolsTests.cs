@@ -35,7 +35,7 @@ public class CraftingToolsTests
     [InlineData("salvage", "steel", "salvage steel:")]
     [InlineData("recipe", null, "error: missing 'query'")]
     [InlineData("items", null, "items :")]
-    [InlineData("blueprints", "x", "error: kind must be one of patient, items, recipes, recipe, salvage")]
+    [InlineData("blueprints", "x", "error: 'kind' must be one of")]
     public void InspectKinds(string kind, string? query, string expectedStart)
     {
         var args = new JsonObject { ["kind"] = kind };
