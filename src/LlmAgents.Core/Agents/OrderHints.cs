@@ -13,6 +13,10 @@ public static class OrderHints
 {
     static readonly (Regex Pattern, Func<string, string?, string> Hint)[] Rules =
     {
+        (R(@"(труп|тело|тел[аоу]\b|corpse|body).*(тащ|нес|нести|перенес|drag|carry)|(тащ|неси|перенес|drag|carry).*(труп|тело|тел[аоу]\b|corpse|body)"),
+            (_, _) => "inspect(kind='bodies') then drag_body(target=<exact [cID]>, to=<room or crew member>)"),
+        (R(@"лут|обыщ|обобра|обери|loot|search.*(body|corpse)"),
+            (_, _) => "inspect(kind='bodies') then loot_body(target=<exact [cID]>, item=<optional item filter>)"),
         (R(@"за\s*мной|follow\s*me|on\s*me\b"), (who, _) => $"follow(target=\"{who}\")"),
         // "сюда", not "отсюда" (= "from here")
         (R(@"ко\s*мне|\bсюда\b|come\s*(here|to\s*me)"), (who, _) => $"come_to(target=\"{who}\")"),

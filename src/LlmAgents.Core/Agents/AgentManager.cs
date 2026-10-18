@@ -107,7 +107,11 @@ public sealed partial class AgentManager : IDisposable
     /// <summary>Selects the long-term memory for this round (one scope per campaign save). Call at round start.</summary>
     public void BeginRound(string scope)
     {
-        if (MemoryOn) memory.Open(scope);
+        if (MemoryOn)
+        {
+            memory.Open(scope);
+            memory.RecoverPendingNotes();
+        }
     }
 
     /// <summary>For tests and diagnostics: completes when all in-flight LLM requests have finished.</summary>
@@ -118,8 +122,10 @@ public sealed partial class AgentManager : IDisposable
 
     public void Reset()
     {
+        EndRound(summarize: false);
         Interlocked.Increment(ref generation);
         agents.Clear();
+        ResetMemoryRound();
         pendingChats.Clear();
         while (gameThread.TryDequeue(out _)) { }
         agentsCreated = 0;
@@ -259,6 +265,7 @@ public sealed partial class AgentManager : IDisposable
         foreach (var id in agents.Keys.Where(k => !seen.Contains(k)).ToList())
         {
             Log.Info($"agent removed: {agents[id].Name}");
+            ArchiveMemory(agents[id]);
             agents.Remove(id);
         }
     }
@@ -325,6 +332,8 @@ public sealed partial class AgentManager : IDisposable
 
     public void Dispose()
     {
+        EndRound(summarize: false);
+        memory.Flush();
         cts.Cancel();
         router.Dispose();
     }

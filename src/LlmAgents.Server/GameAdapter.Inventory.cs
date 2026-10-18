@@ -16,12 +16,23 @@ public sealed partial class GameAdapter
     // --------------------------------------------------------------- inventory
 
     /// <summary>What the bot carries, and what is inside the bags and crates it carries.</summary>
-    static IEnumerable<Item> Carried(Character c) =>
-        (c.Inventory?.AllItems ?? Enumerable.Empty<Item>()).SelectMany(i => new[] { i }.Concat(i.OwnInventory?.AllItems ?? Enumerable.Empty<Item>()));
+    internal static IEnumerable<Item> Carried(Character c)
+    {
+        var pending = new Queue<Item>(c.Inventory?.AllItems ?? Enumerable.Empty<Item>());
+        var seen = new HashSet<Item>();
+        while (pending.Count > 0)
+        {
+            var item = pending.Dequeue();
+            if (item.Removed || !seen.Add(item)) continue;
+            yield return item;
+            if (item.OwnInventory != null)
+                foreach (var inside in item.OwnInventory.AllItems) pending.Enqueue(inside);
+        }
+    }
 
     static Item? FindCarried(Character c, string query) =>
         Carried(c)
-            .Select(i => (i, score: ItemQueries.MatchScore(i.Prefab, query)))
+            .Select(i => (i, score: ItemQueries.MatchScore(i, query)))
             .Where(t => t.score > 0)
             .OrderByDescending(t => t.score)
             .ThenByDescending(t => c.HasEquippedItem(t.i) ? 1 : 0)
@@ -44,18 +55,26 @@ public sealed partial class GameAdapter
     {
         if (Find(botId) is not { } c) return "error: character gone";
         var item = FindCarried(c, query);
-        if (item == null) return $"error: you don't carry '{query}'";
+        if (item == null)
+        {
+            // Products can occupy both hands and every output slot. Eject them at the machine without
+            // requiring another free character slot first.
+            var claimed = ClaimedByOthers(c);
+            item = ItemQueries.Find(c, query, i => InMachineOutput(i) && !claimed.Contains(i)).FirstOrDefault();
+            if (item == null || !Ai(c, out var ai)) return $"error: you don't carry '{query}', and it is not in a machine output";
+            return StartTask(c, new DropOutputTask(c, ai, item), evenOverPlayerOrders: true);
+        }
         if (item.HasTag(Tags.HeavyDivingGear) && c.HasEquippedItem(item) && GearLock.IsLocked(c) && !PlayerSaidSo(c))
             return "error: your diving gear is locked (danger or keep_gear)";
         item.Drop(c);
-        return $"ok, dropped {item.Name}";
+        return item.ParentInventory == null ? $"ok, dropped {item.Name}" : $"error: could not drop {item.Name}";
     }
 
     public const int MaxMoveStack = 32;
 
     /// <summary>The item and the rest of its stack: all of that item the bot carries, or all in the same cabinet or machine
     /// output (or lying loose next to it). count &gt; 0 = that many, nearest first.</summary>
-    List<Item> StackOf(Character c, Item item, int count)
+    List<Item> StackOf(Character c, Item item, int count, string query)
     {
         int max = count > 0 ? Math.Min(count, MaxMoveStack) : MaxMoveStack;
         IEnumerable<Item> same;
@@ -68,12 +87,12 @@ public sealed partial class GameAdapter
                                             && Vector2.Distance(i.WorldPosition, item.WorldPosition) < 200f);
         var claimed = ClaimedByOthers(c);
         var list = new List<Item> { item };
-        list.AddRange(same.Where(i => i != item && !claimed.Contains(i) && ItemQueries.IsAvailableTo(i, c)).Take(max - 1));
+        list.AddRange(same.Where(i => i != item && !claimed.Contains(i) && ItemQueries.IsAvailableTo(i, c) && ItemQueries.MatchScore(i, query) > 0).Take(max - 1));
         if (count > list.Count)
         {
             // asked for more than one stack holds: the nearest others of the same item
             list.AddRange(ItemQueries.Find(c, item.Prefab.Identifier.Value, i => i.Prefab == item.Prefab && i.GetRootInventoryOwner() != c, claimed)
-                .Where(i => !list.Contains(i)).Take(count - list.Count));
+                .Where(i => !list.Contains(i) && !claimed.Contains(i) && ItemQueries.MatchScore(i, query) > 0).Take(max - list.Count));
         }
         return list;
     }
@@ -86,20 +105,24 @@ public sealed partial class GameAdapter
 
         // what it carries first, but not the diving suit it has to keep on: then a spare one from the sub
         bool Locked(Item i) => i.HasTag(Tags.HeavyDivingGear) && c.HasEquippedItem(i) && GearLock.IsLocked(c) && !PlayerSaidSo(c);
+        var claimed = ClaimedByOthers(c);
         var carried = FindCarried(c, query);
         var item = carried != null && !Locked(carried) ? carried
-            : ItemQueries.Find(c, query, i => i.GetRootInventoryOwner() != c, ClaimedByOthers(c)).FirstOrDefault();
+            : ItemQueries.Find(c, query, i => i.GetRootInventoryOwner() != c && !claimed.Contains(i))
+                .OrderByDescending(i => ItemQueries.MatchScore(i, query)).ThenByDescending(i => InMachineOutput(i) ? 1 : 0).FirstOrDefault();
         if (item == null)
             return carried != null ? "error: your diving gear is locked (danger or keep_gear) and there is no spare one aboard" : NotFound(c, query);
         if (item != carried && !ItemQueries.IsKindQuery(query) && ItemQueries.NoneFree(c, query, item) is { } busy) return "error: " + busy;
-        var replace = Replacer(c);
-        var stack = StackOf(c, item, count);
+        var replace = Replacer(c, query);
+        var stack = StackOf(c, item, count, query);
 
         // "на место" / "away": where it belongs (onto the same items first)
         if (ItemWords.IsItsPlace(to))
         {
             var place = StoragePlanner.Choose(c, item, new HashSet<Item>());
             if (place == null) return $"error: no fitting place for {item.Name} on the sub; name a container or a room";
+            if (stack.All(i => i.ParentInventory == place.Container.Inventory))
+                return $"ok ({item.Name} x{stack.Count} already in {StoragePlanner.Describe(place.Container)})";
             return StartTask(c, new MoveItemTask(c, ai, stack, place.Container, null, null, StoragePlanner.Describe(place.Container), replace));
         }
 
@@ -118,7 +141,7 @@ public sealed partial class GameAdapter
         // a container on the sub that accepts the item
         var container = Item.ItemList
             .Where(i => i.Submarine == c.Submarine && !i.Removed && i != item && i.GetRootInventoryOwner() is not Character)
-            .Select(i => (i, ic: i.GetComponent<ItemContainer>(), score: ItemQueries.MatchScore(i.Prefab, to)))
+            .Select(i => (i, ic: i.GetComponent<ItemContainer>(), score: ItemQueries.MatchScore(i, to)))
             .Where(t => t.ic != null && t.score > 0 && t.ic.Inventory.CanBePut(item) && !ItemQueries.IsIgnored(t.i))
             .OrderByDescending(t => t.score)
             // of several matching cabinets, the one that already holds such items (stacks, saves space)
@@ -142,22 +165,32 @@ public sealed partial class GameAdapter
         return hasSuit ? "ok, diving gear locked on" : "ok, locked; you wear no diving suit yet: equip 'diving suit' to be safe";
     }
 
-    /// <summary>Load an item into something the bot carries: fuel into the welding tool, a tank into the suit, ammo into a gun.</summary>
+    /// <summary>Load a carried or world container: fuel into a tool, C4 into a shell, ammo into a loader.</summary>
     public string PutIn(int botId, string query, string into)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
-        var holder = Carried(c).Where(i => i.GetComponent<ItemContainer>() != null && ItemQueries.MatchScore(i.Prefab, into) > 0)
-            .OrderByDescending(i => ItemQueries.MatchScore(i.Prefab, into)).FirstOrDefault();
-        if (holder == null) return $"error: you do not carry '{into}' (put_in loads things into what you carry; for cabinets use move_item)";
+        var claimed = ClaimedByOthers(c);
+        var holder = Item.ItemList.Where(i => !i.Removed && !ItemQueries.IsIgnored(i) && !claimed.Contains(i)
+                    && (i.GetRootInventoryOwner() == c || i.Submarine == c.Submarine && i.GetRootInventoryOwner() is not Character)
+                    && i.GetComponent<ItemContainer>() != null && ItemQueries.MatchScore(i, into) > 0)
+            .OrderByDescending(i => ItemQueries.MatchScore(i, into))
+            .ThenByDescending(i => i.GetRootInventoryOwner() == c ? 1 : 0)
+            .ThenBy(i => i.OwnInventory?.AllItems.Any(x => ItemQueries.MatchScore(x, query) > 0) == true ? 1 : 0)
+            .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)).FirstOrDefault();
+        if (holder == null) return $"error: no available container '{into}' aboard or in your inventory";
         var ic = holder.GetComponent<ItemContainer>()!;
-        var item = Carried(c).Where(i => i != holder && i.Container != holder && ic.CanBeContained(i) && ItemQueries.MatchScore(i.Prefab, query) > 0).FirstOrDefault()
-                   ?? ItemQueries.Find(c, query, i => i != holder && ic.CanBeContained(i) && (i.Container == null || IsStorage(i.Container)), ClaimedByOthers(c)).FirstOrDefault();
+        var item = ItemQueries.Find(c, query, i => i != holder && i.Container != holder && ic.CanBeContained(i)
+                    && (i.GetRootInventoryOwner() == c || i.Container == null || IsStorage(i.Container) || InMachineOutput(i)), claimed).FirstOrDefault();
+        var loaded = ic.Inventory.AllItems.FirstOrDefault(i => ItemQueries.MatchScore(i, query) > 0 && !ItemRules.IsSpent(i.MaxCondition > 0 ? i.Condition / i.MaxCondition : 1));
+        if (loaded != null && (item == null || !ic.Inventory.CanBePut(item)
+            && loaded.Condition / Math.Max(1, loaded.MaxCondition) >= item.Condition / Math.Max(1, item.MaxCondition)))
+            return $"ok ({ItemQueries.InstanceLabel(holder)} already contains {query})";
         if (item == null)
         {
             var fits = InventoryView.BestRefill(c, holder, ic, null, new HashSet<Item>());
             return $"error: no '{query}' that fits into {holder.Name}" + (fits != null ? $"; it takes e.g. {fits.Name}" : "");
         }
-        if (item.GetRootInventoryOwner() == c)
+        if (item.GetRootInventoryOwner() == c && holder.GetRootInventoryOwner() == c)
         {
             var err = InventoryView.PutInto(c, item, ic, out var removed);
             return err != null ? "error: " + err
@@ -174,7 +207,7 @@ public sealed partial class GameAdapter
         string note = "";
         if (!string.IsNullOrWhiteSpace(query))
         {
-            only = Carried(c).Where(i => i.GetComponent<ItemContainer>() != null && ItemQueries.MatchScore(i.Prefab, query!) > 0).FirstOrDefault();
+            only = Carried(c).Where(i => i.GetComponent<ItemContainer>() != null && ItemQueries.MatchScore(i, query!) > 0).FirstOrDefault();
             // models name the refill itself ("oxygen tank") or a suit by another word: refill whatever needs it
             if (only == null) note = $" ('{query}' is not something you carry that takes a refill: refilling what needs one)";
         }
@@ -203,7 +236,7 @@ public sealed partial class GameAdapter
         var keepWords = (keep ?? "").Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries).Select(k => k.Trim()).Where(k => k.Length > 0).ToList();
         var items = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>())
             .Where(i => !c.HasEquippedItem(i) && !InventoryView.IsBoring(i) && !i.HasTag("mobileradio".ToIdentifier())
-                        && !keepWords.Any(k => ItemQueries.MatchScore(i.Prefab, k) > 0))
+                        && !keepWords.Any(k => ItemQueries.MatchScore(i, k) > 0))
             .Distinct().ToList();
         if (items.Count == 0) return "ok (you carry nothing to put away)";
         var plan = items.GroupBy(i => i.Prefab).Select(g => (g.Key, n: g.Count(), to: StoragePlanner.Choose(c, g.First(), new HashSet<Item>()))).ToList();
@@ -222,7 +255,7 @@ public sealed partial class GameAdapter
         {
             var slot = InventoryView.SlotName(c, i) ?? "carried";
             var inside = i.OwnInventory?.AllItems.ToList();
-            var s = $"{slot}: {ItemQueries.Label(i)}{InventoryView.Condition(i)}";
+            var s = $"{slot}: {ItemQueries.InstanceLabel(i)}{InventoryView.Condition(i)}";
             if (inside is { Count: > 0 })
                 s += " [in it: " + string.Join(", ", inside.GroupBy(x => x.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}{InventoryView.Condition(g.First())}")) + "]";
             else if (i.GetComponent<ItemContainer>() is { Capacity: <= 4 }) s += " [empty]";

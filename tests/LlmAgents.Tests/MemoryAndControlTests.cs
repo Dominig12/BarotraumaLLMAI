@@ -87,6 +87,68 @@ public sealed class MemoryStoreTests : IDisposable
         Assert.Equal("campaign_a_b_c", MemoryStore.SafeName("campaign_a/b\\c"));
         Assert.Equal("default", MemoryStore.SafeName("../"));
     }
+
+    [Fact]
+    public void OlderFilesWithNullNotesCanStillBeReadAndSaved()
+    {
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "old.json"),
+            "{\"bots\":{\"Ann\":{\"name\":\"Ann\",\"lastRoundNotes\":null,\"journal\":[\"old round\"]},\"deleted\":null}}");
+        var s = new MemoryStore(dir);
+        s.Open("old");
+        Assert.Empty(s.Bot("Ann")!.LastRoundNotes);
+        Assert.Null(s.Bot("deleted"));
+        s.AddJournal("Ann", "mechanic", "new round", 1, countRound: true, entryId: "new");
+        s.Flush();
+        s = new MemoryStore(dir);
+        s.Open("old");
+        Assert.Equal(new[] { "new round" }, s.Bot("Ann")!.Journal);
+    }
+
+    [Fact]
+    public void FailedWritesSurviveSwitchingCampaignsAndLateUpdates()
+    {
+        // A regular file occupies the directory until the next flush can retry.
+        File.WriteAllText(dir, "blocked");
+        try
+        {
+            var s = new MemoryStore(dir);
+            s.Open("a");
+            s.AddFact("Ann", "mechanic", "kept before the switch", 10);
+            s.Open("b");
+            s.AddFact("Ann", "mechanic", "late lesson", 10, scope: "a");
+            s.AddPreference("Daniil", "short reports", 10);
+            Assert.True(s.IsDirty);
+            File.Delete(dir);
+            s.Flush();
+            Assert.False(s.IsDirty);
+            var reloaded = new MemoryStore(dir);
+            reloaded.Open("a");
+            Assert.Equal(new[] { "kept before the switch", "late lesson" }, reloaded.Bot("Ann")!.Facts);
+            reloaded.Open("b");
+            Assert.Equal(new[] { "short reports" }, reloaded.Read(d => d.Players["Daniil"]));
+        }
+        finally { if (File.Exists(dir)) File.Delete(dir); }
+    }
+
+    [Fact]
+    public void LateSummaryReplacesItsOwnEntryAndCannotResurrectAPrunedRound()
+    {
+        var s = new MemoryStore(dir);
+        s.Open("a");
+        s.AddJournal("Ann", "mechanic", "first fallback", 2, true, entryId: "first");
+        s.AddJournal("Ann", "mechanic", "second fallback", 2, true, entryId: "second");
+        s.Flush();
+        s = new MemoryStore(dir);
+        s.Open("a");
+        s.AddJournal("Ann", "mechanic", "first improved", 2, false, entryId: "first");
+        Assert.Equal(new[] { "first improved", "second fallback" }, s.Bot("Ann")!.Journal);
+        Assert.Equal(2, s.Bot("Ann")!.Rounds);
+        s.AddJournal("Ann", "mechanic", "third fallback", 2, true, entryId: "third");
+        s.AddJournal("Ann", "mechanic", "very late first", 2, false, entryId: "first");
+        Assert.Equal(new[] { "second fallback", "third fallback" }, s.Bot("Ann")!.Journal);
+        Assert.Equal(3, s.Bot("Ann")!.Rounds);
+    }
 }
 
 public sealed class MemoryAndControlTests
@@ -338,6 +400,94 @@ public sealed class MemoryAndControlTests
         var entry = memory.Bot("Ann")!.Journal.Single();
         Assert.StartsWith("Last round:", entry);
         Assert.Contains("fix_leaks", entry);
+    }
+
+    [Fact]
+    public async Task RoundBaselineIsSavedBeforeASummaryAndSurvivesImmediateShutdown()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "llmagents-round-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            game.AddBot(1, "Ann", "mechanic");
+            var settings = Fixtures.Settings();
+            var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var handler = new FakeHandler(async (_, body, ct) =>
+            {
+                var system = body["messages"]![0]!["content"]!.GetValue<string>();
+                if (system.Contains("The round just ended"))
+                {
+                    started.TrySetResult();
+                    await Task.Delay(-1, ct);
+                }
+                return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("wait", "{}")));
+            });
+            var store = new MemoryStore(dir);
+            var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get, store);
+            mgr.BeginRound("campaign_a");
+            await Step(mgr);
+            mgr.GetAgent(1)!.LogEvent("task craft shells completed");
+            mgr.Remember(mgr.GetAgent(1)!, "C4 is in the armory cabinet", false);
+            mgr.EndRound();
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var reloaded = new MemoryStore(dir);
+            reloaded.Open("campaign_a");
+            Assert.Equal(1, reloaded.Bot("Ann")!.Rounds);
+            Assert.Contains("craft shells", reloaded.Bot("Ann")!.Journal.Single());
+            Assert.Contains("C4 is in the armory cabinet", reloaded.Bot("Ann")!.LastRoundNotes);
+
+            mgr.EndRound(); // repeated lifecycle callbacks must not count the round twice
+            mgr.Dispose();
+            await mgr.WhenIdle();
+            Assert.Equal(1, store.Bot("Ann")!.Rounds);
+            Assert.Single(store.Bot("Ann")!.Journal);
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    [Fact]
+    public async Task CheckpointedNotesAreRecoveredWithoutARoundEndHook()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "llmagents-notes-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            game.AddBot(1, "Ann", "mechanic");
+            var settings = Fixtures.Settings();
+            var handler = new FakeHandler(_ => (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("wait", "{}"))));
+            var store = new MemoryStore(dir);
+            using var old = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get, store);
+            old.BeginRound("campaign_a");
+            await Step(old);
+            old.Remember(old.GetAgent(1)!, "The spare tanks are in the reactor cabinet", false);
+            store.Flush(); // the normal periodic save, before EndRound or Dispose
+            Assert.Empty(store.Bot("Ann")!.LastRoundNotes); // not mislabelled as last round while still playing
+
+            var reloaded = new MemoryStore(dir);
+            using var next = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get, reloaded);
+            next.BeginRound("campaign_a");
+            await Step(next);
+            Assert.Contains("spare tanks", next.Recall(next.GetAgent(1)!, "tanks"));
+            Assert.Empty(reloaded.Bot("Ann")!.PendingNotes);
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    [Fact]
+    public async Task DepartedBotsAndMissingEndHooksKeepTheirNotesAndJournal()
+    {
+        game.AddBot(1, "Ann", "mechanic");
+        var (mgr, _, _) = Create(s => s.Memory.RoundSummary = false);
+        await Step(mgr);
+        mgr.Remember(mgr.GetAgent(1)!, "Shells are stored beside the railgun", false);
+        mgr.GetAgent(1)!.LogEvent("task loaded railgun");
+        game.Dead.Add(1);
+        await Step(mgr);
+        Assert.Null(mgr.GetAgent(1));
+        mgr.Reset(); // a new round without the normal EndRound event
+        var ann = memory.Bot("Ann")!;
+        Assert.Equal(1, ann.Rounds);
+        Assert.Contains("loaded railgun", ann.Journal.Single());
+        Assert.Contains("Shells are stored beside the railgun", ann.LastRoundNotes);
     }
 
     [Fact]

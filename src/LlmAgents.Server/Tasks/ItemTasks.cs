@@ -117,9 +117,13 @@ internal sealed class TakeItemsTask : BotTask
                 if (next == null) continue;
             }
             if (next.GetRootInventoryOwner() == Bot) { got.Add(next); continue; }
-            if (!HasRoom(next)) { full = true; return Report(); }
             // the rest of a stack in the cabinet it is standing at: straight into the pockets, no walk per item
-            if (IsNear(next, 150f) && PickUp(next)) { got.Add(next); continue; }
+            if (IsNear(next, 150f))
+            {
+                if (PickUp(next)) { got.Add(next); continue; }
+                full = true;
+                return Report();
+            }
             current = next;
             Run(Get(current), $"getting {current.Name} from {ItemQueries.Where(current, Bot)} ({got.Count + 1}/{wanted})");
             return null;
@@ -139,6 +143,34 @@ internal sealed class TakeItemsTask : BotTask
         if (got.Count == 0) return $"failed: took nothing: {why}";
         var list = string.Join(", ", got.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"));
         return $"ok: took {list} (in your inventory now)" + (left > 0 ? $"; {left} more not taken: {why}" : "");
+    }
+}
+
+/// <summary>Eject one crafted product onto the floor beside its machine, even when both hands are occupied.</summary>
+internal sealed class DropOutputTask : BotTask
+{
+    readonly Item item;
+    public override string Name => $"drop {ItemQueries.InstanceLabel(item)} from machine output";
+    public override IEnumerable<Item> Claimed => new[] { item };
+
+    public DropOutputTask(Character bot, HumanAIController ai, Item item) : base(bot, ai) { this.item = item; }
+
+    protected override string? Update()
+    {
+        if (item.Removed) return "failed: product is gone";
+        if (item.GetRootInventoryOwner() is Character owner && owner != Bot) return $"failed: {owner.Name} took {item.Name}";
+        if (!GameAdapter.InMachineOutput(item) && item.GetRootInventoryOwner() != Bot)
+            return item.ParentInventory == null ? $"ok: {item.Name} is already on the floor" : "failed: product was moved out of the machine";
+        var target = item.Container ?? item;
+        if (!IsNear(target, 180f) && !Bot.CanInteractWith(target))
+        {
+            if (ObjectiveFailed || ObjectiveDone || Stalled(20)) return $"failed: cannot reach {target.Name}";
+            if (!HasObjective) Run(GoTo(target, 80f), $"going to the output of {target.Name}");
+            return null;
+        }
+        ClearObjective();
+        item.Drop(Bot);
+        return item.ParentInventory == null ? $"ok: dropped {ItemQueries.InstanceLabel(item)} beside the machine" : $"failed: could not remove {item.Name} from the machine";
     }
 }
 
@@ -396,11 +428,10 @@ internal sealed class MoveItemTask : BotTask
         while (!full)
         {
             if (fetching != null && Mine(fetching)) { fetching = null; ClearObjective(); }
-            if (fetching != null && !Lost(fetching) && (ObjectiveFailed || Stalled(6)) && IsNear(fetching, 250f) && PickUp(fetching))
+            if (fetching != null && !Lost(fetching) && (ObjectiveFailed || ObjectiveDone || Stalled(6)) && IsNear(fetching, 250f))
             {
-                fetching = null;
-                ClearObjective();
-                continue;
+                if (PickUp(fetching)) { fetching = null; ClearObjective(); continue; }
+                if (items.Any(Mine)) { fetching = null; ClearObjective(); full = true; break; }
             }
             if (fetching != null && (Lost(fetching) || ObjectiveFailed || Stalled(15)))
             {
@@ -424,7 +455,7 @@ internal sealed class MoveItemTask : BotTask
                 if (!HasObjective) Run(Get(fetching), Step);
                 return null;
             }
-            var pending = items.Where(i => !Mine(i) && !failed.Contains(i) && !(container != null && i.ParentInventory == container.Inventory)).ToList();
+            var pending = items.Where(i => !Mine(i) && !failed.Contains(i) && !delivered.Contains(i) && !(container != null && i.ParentInventory == container.Inventory)).ToList();
             if (pending.Count == 0) break;
             foreach (var p in pending.Where(Lost).ToList()) { failed.Add(p); pending.Remove(p); }
             if (pending.Count == 0) break;
@@ -441,7 +472,7 @@ internal sealed class MoveItemTask : BotTask
             return null;
         }
 
-        var load = items.Where(Mine).ToList();
+        var load = items.Where(i => Mine(i) && !failed.Contains(i) && !delivered.Contains(i)).ToList();
         if (load.Count == 0) return Report();
 
         // 2. to the destination, then everything at once
@@ -451,7 +482,9 @@ internal sealed class MoveItemTask : BotTask
             if (arrived != null) return arrived.Length == 0 ? null : arrived;
             foreach (var i in load)
                 if (container.Inventory.TryPutItem(i, Bot)) delivered.Add(i); else failed.Add(i);
-            return Report();
+            full = false;
+            walkTries = 0;
+            return null; // bulky products need more than one trip; fetch the rest after unloading
         }
 
         if (receiver != null)
@@ -469,7 +502,8 @@ internal sealed class MoveItemTask : BotTask
                 if (!receiver.Inventory.TryPutItem(i, Bot, new List<InvSlotType> { InvSlotType.Any })) i.Drop(Bot);
                 delivered.Add(i);
             }
-            return Report();
+            full = false;
+            return null;
         }
 
         if (room != null)
@@ -483,7 +517,8 @@ internal sealed class MoveItemTask : BotTask
             }
             ClearObjective();
             foreach (var i in load) { i.Drop(Bot); delivered.Add(i); }
-            return Report();
+            full = false;
+            return null;
         }
         return "failed: no destination";
     }

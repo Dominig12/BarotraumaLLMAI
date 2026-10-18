@@ -115,6 +115,8 @@ public sealed partial class GameAdapter
             .Take(6).ToList();
 
         o.Marks = DescribeMarks(c);
+        o.Bodies = NearbyBodies(c).OrderBy(b => Vector2.DistanceSquared(c.WorldPosition, b.WorldPosition))
+            .Take(6).Select(b => DescribeBody(c, b, contents: false)).ToList();
         o.Infestations = DescribeFlora(c);
         return o;
     }

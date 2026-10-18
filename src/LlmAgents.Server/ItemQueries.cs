@@ -22,6 +22,15 @@ internal static class ItemQueries
     /// <summary>"Бинт [antibleeding1]": localized name plus identifier, so the LLM can copy either.</summary>
     public static string Label(Item i) => $"{i.Name} [{i.Prefab.Identifier}]";
     public static string Label(ItemPrefab p) => $"{p.Name.Value} [{p.Identifier}]";
+    public static string InstanceLabel(Item i) => $"{Label(i)} #{i.ID}";
+
+    public static int MatchScore(Item item, string query, bool kinds = true)
+    {
+        var parsed = InventoryQuery.Parse(query);
+        if ((parsed.EntityId.HasValue && parsed.EntityId != item.ID) || !parsed.MatchesCondition(item.Condition, item.MaxCondition)) return 0;
+        return string.IsNullOrWhiteSpace(parsed.Text) && (parsed.EntityId.HasValue || parsed.Condition != ItemConditionFilter.Any)
+            ? 3 : MatchScore(item.Prefab, parsed.Text, kinds);
+    }
 
     /// <summary>
     /// 0 = no match, higher = better (exact identifier / name beats substring). Plain words work too: other word forms
@@ -56,8 +65,8 @@ internal static class ItemQueries
     /// </summary>
     public static string? NoneFree(Character c, string query, Item? best)
     {
-        if (best != null && MatchScore(best.Prefab, query, kinds: false) >= 3) return null;
-        var exact = Item.ItemList.Where(i => !i.Removed && i.Submarine == c.Submarine && MatchScore(i.Prefab, query, kinds: false) >= 3).ToList();
+        if (best != null && MatchScore(best, query, kinds: false) >= 3) return null;
+        var exact = Item.ItemList.Where(i => !i.Removed && i.Submarine == c.Submarine && MatchScore(i, query, kinds: false) >= 3).ToList();
         if (exact.Count == 0) return null;
         var holders = exact
             .Select(i => i.GetRootInventoryOwner() is Character h ? (h == c ? "you" : h.Name) : i.Container != null ? $"{i.Container.Name} (in use)" : "in use")
@@ -89,7 +98,7 @@ internal static class ItemQueries
         || AmmoWords.Any(w => p.Identifier.Value.Contains(w, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>The query names a kind of items, not one item ("медикаменты", "ammo").</summary>
-    public static bool IsKindQuery(string query) => ItemWords.Groups(query).Count > 0;
+    public static bool IsKindQuery(string query) => ItemWords.Groups(InventoryQuery.Parse(query).Text).Count > 0;
 
     /// <summary>Items the bot may take: in its own inventory, or anywhere on its sub that is not on another character or built in.</summary>
     public static bool IsAvailableTo(Item i, Character c)
@@ -136,17 +145,21 @@ internal static class ItemQueries
         {
             var list = Marked(c, mark).Where(i => IsAvailableTo(i, c) && (filter == null || filter(i))).ToList();
             var rest = MarkWords.Rest(query);
-            if (rest.Length > 0 && list.Where(i => MatchScore(i.Prefab, rest) > 0).ToList() is { Count: > 0 } narrowed) list = narrowed;
+            if (rest.Length > 0 && list.Where(i => MatchScore(i, rest) > 0).ToList() is { Count: > 0 } narrowed) list = narrowed;
             return list.OrderBy(i => avoid != null && avoid.Contains(i) ? 1 : 0)
                 .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)).ToList();
         }
+        var parsed = InventoryQuery.Parse(query);
         var scores = new Dictionary<ItemPrefab, int>();
         return Available(c)
             .Where(i => filter == null || filter(i))
+            .Where(i => (!parsed.EntityId.HasValue || parsed.EntityId == i.ID) && parsed.MatchesCondition(i.Condition, i.MaxCondition))
             .Select(i =>
             {
-                if (!scores.TryGetValue(i.Prefab, out var s)) scores[i.Prefab] = s = MatchScore(i.Prefab, query, kinds);
-                return (i, score: s);
+                if (!scores.TryGetValue(i.Prefab, out var score))
+                    scores[i.Prefab] = score = string.IsNullOrWhiteSpace(parsed.Text) && (parsed.EntityId.HasValue || parsed.Condition != ItemConditionFilter.Any)
+                        ? 3 : MatchScore(i.Prefab, parsed.Text, kinds);
+                return (i, score);
             })
             .Where(t => t.score > 0)
             .OrderByDescending(t => t.score)
@@ -158,16 +171,17 @@ internal static class ItemQueries
     }
 
     /// <summary>Another item of the same kind for a task whose item was taken by someone else or could not be reached.</summary>
-    public static Item? Replacement(Character c, Item failed, ICollection<Item> tried, ICollection<Item>? avoid = null) =>
+    public static Item? Replacement(Character c, Item failed, ICollection<Item> tried, ICollection<Item>? avoid = null, string? query = null) =>
         Available(c)
             .Where(i => i.Prefab == failed.Prefab && i != failed && !tried.Contains(i) && i.GetRootInventoryOwner() != c)
+            .Where(i => (avoid == null || !avoid.Contains(i)) && (query == null || MatchScore(i, query) > 0))
             .OrderBy(i => avoid != null && avoid.Contains(i) ? 1 : 0)
             .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition))
             .FirstOrDefault();
 
     public static string Where(Item i, Character c)
     {
-        if (i.GetRootInventoryOwner() == c) return "on you";
+        if (i.GetRootInventoryOwner() is Character owner) return owner == c ? "on you" : $"carried by {owner.Name}";
         var container = i.Container;
         var hull = (container ?? i).CurrentHull;
         var place = hull != null ? GameAdapter.RoomId(hull) : "outside";

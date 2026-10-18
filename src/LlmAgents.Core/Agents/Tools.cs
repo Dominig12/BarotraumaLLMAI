@@ -63,7 +63,7 @@ public static class Tools
 
     public static readonly IReadOnlyList<string> OperateRoles = new[] { "reactor", "navigation", "weapons", "pumps" };
 
-    public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipes", "recipe", "salvage", "orders", "inventory", "tools" };
+    public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipes", "recipe", "salvage", "orders", "inventory", "tools", "bodies" };
 
     public const int MaxCraftAmount = 24;
     public const int MaxTakeCount = 8;
@@ -261,14 +261,14 @@ public static class Tools
             }) with { MovesOn = true },
         T("unequip", "Take off a worn or held item into your inventory.", Schema(Arg("item", "Item you wear or hold")), ToolKind.Order, ToolGroup.Inventory,
             c => c.Need(c.Str("item"), "item", v => c.Game.Unequip(c.Id, v))),
-        T("drop", "Drop an item from your inventory here.", Schema(Arg("item", "Item in your inventory")), ToolKind.Order, ToolGroup.Inventory,
-            c => c.Need(c.Str("item"), "item", v => c.Game.Drop(c.Id, v))),
-        T("put_in", "Load something into an item you carry: fuel into the welding tool, a tank into the suit, ammo into a gun, a battery into a flashlight.",
-            Schema(Arg("item", "What to load"), Arg("into", "What you carry that takes it")), ToolKind.Task, ToolGroup.Inventory, c =>
+        T("drop", "Drop an item here; a product still in a machine output is removed and dropped next to that machine.", Schema(Arg("item", "Item name or exact #ID")), ToolKind.Task, ToolGroup.Inventory,
+            c => c.Need(c.Str("item"), "item", v => c.Game.Drop(c.Id, v))) with { MovesOn = true },
+        T("put_in", "Load an item into a carried or nearby container: fuel into a welding tool, a tank into a suit, ammo into a gun, C4 into a railgun shell. Walks to the destination when needed.",
+            Schema(Arg("item", "What to load; name or exact #ID"), Arg("into", "Target item or container, preferably its exact #ID")), ToolKind.Task, ToolGroup.Inventory, c =>
             {
                 var item = c.Str("item"); var into = c.Str("into", "to", "container");
                 return string.IsNullOrEmpty(item) || string.IsNullOrEmpty(into) ? "error: 'item' and 'into' are required" : c.Game.PutIn(c.Id, item!, into!);
-            }),
+            }) with { MovesOn = true },
         T("refill", "Refill what you carry: used-up fuel, oxygen, batteries, ammo (or only the item named).",
             Schema(Arg("item", "Optional: only this item", required: false)), ToolKind.Task, ToolGroup.Inventory,
             c => c.Game.Refill(c.Id, c.Str("item", "target"))),
@@ -286,6 +286,20 @@ public static class Tools
             }),
 
         // ---- jobs
+        T("drag_body", "Drag a corpse or incapacitated person to a room or crew member. Find bodies and their exact [cID] with inspect(kind='bodies').",
+            Schema(Arg("target", "Body name, species or [cID]; 'nearest' = nearest body"), Arg("to", "Destination room id or crew member")),
+            ToolKind.Task, ToolGroup.Items, c =>
+            {
+                var target = c.Str("target", "body"); var to = c.Str("to", "room");
+                return string.IsNullOrWhiteSpace(target) || string.IsNullOrWhiteSpace(to) ? "error: 'target' and 'to' are required"
+                    : c.Game.DragBody(c.Id, target!, to!);
+            }) with { MovesOn = true },
+        T("loot_body", "Search a corpse or incapacitated person, including monster corpses, and take loot into your inventory. Find bodies with inspect(kind='bodies').",
+            Schema(Arg("target", "Body name, species or [cID]; 'nearest' = nearest body"),
+                   Arg("item", "Optional item filter; default all loot", required: false),
+                   Arg("count", $"How many items, 1-{MaxMoveCount}; default all matching items up to {MaxMoveCount}", required: false, type: "integer")),
+            ToolKind.Task, ToolGroup.Items, c => c.Need(c.Str("target", "body"), "target",
+                v => c.Game.LootBody(c.Id, v, c.Str("item"), c.Int("count", 0, 0, MaxMoveCount)))) with { MovesOn = true },
         T("refuel_reactor", "Bring a fuel rod and load it into the reactor (replaces a spent one).", NoArgs(), ToolKind.Task, ToolGroup.Crafting,
             c => c.Game.RefuelReactor(c.Id)) with { MovesOn = true },
         T("craft", "Make an item at a fabricator. Exact name or [id] from inspect(kind='recipes'); salvage=true first breaks down scrap for missing materials. "
@@ -319,7 +333,7 @@ public static class Tools
             Schema(Arg("query", "Words to look for (a name, an item, a room, a topic); empty = the latest of everything", required: false)),
             ToolKind.Lookup, ToolGroup.Core, c => c.Mgr.Recall(c.Agent, c.Str("query", "about", "text"))),
         T("inspect", "Look something up (answer next turn). kind: patient (injuries, medicine; no query = all hurt), items (where; query = room id or name: what is there), "
-            + "recipes (what can be made; optional filter), recipe (one item), salvage (what gives a material), orders (all game orders), inventory (your slots, contents, charge), tools (help for one tool).",
+            + "recipes (what can be made; optional filter), recipe (one item), salvage (what gives a material), orders (all game orders), inventory (your slots, contents, charge), bodies (corpses and incapacitated people, locations, loot and [cID]), tools (help for one tool).",
             Schema(Arg("kind", "What", en: InspectKinds.ToArray()), Arg("query", "Name, item, room, material or filter", required: false)),
             ToolKind.Lookup, ToolGroup.Core, c =>
             {

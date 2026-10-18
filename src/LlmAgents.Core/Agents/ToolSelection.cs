@@ -20,6 +20,7 @@ public static class ToolSelection
         (R(@"леч|ранен|медик|бинт|heal|treat|medic|wound"), ToolGroup.Medical),
         (R(@"убей|атак|стреля|флор|выжг|сожг|kill|attack|shoot|flora|burn|монстр|тварь|ползун|crawler"), ToolGroup.Combat),
         (R(@"разлож|распак|разнес|рассортир|ящик|unpack|crate|помеч|marked"), ToolGroup.Items),
+        (R(@"труп|тел[аоу]\b|тело|лут|обыщ|обобра|обери|утащ|оттащ|перетащ|тащи|corpse|bodies|body|loot|drag"), ToolGroup.Items),
         (R(@"заправ|перезаряд|баллон|вставь|положи\w*\s+в\b|выложи|разгрузи|брось|выбрось|сними|инвентар|карман|refill|reload|drop|unequip|tidy|inventory|put\s+\w+\s+in"), ToolGroup.Inventory),
     };
 

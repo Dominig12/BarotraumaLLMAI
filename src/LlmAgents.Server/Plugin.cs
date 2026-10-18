@@ -211,6 +211,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     public void OnRoundStart()
     {
         roundStarted = true;
+        sessionWasRunning = true;
         try
         {
             adapter?.Reset();
@@ -228,6 +229,8 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     public void OnRoundEnd()
     {
         roundStarted = false;
+        sessionWasRunning = false;
+        sessionSeenAt = -1;
         try { manager?.EndRound(); } catch (Exception e) { Log.Error("round summary failed: " + e.Message); }
         adapter?.Reset();
         manager?.Reset();
@@ -262,18 +265,26 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     }
 
     bool roundStarted;
+    bool sessionWasRunning;
     double sessionSeenAt = -1;
 
     public void OnUpdate(double fixedDeltaTime)
     {
         TryRegisterSettingsWindow();
         if (manager == null) return;
-        if (GameMain.GameSession?.IsRunning != true) { sessionSeenAt = -1; return; }
+        if (GameMain.GameSession?.IsRunning != true)
+        {
+            // Some unload/restart paths do not send IEventRoundEnded.
+            if (sessionWasRunning) OnRoundEnd();
+            sessionSeenAt = -1;
+            return;
+        }
         // The round-start hook reloads the config and recreates everything a moment after the session starts; bots
         // created before it would send requests that are thrown away. Wait for it (or a few seconds, when the mod
         // was loaded in the middle of a round and the hook will not come).
         if (sessionSeenAt < 0) sessionSeenAt = Timing.TotalTime;
         if (!roundStarted && Timing.TotalTime - sessionSeenAt < 5) return;
+        sessionWasRunning = true;
         // the tasks and the agents each on their own: a fault in one must not stop the other
         try { adapter?.Tick(); }
         catch (Exception e) { Log.ErrorThrottled("tick:tasks", "task update failed: " + e); }

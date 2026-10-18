@@ -56,6 +56,8 @@ public sealed class Observation
     public List<RoomInfo> Rooms { get; set; } = new();
     public List<CrewInfo> Crew { get; set; } = new();
     public List<ThreatInfo> Threats { get; set; } = new();
+    /// <summary>Nearby corpses and incapacitated characters, with stable entity references for body tasks.</summary>
+    public List<string> Bodies { get; set; } = new();
     public List<string> Leaks { get; set; } = new();
     /// <summary>What players marked with the middle mouse button: for the AI, for deconstruction, to be ignored.</summary>
     public List<string> Marks { get; set; } = new();

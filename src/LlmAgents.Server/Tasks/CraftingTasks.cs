@@ -4,31 +4,40 @@ using System.Collections.Immutable;
 using System.Linq;
 using Barotrauma;
 using Barotrauma.Items.Components;
+using LlmAgents.Agents;
 using Microsoft.Xna.Framework;
 
 namespace LlmAgents;
 
 internal sealed class CraftTask : BotTask
 {
+    static readonly Dictionary<Fabricator, CraftTask> reservations = new();
     readonly Fabricator fabricator;
     readonly FabricationRecipe recipe;
     readonly int amount;
-    int made, ingredientIndex;
+    int made;
     bool started;
+    bool reserved;
+    FabricationCycle? cycle;
     Item? fetching;
+    int fetchingRequirement;
     readonly HashSet<Item> unreachable = new();
     readonly List<string> unreachableWhere = new();
-    double startedFabricatingAt;
     readonly List<string> clearedOutput = new();
-    protected override double TimeoutSeconds => 120 + 120 * amount;
+    readonly List<string> droppedOutput = new();
+    readonly List<Item> products = new();
+    readonly double runTimeout;
+    protected override double TimeoutSeconds => 120 + runTimeout * amount;
     int Yield => Crafting.Yield(recipe);
-    public override string Name => $"craft {recipe.DisplayName.Value} x{amount * Yield} ({made * Yield} done)";
+    public override string Name => $"craft {recipe.DisplayName.Value} x{amount * Yield} ({products.Count} made)";
+    public override IEnumerable<Item> Claimed => new[] { fabricator.Item }.Concat(fetching != null ? new[] { fetching } : Enumerable.Empty<Item>());
 
     public CraftTask(Character bot, HumanAIController ai, Fabricator fabricator, FabricationRecipe recipe, int amount) : base(bot, ai)
     {
         this.fabricator = fabricator;
         this.recipe = recipe;
         this.amount = amount;
+        runTimeout = Math.Max(120, fabricator.GetRequiredTime(recipe, bot) + 90);
     }
 
     int walkTries;
@@ -52,58 +61,88 @@ internal sealed class CraftTask : BotTask
     protected override string? Update()
     {
         if (fabricator.Item.Removed) return "failed: the fabricator is gone";
+        if (!reserved)
+        {
+            // Two bots must not overwrite each other's recipe, counters, or locked input.
+            if (reservations.TryGetValue(fabricator, out var owner) && owner != this || fabricator.IsActive)
+            {
+                Step = "waiting for the fabricator to become free";
+                return null;
+            }
+            reservations[fabricator] = this;
+            reserved = true;
+            fabricator.OnItemFabricated += ProductCreated;
+        }
 
         if (started)
         {
             Step = $"fabricating {recipe.DisplayName.Value} (craft {made + 1}/{amount})";
-            if (fabricator.IsActive)
+            if (fabricator.IsActive && (fabricator.fabricatedItem != recipe || fabricator.user != Bot))
+                return Failure("someone changed the fabricator's recipe or took over the machine");
+            switch (cycle!.Observe(fabricator.IsActive, fabricator.timeUntilReady, Timing.TotalTime))
             {
-                if (Timing.TotalTime - startedFabricatingAt > recipe.RequiredTime * 4 + 30)
-                    return "failed: the fabricator does not progress (no power?)";
-                return null;
+                case FabricationCycleState.Running:
+                case FabricationCycleState.AwaitingProducts: return null;
+                case FabricationCycleState.Stalled: return Failure("the fabricator has made no progress for 45s (no power?)");
+                case FabricationCycleState.StoppedWithoutProducts: return Failure("the fabricator stopped without making the expected products (cancelled or ingredients unavailable)");
             }
             started = false;
             made++;
-            ingredientIndex = 0;
-            if (made >= amount)
-            {
-                int inOutput = fabricator.OutputContainer?.Inventory.AllItems.Count(i => i.Prefab == recipe.TargetItem) ?? 0;
-                return $"ok: made {made * Yield}x {recipe.DisplayName.Value} ({made} craft{(made > 1 ? "s" : "")}); {inOutput} in the output of {fabricator.Item.Name}" +
-                       (clearedOutput.Count > 0 ? $" (what was left in the output is in your inventory now: {string.Join(", ", clearedOutput.Distinct())})" : "") +
-                       $": take them with take_item(item=\"{recipe.TargetItem.Name.Value}\", count={Math.Max(1, inOutput)}, from=\"{fabricator.Item.Name}\") or move_item (moves the whole stack)";
-            }
+            cycle = null;
+            if (made >= amount) return Report();
         }
+        else if (fabricator.IsActive)
+            return Failure("someone started using the fabricator while ingredients were being collected");
 
         // 1. bring every ingredient into the fabricator's input, one concrete item at a time:
         //    pick it up first (also out of cabinets and the deconstructor's output), then put it in.
         //    "Contain item by identifier" alone gave up on items in machine outputs ("could not bring steel bar").
         var input = fabricator.InputContainer.Inventory;
-        while (ingredientIndex < recipe.RequiredItems.Length)
+        while (true)
         {
-            var required = recipe.RequiredItems[ingredientIndex];
-            var name = required.FirstMatchingPrefab?.Name.Value ?? "ingredient";
-            int have = input.AllItems.Count(required.MatchesItem);
-            if (have >= required.Amount) { ingredientIndex++; fetching = null; ClearObjective(); continue; }
+            var assigned = Crafting.Allocate(recipe, input.AllItems.Distinct().ToList());
+            int ingredientIndex = Enumerable.Range(0, recipe.RequiredItems.Length)
+                .FirstOrDefault(index => assigned[index].Count < recipe.RequiredItems[index].Amount, -1);
+            if (ingredientIndex < 0) break;
 
-            if (fetching != null && (fetching.Removed || fetching.ParentInventory == input))
+            if (fetching != null && (fetching.Removed || fetching.ParentInventory == input || !Crafting.Matches(recipe.RequiredItems[fetchingRequirement], fetching)))
             {
+                fetching = null;
+                ClearObjective();
+                continue;
+            }
+            if (fetching != null && !ItemQueries.IsAvailableTo(fetching, Bot))
+            {
+                unreachable.Add(fetching);
+                unreachableWhere.Add("no longer available in " + ItemQueries.Where(fetching, Bot));
                 fetching = null;
                 ClearObjective();
                 continue;
             }
             if (fetching == null)
             {
-                fetching = ItemQueries.Available(Bot)
-                    .Where(i => required.MatchesItem(i) && i.ParentInventory != input && !unreachable.Contains(i))
-                    .OrderBy(i => i.GetRootInventoryOwner() == Bot ? 0 : 1)
+                var available = Crafting.Stock(Bot, fabricator)
+                    .Where(i => !unreachable.Contains(i))
+                    .OrderBy(i => i.ParentInventory == input ? 0 : 1)
+                    .ThenBy(i => i.GetRootInventoryOwner() == Bot ? 0 : 1)
                     .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, Bot.WorldPosition))
-                    .FirstOrDefault();
-                if (fetching == null)
+                    .ToList();
+                var next = CraftingRules.NextIngredient(Crafting.Allocate(recipe, available), i => i.ParentInventory == input);
+                if (next == null)
+                {
+                    var missing = Crafting.Missing(recipe, available);
+                    string needed = string.Join(", ", missing.Select(m => $"{Crafting.IngredientName(m.Req)} x{m.Missing} (condition {m.Req.MinCondition * 100:0}-{m.Req.MaxCondition * 100:0}%)"));
                     return unreachable.Count > 0
-                        ? $"failed: could not get {name} ({string.Join("; ", unreachableWhere.Take(3))})"
-                        : $"failed: no {name} available on the sub (need {required.Amount - have} more)";
+                        ? Failure($"could not get the missing ingredients {needed} ({string.Join("; ", unreachableWhere.Take(3))})")
+                        : Failure($"no suitable ingredients available on the sub: {needed}");
+                }
+                fetching = next.Value.Item;
+                fetchingRequirement = next.Value.Requirement;
                 ClearObjective();
             }
+            var required = recipe.RequiredItems[fetchingRequirement];
+            var name = required.FirstMatchingPrefab?.Name.Value ?? "ingredient";
+            int have = assigned[fetchingRequirement].Count;
 
             if (fetching.GetRootInventoryOwner() != Bot)
             {
@@ -114,8 +153,8 @@ internal sealed class CraftTask : BotTask
                     return null;
                 }
                 // standing at the cabinet but the objective does not take it: reach in
-                if (Stalled(8) && IsNear(fetching, 250f) && Pocket(fetching)) { ClearObjective(); continue; }
-                if (ObjectiveFailed || Stalled(15))
+                if ((Stalled(8) || ObjectiveFailed) && IsNear(fetching, 250f) && PickUp(fetching)) { ClearObjective(); continue; }
+                if (ObjectiveFailed || Stalled(15) || ObjectiveDone && fetching.GetRootInventoryOwner() != Bot)
                 {
                     // try the next one (another cabinet, another room) before giving up
                     unreachable.Add(fetching);
@@ -132,7 +171,16 @@ internal sealed class CraftTask : BotTask
             // (next to a cabinet) and wait there for ever
             var reach = ReachFabricator($"bringing {name} ({have}/{required.Amount}) to the fabricator");
             if (reach != null) return reach.Length == 0 ? null : reach;
-            if (!input.TryPutItem(fetching, Bot)) return $"failed: could not put {name} into the fabricator (input full?)";
+            if (!input.CanBePut(fetching))
+            {
+                var needed = assigned.SelectMany(items => items).ToHashSet();
+                foreach (var extra in input.AllItems.Distinct().Where(i => !needed.Contains(i)).ToList())
+                {
+                    if (!PickUp(extra)) extra.Drop(Bot);
+                    if (input.CanBePut(fetching)) break;
+                }
+            }
+            if (!input.TryPutItem(fetching, Bot)) return Failure($"could not put {name} into the fabricator (input full or locked)");
             fetching = null;
             continue;   // re-check the count
         }
@@ -140,29 +188,74 @@ internal sealed class CraftTask : BotTask
         // 2. stand at the fabricator and start it
         var at = ReachFabricator("walking to the fabricator");
         if (at != null) return at.Length == 0 ? null : at;
-        // the game only starts a craft whose product fits the output: what an earlier craft left there goes into the pockets
+        // The next shell must fit even when the last shell is too large for pockets or both hands are occupied.
+        // Only the inactive machine's output is cleared; products remain recoverable beside the fabricator.
         var output = fabricator.OutputContainer?.Inventory;
         if (output != null && !output.CanProbablyBePut(recipe.TargetItem, recipe.OutCondition * recipe.TargetItem.Health))
         {
-            foreach (var left in output.AllItems.ToList())
-                if (Pocket(left)) clearedOutput.Add(left.Name);
-            if (!output.CanProbablyBePut(recipe.TargetItem, recipe.OutCondition * recipe.TargetItem.Health))
-                return $"failed: the output of {fabricator.Item.Name} is full ({string.Join(", ", output.AllItems.Select(i => i.Name).Distinct().Take(4))}) and your inventory too: take them out first";
+            var cleared = CraftingRules.ClearOutput(output.AllItems.Distinct(),
+                () => output.CanProbablyBePut(recipe.TargetItem, recipe.OutCondition * recipe.TargetItem.Health), PickUp,
+                left =>
+                {
+                    left.Drop(Bot);
+                    return left.ParentInventory != output;
+                });
+            clearedOutput.AddRange(cleared.Carried.Select(i => i.Name));
+            droppedOutput.AddRange(cleared.Dropped.Select(i => i.Name));
+            if (!cleared.HasRoom)
+                return Failure($"could not clear the output of {fabricator.Item.Name} ({string.Join(", ", output.AllItems.Select(i => i.Name).Distinct().Take(4))})");
         }
+        fabricator.RefreshAvailableIngredients();
+        if (!fabricator.CanBeFabricated(recipe, fabricator.availableIngredients, Bot))
+            return Failure("the recipe cannot be fabricated with the current ingredients, recipe access, money, or fabrication limit");
         fabricator.AmountToFabricate = 1;
         fabricator.amountRemaining = 1;
         fabricator.StartFabricating(recipe, Bot);
         fabricator.Item.CreateServerEvent(fabricator);
         if (!fabricator.IsActive)
         {
-            var missingNow = recipe.RequiredItems.Where(r => input.AllItems.Count(r.MatchesItem) < r.Amount).Select(r => r.FirstMatchingPrefab?.Name.Value ?? "?").ToList();
+            var missingNow = Crafting.Missing(recipe, input.AllItems.Distinct().ToList()).Select(r => r.Req.FirstMatchingPrefab?.Name.Value ?? "?").ToList();
             return missingNow.Count > 0
-                ? $"failed: ingredients went missing from the fabricator's input ({string.Join(", ", missingNow)})"
-                : "failed: the fabricator refused to start (no power, or a recipe/talent it needs)";
+                ? Failure($"ingredients went missing from the fabricator's input ({string.Join(", ", missingNow)})")
+                : Failure("the fabricator refused to start");
         }
         started = true;
-        startedFabricatingAt = Timing.TotalTime;
+        cycle = new FabricationCycle(Yield, fabricator.timeUntilReady, Timing.TotalTime);
         return null;
+    }
+
+    void ProductCreated(Item item, Character user)
+    {
+        if (!started || user != Bot || item.Prefab != recipe.TargetItem || products.Contains(item)) return;
+        products.Add(item);
+        cycle?.ProductCreated();
+    }
+
+    string Failure(string reason) => $"failed: {reason}; {products.Count}x {recipe.DisplayName.Value} made before this stopped";
+
+    string Report()
+    {
+        int inOutput = products.Count(i => !i.Removed && i.ParentInventory == fabricator.OutputContainer?.Inventory);
+        var locations = products.Where(i => !i.Removed).GroupBy(i => ItemQueries.Where(i, Bot))
+            .Select(g => $"{g.Count()} in/at {g.Key}");
+        string room = fabricator.Item.CurrentHull != null ? GameAdapter.RoomId(fabricator.Item.CurrentHull) : fabricator.Item.Name;
+        return $"ok: made {products.Count}x {recipe.DisplayName.Value} ({made} craft{(made > 1 ? "s" : "")}); {inOutput} newly made in the output of {fabricator.Item.Name} in {room}; products now: {string.Join("; ", locations)}" +
+               (clearedOutput.Count > 0 ? $"; cleared output into your inventory: {string.Join(", ", clearedOutput.Distinct())}" : "") +
+               (droppedOutput.Count > 0 ? $"; cleared output onto the floor by the fabricator in {room}: {string.Join(", ", droppedOutput.Distinct())}" : "") +
+               (inOutput > 0 ? $". Take the output with take_item(item=\"{recipe.TargetItemPrefabIdentifier}\", count={inOutput}, from=\"{room}\")" : "");
+    }
+
+    protected override void OnFinish()
+    {
+        if (!reserved) return;
+        fabricator.OnItemFabricated -= ProductCreated;
+        if (reservations.TryGetValue(fabricator, out var owner) && owner == this) reservations.Remove(fabricator);
+        if (started && !fabricator.Item.Removed && fabricator.IsActive && fabricator.user == Bot && fabricator.fabricatedItem == recipe)
+        {
+            fabricator.CancelFabricating(Bot);
+            fabricator.Item.CreateServerEvent(fabricator);
+        }
+        reserved = false;
     }
 }
 

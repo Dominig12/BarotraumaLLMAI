@@ -4,6 +4,7 @@ using System.Linq;
 using Barotrauma;
 using Barotrauma.Items.Components;
 using Microsoft.Xna.Framework;
+using LlmAgents.Agents;
 
 namespace LlmAgents;
 
@@ -70,7 +71,6 @@ internal static class Crafting
     /// <summary>Recipes this crew can actually use (no recipe locked behind a talent nobody has, no traitor items).</summary>
     public static List<(Fabricator Fabricator, FabricationRecipe Recipe)> Recipes(Character c)
     {
-        var seen = new HashSet<uint>();
         var list = new List<(Fabricator, FabricationRecipe)>();
         foreach (var f in Fabricators(c))
             foreach (var r in f.fabricationRecipes.Values)
@@ -79,7 +79,7 @@ internal static class Crafting
                 bool locked;
                 try { locked = f.MissingRequiredRecipe(r, c); } catch { locked = false; }
                 if (locked) continue;
-                if (seen.Add(r.RecipeHash)) list.Add((f, r)); // an item may have several recipes: keep them all
+                list.Add((f, r)); // keep each station: one may be busy, or already hold the ingredients
             }
         return list;
     }
@@ -99,39 +99,44 @@ internal static class Crafting
         return holder.GetComponent<Powered>() == null && holder.GetComponent<Turret>() == null; // cabinets, crates, lockers
     }
 
-    /// <summary>Count of every item the bot could use as an ingredient, by prefab.</summary>
-    public static Dictionary<Identifier, int> Stock(Character c, Fabricator? fabricator = null)
-    {
-        var d = new Dictionary<Identifier, int>();
-        foreach (var i in ItemQueries.Available(c).Where(IsSpare).Concat(fabricator?.InputContainer.Inventory.AllItems ?? Enumerable.Empty<Item>()).Distinct())
-        {
-            if (c.HasEquippedItem(i)) continue;
-            d[i.Prefab.Identifier] = d.GetValueOrDefault(i.Prefab.Identifier) + 1;
-        }
-        return d;
-    }
+    /// <summary>Concrete available ingredients: condition matters for refill recipes, and one item cannot fill two requirements.</summary>
+    public static List<Item> Stock(Character c, Fabricator? fabricator = null) =>
+        ItemQueries.Available(c).Where(IsSpare)
+            .Concat(fabricator?.InputContainer.Inventory.AllItems ?? Enumerable.Empty<Item>())
+            .Where(i => !i.Removed && !c.HasEquippedItem(i) && !ItemQueries.IsIgnored(i))
+            .Distinct().ToList();
 
-    public static int Have(FabricationRecipe.RequiredItem req, Dictionary<Identifier, int> stock) =>
-        req.ItemPrefabs.Sum(p => stock.GetValueOrDefault(p.Identifier));
+    public static bool Matches(FabricationRecipe.RequiredItem req, Item item) =>
+        req.MatchesItem(item) && req.IsConditionSuitable(item.ConditionPercentage);
+
+    public static int Have(FabricationRecipe.RequiredItem req, IReadOnlyList<Item> stock) => stock.Count(i => Matches(req, i));
+
+    public static List<Item>[] Allocate(FabricationRecipe recipe, IReadOnlyList<Item> stock, int times = 1) =>
+        CraftingRules.Allocate(stock, recipe.RequiredItems.Select(req => req.Amount * Math.Max(1, times)).ToArray(),
+            (index, item) => Matches(recipe.RequiredItems[index], item));
 
     public static string IngredientName(FabricationRecipe.RequiredItem req) =>
         req.FirstMatchingPrefab is { } p ? Label(p) : req.ToString();
 
     /// <summary>(ingredient, missing amount) for a recipe, given the stock.</summary>
-    public static List<(FabricationRecipe.RequiredItem Req, int Missing)> Missing(FabricationRecipe r, Dictionary<Identifier, int> stock, int times = 1) =>
-        r.RequiredItems.Select(req => (req, Math.Max(0, req.Amount * times - Have(req, stock)))).Where(t => t.Item2 > 0).ToList();
+    public static List<(FabricationRecipe.RequiredItem Req, int Missing)> Missing(FabricationRecipe r, IReadOnlyList<Item> stock, int times = 1)
+    {
+        var assigned = Allocate(r, stock, times);
+        return r.RequiredItems.Select((req, index) => (req, Math.Max(0, req.Amount * Math.Max(1, times) - assigned[index].Count)))
+            .Where(t => t.Item2 > 0).ToList();
+    }
 
     /// <summary>Best recipe for a free-text query (local name, English name or identifier).</summary>
     public static (Fabricator? Fabricator, FabricationRecipe? Recipe, string? Error) Find(Character c, string query)
     {
         var all = Recipes(c);
         if (all.Count == 0) return (null, null, Fabricators(c).Count == 0 ? "error: no fabricator on this submarine" : "error: the fabricators here can make nothing");
-        var stock = Stock(c);
         // best name match; among several recipes for the same item, the one with the fewest missing ingredients
         var best = all.Select(t => (t.Fabricator, t.Recipe, score: ItemQueries.MatchScore(t.Recipe.TargetItem, query, kinds: false)))
             .Where(t => t.score > 0)
             .OrderByDescending(t => t.score)
-            .ThenBy(t => Missing(t.Recipe, stock).Sum(m => m.Missing))
+            .ThenBy(t => Missing(t.Recipe, Stock(c, t.Fabricator)).Sum(m => m.Missing))
+            .ThenBy(t => t.Fabricator.IsActive ? 1 : 0)
             .FirstOrDefault();
         if (best.Recipe != null) return (best.Fabricator, best.Recipe, null);
 
@@ -211,7 +216,7 @@ internal static class Crafting
     /// Items to deconstruct so a recipe can be made <paramref name="times"/> times, or null with the reason.
     /// Only one level deep (material from scrap), random-output items only as a last resort.
     /// </summary>
-    public static (List<Item>? Items, string? Problem) SalvagePlan(Character c, FabricationRecipe r, Dictionary<Identifier, int> stock, int times)
+    public static (List<Item>? Items, string? Problem) SalvagePlan(Character c, FabricationRecipe r, IReadOnlyList<Item> stock, int times)
     {
         var plan = new List<Item>();
         var used = new HashSet<Item>();
@@ -247,12 +252,11 @@ internal static class Crafting
     {
         var all = Recipes(c);
         if (all.Count == 0) return Fabricators(c).Count == 0 ? "no fabricator on this submarine" : "the fabricators here can make nothing";
-        var stock = Stock(c);
         var rows = all
             .Where(t => string.IsNullOrWhiteSpace(filter) || ItemQueries.MatchScore(t.Recipe.TargetItem, filter) > 0
                         || t.Recipe.TargetItem.Category.ToString().Contains(filter, StringComparison.OrdinalIgnoreCase)
                         || t.Recipe.RequiredItems.Any(q => q.ItemPrefabs.Any(p => ItemQueries.MatchScore(p, filter) >= 2)))
-            .Select(t => (t.Recipe, missing: Missing(t.Recipe, stock)))
+            .Select(t => (t.Recipe, missing: Missing(t.Recipe, Stock(c, t.Fabricator))))
             // one line per item: its easiest recipe
             .GroupBy(t => t.Recipe.TargetItemPrefabIdentifier)
             .Select(g => g.OrderBy(t => t.missing.Sum(m => m.Missing)).First())

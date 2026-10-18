@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace LlmAgents;
 
@@ -52,10 +53,10 @@ public static class Log
     }
 
     const int MaxQueued = 20000;
-    static readonly BlockingCollection<(string Path, string Line)> queue = new(new ConcurrentQueue<(string, string)>());
+    static readonly BlockingCollection<(string Path, string Line, TaskCompletionSource<bool>? Flush)> queue =
+        new(new ConcurrentQueue<(string, string, TaskCompletionSource<bool>?)>());
     static readonly object startLock = new();
     static Thread? writer;
-    static readonly ManualResetEventSlim idle = new(true);
 
     static void Write(LogLevel level, string message)
     {
@@ -65,9 +66,8 @@ public static class Log
             var path = filePath;
             if (path == null) return;
             if (queue.Count >= MaxQueued) return;   // the disk cannot keep up: drop rather than eat memory
-            idle.Reset();
             EnsureWriter();
-            queue.Add((path, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {level,-5} {message}{Environment.NewLine}"));
+            queue.Add((path, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {level,-5} {message}{Environment.NewLine}", null));
         }
         catch
         {
@@ -78,8 +78,15 @@ public static class Log
     /// <summary>Waits (up to the timeout) until queued lines are on disk: plugin unload, tests.</summary>
     public static bool Flush(int timeoutMs = 2000)
     {
-        if (writer == null) return true;
-        return idle.Wait(timeoutMs);
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (startLock)
+        {
+            if (writer == null) return true;
+            // A queue marker cannot be signalled by a previous batch going idle while a producer
+            // is adding new lines. It acknowledges exactly the lines queued before this call.
+            queue.Add(("", "", completion));
+        }
+        return completion.Task.Wait(timeoutMs) && completion.Task.Result;
     }
 
     static volatile bool stopping;
@@ -111,13 +118,12 @@ public static class Log
         string? openPath = null;
         while (true)
         {
-            (string Path, string Line) item;
+            (string Path, string Line, TaskCompletionSource<bool>? Flush) item;
             try
             {
                 if (!queue.TryTake(out item, stopping ? 0 : 500))
                 {
                     w?.Flush();
-                    if (queue.Count == 0) idle.Set();
                     if (stopping) { w?.Dispose(); return; }
                     continue;
                 }
@@ -125,6 +131,12 @@ public static class Log
             catch { continue; }
             try
             {
+                if (item.Flush != null)
+                {
+                    w?.Flush();
+                    item.Flush.TrySetResult(true);
+                    continue;
+                }
                 if (openPath != item.Path || w == null)
                 {
                     w?.Dispose();
@@ -138,13 +150,13 @@ public static class Log
                     w = Open(item.Path);
                 }
                 w.Write(item.Line);
-                if (queue.Count == 0) { w.Flush(); idle.Set(); }
+                if (queue.Count == 0) w.Flush();
             }
             catch
             {
                 try { w?.Dispose(); } catch { }
                 w = null;
-                if (queue.Count == 0) idle.Set();
+                item.Flush?.TrySetResult(false);
             }
         }
     }

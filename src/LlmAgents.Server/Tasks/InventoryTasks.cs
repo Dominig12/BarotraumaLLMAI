@@ -46,7 +46,7 @@ internal static class InventoryView
         return $" [in it: {string.Join(", ", groups)}]";
     }
 
-    public static string Describe(Item i) => ItemQueries.Label(i) + Condition(i) + Contents(i);
+    public static string Describe(Item i) => ItemQueries.InstanceLabel(i) + Condition(i) + Contents(i);
 
     public static bool IsBoring(Item i) => i.HasTag("identitycard".ToIdentifier());
 
@@ -68,7 +68,7 @@ internal static class InventoryView
     public static List<(Item Holder, ItemContainer Ic, Item? Old)> NeedRefill(Character c, Item? only = null)
     {
         var list = new List<(Item, ItemContainer, Item?)>();
-        foreach (var holder in (c.Inventory?.AllItems ?? Enumerable.Empty<Item>()).Where(i => only == null || i == only))
+        foreach (var holder in GameAdapter.Carried(c).Where(i => only == null || i == only))
         {
             var ic = holder.GetComponent<ItemContainer>();
             if (ic == null || !ItemRules.TakesRefills(ic.Capacity, GameAdapter.IsStorage(holder), ic.ContainableItems?.Count ?? 0)) continue;
@@ -98,16 +98,18 @@ internal static class InventoryView
     public static string? PutInto(Character c, Item item, ItemContainer ic, out Item? removed)
     {
         removed = null;
+        if (item.ParentInventory == ic.Inventory) return null;
         if (!ic.CanBeContained(item)) return $"{item.Name} does not fit into {ic.Item.Name}";
         if (!ic.Inventory.CanBePut(item))
         {
+            if (GameAdapter.IsStorage(ic.Item)) return $"{ic.Item.Name} is full; make room first";
             var old = ic.Inventory.AllItems.Where(x => x.Prefab != item.Prefab || ItemRules.IsSpent(Fraction(x))).OrderBy(Fraction).FirstOrDefault()
                       ?? ic.Inventory.AllItems.OrderBy(Fraction).FirstOrDefault();
             if (old == null) return $"{ic.Item.Name} is full";
             if (!c.Inventory.TryPutItem(old, c, CharacterInventory.AnySlot)) old.Drop(c);
             removed = old;
         }
-        return ic.Inventory.TryPutItem(item, c) ? null : $"could not put {item.Name} into {ic.Item.Name}";
+        return ic.Inventory.TryPutItem(item, c) && item.ParentInventory == ic.Inventory ? null : $"could not put {item.Name} into {ic.Item.Name}";
     }
 }
 
@@ -121,14 +123,18 @@ internal sealed class PutInTask : BotTask
     readonly List<string> done = new();
     readonly List<string> problems = new();
     readonly string label;
+    readonly int wanted;
+    bool walkingToDestination;
     (Item Item, ItemContainer Into)? current;
     public override string Name => label;
-    protected override double TimeoutSeconds => 60 + 45 * Math.Max(1, todo.Count + (current != null ? 1 : 0));
-    public override IEnumerable<Item> Claimed => todo.Select(t => t.Item).Concat(current is { } c ? new[] { c.Item } : Array.Empty<Item>());
+    protected override double TimeoutSeconds => 60 + 60 * Math.Max(1, wanted);
+    public override IEnumerable<Item> Claimed => todo.SelectMany(t => new[] { t.Item, t.Into.Item })
+        .Concat(current is { } c ? new[] { c.Item, c.Into.Item } : Array.Empty<Item>());
 
     public PutInTask(Character bot, HumanAIController ai, List<(Item, ItemContainer)> pairs, string label) : base(bot, ai)
     {
         todo = new Queue<(Item, ItemContainer)>(pairs);
+        wanted = pairs.Count;
         this.label = label;
     }
 
@@ -139,20 +145,37 @@ internal sealed class PutInTask : BotTask
             if (todo.Count == 0) return Report();
             current = todo.Dequeue();
             ClearObjective();
+            walkingToDestination = false;
         }
         var (item, into) = current.Value;
-        if (item.Removed || into.Item.Removed || into.Item.GetRootInventoryOwner() != Bot)
+        if (item.Removed || into.Item.Removed || into.Item.GetRootInventoryOwner() is Character holder && holder != Bot)
         {
-            problems.Add($"{item.Name}: gone or no longer carried");
+            problems.Add($"{item.Name}: item or destination gone or carried by someone else");
+            ClearObjective();
             current = null;
             return null;
         }
-        if (item.GetRootInventoryOwner() != Bot)
+        if (item.ParentInventory == into.Inventory) { done.Add($"{item.Name} -> {into.Item.Name}"); ClearObjective(); current = null; return null; }
+        if (item.GetRootInventoryOwner() is Character owner && owner != Bot) { problems.Add($"{owner.Name} took {item.Name}"); ClearObjective(); current = null; return null; }
+        bool atDestination = into.Item.GetRootInventoryOwner() == Bot || IsNear(into.Item, 180f) || Bot.CanInteractWith(into.Item);
+        if (item.GetRootInventoryOwner() != Bot && !(atDestination && IsNear(item, 180f)))
         {
-            if (item.GetRootInventoryOwner() is Character other) { problems.Add($"{other.Name} took {item.Name}"); current = null; return null; }
+            if (walkingToDestination) { ClearObjective(); walkingToDestination = false; }
+            if ((ObjectiveDone || ObjectiveFailed || Stalled(6)) && IsNear(item, 180f) && PickUp(item)) { ClearObjective(); return null; }
             if (!HasObjective) Run(new AIObjectiveGetItem(Bot, item, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false }, $"getting {item.Name} from {ItemQueries.Where(item, Bot)}");
-            else if (ObjectiveFailed) { problems.Add($"could not get {item.Name}"); current = null; }
-            else if (ObjectiveDone) ClearObjective();
+            else if (ObjectiveFailed || ObjectiveDone || Stalled(20)) { problems.Add($"could not get {item.Name} (no room or out of reach)"); ClearObjective(); current = null; }
+            return null;
+        }
+        if (!atDestination)
+        {
+            if (!walkingToDestination)
+            {
+                ClearObjective(); // the completed get-item objective belongs to the previous stage
+                Run(GoTo(into.Item, 80f), $"loading {item.Name} into {ItemQueries.InstanceLabel(into.Item)}");
+                walkingToDestination = true;
+                return null;
+            }
+            if (ObjectiveDone || ObjectiveFailed || Stalled(20)) { problems.Add($"could not reach {into.Item.Name}"); ClearObjective(); current = null; return null; }
             return null;
         }
         ClearObjective();

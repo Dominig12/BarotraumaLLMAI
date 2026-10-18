@@ -130,8 +130,41 @@ public class ArchitectureFixesTests
     }
 }
 
+[CollectionDefinition("Log writer", DisableParallelization = true)]
+public sealed class LogWriterCollection { }
+
+[Collection("Log writer")]
 public class LogWriterTests
 {
+    [Fact]
+    public void Flush_acknowledges_every_batch_even_when_the_writer_has_just_become_idle()
+    {
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "llm_flush_" + System.Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(dir);
+        var path = System.IO.Path.Combine(dir, "a.log");
+        var oldPath = Log.FilePath;
+        try
+        {
+            Log.FilePath = path;
+            for (int i = 0; i < 100; i++)
+            {
+                string marker = $"flush batch [{i}]";
+                Log.Info(marker);
+                Assert.True(Log.Flush(5000));
+                using var stream = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read,
+                    System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete);
+                using var reader = new System.IO.StreamReader(stream);
+                Assert.Contains(marker, reader.ReadToEnd());
+            }
+        }
+        finally
+        {
+            Log.FilePath = oldPath;
+            Log.Flush();
+            try { System.IO.Directory.Delete(dir, true); } catch { }
+        }
+    }
+
     [Fact]
     public void Log_file_is_written_in_background_and_rotated()
     {
@@ -146,7 +179,10 @@ public class LogWriterTests
             for (int i = 0; i < 100; i++) Log.Info("line " + i + new string('x', 50));
             Assert.True(Log.Flush(5000));
             Assert.True(System.IO.File.Exists(path + ".1"));
-            Assert.Contains("line 99", System.IO.File.ReadAllText(path));
+            using (var stream = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read,
+                System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+            using (var reader = new System.IO.StreamReader(stream))
+                Assert.Contains("line 99", reader.ReadToEnd());
             Assert.True(new System.IO.FileInfo(path).Length < 2000 + 200);
         }
         finally

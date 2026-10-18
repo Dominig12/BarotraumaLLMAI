@@ -23,8 +23,12 @@ public sealed class BotMemory
     public List<string> Facts { get; set; } = new();
     /// <summary>One short summary per round, newest last.</summary>
     public List<string> Journal { get; set; } = new();
+    /// <summary>Stable entry IDs, aligned with Journal, so a late summary updates its own round.</summary>
+    public List<string> JournalIds { get; set; } = new();
     /// <summary>The bot's latest notes (remember) of the previous round: shown in the next one, as possibly outdated.</summary>
     public List<string> LastRoundNotes { get; set; } = new();
+    /// <summary>Checkpoint of the current round, recovered after an interrupted round or mod reload.</summary>
+    public List<string> PendingNotes { get; set; } = new();
     /// <summary>How this bot feels about other people, by name.</summary>
     public Dictionary<string, Relationship> Relationships { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
@@ -66,6 +70,8 @@ public sealed class MemoryStore
     readonly string? folder;
     MemoryFile data = new();
     bool dirty;
+    // Keep failed writes alive when the next campaign opens or an old summary arrives.
+    readonly Dictionary<string, MemoryFile> pendingScopes = new(StringComparer.OrdinalIgnoreCase);
 
     public MemoryStore(string? folder) { this.folder = folder; }
 
@@ -87,10 +93,11 @@ public sealed class MemoryStore
         {
             if (scope == Scope) return;
             FlushLocked();
+            if (dirty && Scope.Length > 0) pendingScopes[Scope] = data;
             Scope = scope;
-            data = Load() ?? new MemoryFile();
+            dirty = pendingScopes.Remove(scope, out var pending);
+            data = pending ?? Load() ?? new MemoryFile();
             Normalize(data);
-            dirty = false;
         }
     }
 
@@ -116,11 +123,19 @@ public sealed class MemoryStore
     {
         f.Bots = new Dictionary<string, BotMemory>(f.Bots ?? new(), StringComparer.OrdinalIgnoreCase);
         f.Players = new Dictionary<string, List<string>>(f.Players ?? new(), StringComparer.OrdinalIgnoreCase);
-        foreach (var b in f.Bots.Values)
+        foreach (var key in f.Bots.Keys.ToList())
         {
+            var b = f.Bots[key];
+            if (b == null) { f.Bots.Remove(key); continue; }
             b.Facts ??= new();
             b.Journal ??= new();
+            b.JournalIds ??= new();
+            while (b.JournalIds.Count < b.Journal.Count) b.JournalIds.Add("");
+            if (b.JournalIds.Count > b.Journal.Count) b.JournalIds.RemoveRange(b.Journal.Count, b.JournalIds.Count - b.Journal.Count);
+            b.LastRoundNotes ??= new();
+            b.PendingNotes ??= new();
             b.Relationships = new Dictionary<string, Relationship>(b.Relationships ?? new(), StringComparer.OrdinalIgnoreCase);
+            foreach (var person in b.Relationships.Where(kv => kv.Value == null).Select(kv => kv.Key).ToList()) b.Relationships.Remove(person);
         }
         foreach (var k in f.Players.Keys.ToList()) f.Players[k] ??= new();
     }
@@ -132,6 +147,11 @@ public sealed class MemoryStore
 
     void FlushLocked()
     {
+        foreach (var scope in pendingScopes.Keys.ToList())
+        {
+            var pendingPath = folder == null ? null : Path.Combine(folder, scope + ".json");
+            if (pendingPath != null && Save(pendingScopes[scope], pendingPath)) pendingScopes.Remove(scope);
+        }
         if (!dirty) return;
         var path = FilePath;
         dirty = false;
@@ -163,17 +183,18 @@ public sealed class MemoryStore
     {
         lock (sync)
         {
-            if (SafeName(scope) == Scope) { f(data); dirty = true; return; }
-            var path = folder == null || scope.Length == 0 ? null : Path.Combine(folder, SafeName(scope) + ".json");
-            if (path == null) return;
-            var other = Load(path) ?? new MemoryFile();
+            scope = SafeName(scope);
+            if (scope == Scope) { f(data); dirty = true; return; }
+            var path = folder == null ? null : Path.Combine(folder, scope + ".json");
+            var other = pendingScopes.TryGetValue(scope, out var pending) ? pending : Load(path) ?? new MemoryFile();
             Normalize(other);
             f(other);
-            Save(other, path);
+            if (path != null && Save(other, path)) pendingScopes.Remove(scope);
+            else pendingScopes[scope] = other;
         }
     }
 
-    public bool IsDirty { get { lock (sync) return dirty; } }
+    public bool IsDirty { get { lock (sync) return dirty || pendingScopes.Count > 0; } }
 
     /// <summary>Read access; the callback must not keep references to the data.</summary>
     public T Read<T>(Func<MemoryFile, T> f)
@@ -207,7 +228,7 @@ public sealed class MemoryStore
     static BotMemory Copy(BotMemory b) => new()
     {
         Name = b.Name, Job = b.Job, Rounds = b.Rounds, AiControl = b.AiControl, AiControlBy = b.AiControlBy,
-        Facts = b.Facts.ToList(), Journal = b.Journal.ToList(), LastRoundNotes = b.LastRoundNotes.ToList(),
+        Facts = b.Facts.ToList(), Journal = b.Journal.ToList(), JournalIds = b.JournalIds.ToList(), LastRoundNotes = b.LastRoundNotes.ToList(), PendingNotes = b.PendingNotes.ToList(),
         Relationships = b.Relationships.ToDictionary(kv => kv.Key, kv => new Relationship { Feeling = kv.Value.Feeling, Note = kv.Value.Note, Round = kv.Value.Round }, StringComparer.OrdinalIgnoreCase),
     };
 
@@ -228,8 +249,32 @@ public sealed class MemoryStore
     public void SetLastRoundNotes(string bot, string job, IEnumerable<string> notes, string? scope = null)
     {
         var list = notes.Where(n => !string.IsNullOrWhiteSpace(n)).TakeLast(MaxLastRoundNotes).Select(n => Tools.Clip(n.Trim(), MaxNoteLength)).ToList();
-        Action<MemoryFile> f = d => BotIn(d, bot, job).LastRoundNotes = list;
+        Action<MemoryFile> f = d =>
+        {
+            var b = BotIn(d, bot, job);
+            b.LastRoundNotes = list;
+            b.PendingNotes.Clear();
+        };
         if (scope == null) Change(f); else ChangeIn(scope, f);
+    }
+
+    public void SetPendingNotes(string bot, string job, IEnumerable<string> notes) => Change(d =>
+        BotIn(d, bot, job).PendingNotes = notes.Where(n => !string.IsNullOrWhiteSpace(n))
+            .TakeLast(MaxLastRoundNotes).Select(n => Tools.Clip(n.Trim(), MaxNoteLength)).ToList());
+
+    /// <summary>Recover notes checkpointed before the previous manager could finish its round.</summary>
+    public void RecoverPendingNotes()
+    {
+        lock (sync)
+        {
+            foreach (var b in data.Bots.Values)
+            {
+                if (b.PendingNotes.Count == 0) continue;
+                b.LastRoundNotes = b.PendingNotes.ToList();
+                b.PendingNotes.Clear();
+                dirty = true;
+            }
+        }
     }
 
     /// <summary>Removes facts containing the text. Returns how many were removed.</summary>
@@ -243,20 +288,32 @@ public sealed class MemoryStore
         return n;
     }
 
-    public void AddJournal(string bot, string job, string entry, int max, bool countRound, string? scope = null)
+    public void AddJournal(string bot, string job, string entry, int max, bool countRound, string? scope = null, string? entryId = null)
     {
-        Action<MemoryFile> f = d => AddJournalTo(d, bot, job, entry, max, countRound);
+        Action<MemoryFile> f = d => AddJournalTo(d, bot, job, entry, max, countRound, entryId);
         if (scope == null) Change(f); else ChangeIn(scope, f);
     }
 
-    static void AddJournalTo(MemoryFile d, string bot, string job, string entry, int max, bool countRound)
+    static void AddJournalTo(MemoryFile d, string bot, string job, string entry, int max, bool countRound, string? entryId)
     {
         var b = BotIn(d, bot, job);
+        if (entryId != null)
+        {
+            int existing = b.JournalIds.IndexOf(entryId);
+            if (existing >= 0)
+            {
+                if (!string.IsNullOrWhiteSpace(entry)) b.Journal[existing] = ClipAtSentence(entry.Trim(), MaxJournalLength);
+                return;
+            }
+            // Its fallback may already have been pruned: never append a late summary to a newer round.
+            if (!countRound) return;
+        }
         if (countRound) b.Rounds++;
         if (!string.IsNullOrWhiteSpace(entry))
         {
             b.Journal.Add(ClipAtSentence(entry.Trim(), MaxJournalLength));
-            while (b.Journal.Count > Math.Max(1, max)) b.Journal.RemoveAt(0);
+            b.JournalIds.Add(entryId ?? "");
+            while (b.Journal.Count > Math.Max(1, max)) { b.Journal.RemoveAt(0); b.JournalIds.RemoveAt(0); }
         }
     }
 

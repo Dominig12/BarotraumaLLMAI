@@ -124,11 +124,12 @@ internal abstract class BotTask
     /// the hands hold goes into the pockets. The vanilla "get item" gives up on those: it tries to wear the suit.</summary>
     protected bool PickUp(Item item)
     {
+        if (item.Removed || Bot.Inventory == null) return false;
+        if (item.GetRootInventoryOwner() == Bot) return true;
         if (Pocket(item)) return true;
         var hands = new List<InvSlotType> { InvSlotType.RightHand, InvSlotType.LeftHand };
-        foreach (var slot in hands)
-            if (Bot.Inventory.GetItemInLimbSlot(slot) is { } held && held != item)
-                Bot.Inventory.TryPutItem(held, Bot, new List<InvSlotType> { InvSlotType.Any });
+        foreach (var held in hands.Select(slot => Bot.Inventory.GetItemInLimbSlot(slot)).Where(held => held != null && held != item).Distinct())
+            Bot.Inventory.TryPutItem(held, Bot, new List<InvSlotType> { InvSlotType.Any });
         return Bot.Inventory.TryPutItem(item, Bot, hands);
     }
 

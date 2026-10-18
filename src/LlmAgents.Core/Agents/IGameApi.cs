@@ -98,7 +98,11 @@ public interface IGameApi
     string TakeItem(int botId, string item, int count, string? from = null) => "error: not supported in this game backend";
     /// <summary>Attack ballast flora (burnt with a fire tool) or a creature / intruder, with a chosen tool or weapon. Multi-step task.</summary>
     string Attack(int botId, string target, string? weapon) => "error: not supported in this game backend";
-    /// <summary>Load an item into something the bot carries (fuel into a welding tool, a tank into a suit...). Task when it must be fetched.</summary>
+    /// <summary>Drag a dead or incapacitated character to a room or crew member. Completion is reported later.</summary>
+    string DragBody(int botId, string target, string to) => "error: not supported in this game backend";
+    /// <summary>Search a dead or incapacitated character and take matching items; null item means all loot.</summary>
+    string LootBody(int botId, string target, string? item = null, int count = 0) => "error: not supported in this game backend";
+    /// <summary>Load an item into carried gear or a world container (including C4 into a railgun shell). Task when travel is needed.</summary>
     string PutIn(int botId, string item, string into) => "error: not supported in this game backend";
     /// <summary>Refill what the bot carries (or one item) with full fuel, tanks, batteries, ammo. Multi-step task.</summary>
     string Refill(int botId, string? item) => "error: not supported in this game backend";

@@ -10,6 +10,22 @@ namespace LlmAgents.Agents;
 /// <summary>Long-term memory: what bots see of it, the tools that change it, and the end-of-round summaries.</summary>
 public sealed partial class AgentManager
 {
+    readonly List<BotAgent> departedAgents = new();
+    bool memoryRoundEnded;
+
+    void ArchiveMemory(BotAgent agent)
+    {
+        departedAgents.Add(agent);
+        if (MemoryOn && agent.Notes().Count > 0)
+            memory.SetPendingNotes(agent.Name, agent.Job, agent.Notes());
+    }
+
+    void ResetMemoryRound()
+    {
+        departedAgents.Clear();
+        memoryRoundEnded = false;
+    }
+
     // ---------------------------------------------------------------- long-term memory
 
     MemoryView? MemoryFor(BotAgent agent, Observation obs)
@@ -88,6 +104,8 @@ public sealed partial class AgentManager
     public string Remember(BotAgent agent, string note, bool longTerm)
     {
         agent.AddNote(note, Settings.Global.MaxNotes, clock());
+        // The round-end hook is not guaranteed on mod reload or a server shutdown.
+        if (MemoryOn) memory.SetPendingNotes(agent.Name, agent.Job, agent.Notes());
         if (!longTerm) return "ok";
         if (!MemoryOn) return "ok (long-term memory is disabled, kept for this round)";
         memory.AddFact(agent.Name, agent.Job, note, Settings.Memory.MaxFacts);
@@ -121,14 +139,19 @@ public sealed partial class AgentManager
     /// Round over (game thread, before <see cref="Reset"/>): every bot writes a short summary of the round into its
     /// journal. One LLM call per bot when there is capacity, otherwise a plain summary from the round log.
     /// </summary>
-    public void EndRound()
+    public void EndRound() => EndRound(summarize: true);
+
+    void EndRound(bool summarize)
     {
-        if (!MemoryOn) return;
+        if (!MemoryOn || memoryRoundEnded) return;
+        memoryRoundEnded = true;
         var m = Settings.Memory;
-        foreach (var agent in agents.Values.ToList())
+        // A dead, disconnected or disabled bot can leave the live roster before the round-end event.
+        foreach (var group in departedAgents.Concat(agents.Values).GroupBy(a => a.Name, StringComparer.OrdinalIgnoreCase))
         {
-            var log = agent.RoundLog();
-            var notes = agent.Notes();
+            var agent = group.Last();
+            var log = group.SelectMany(a => a.RoundLog()).TakeLast(BotAgent.MaxRoundLog).ToList();
+            var notes = group.SelectMany(a => a.Notes()).Distinct().TakeLast(MemoryStore.MaxLastRoundNotes).ToList();
             // what the bot wrote down goes along into the next round as it is: nothing it chose to remember is lost
             if (notes.Count > 0) memory.SetLastRoundNotes(agent.Name, agent.Job, notes);
             if (log.Count == 0 && notes.Count == 0)
@@ -137,16 +160,18 @@ public sealed partial class AgentManager
                 continue;
             }
             string fallback = PlainSummary(log);
+            if (fallback.Length == 0) fallback = "Last round notes: " + string.Join("; ", notes);
+            string name = agent.Name, job = agent.Job, scope = memory.Scope;
+            string entryId = Guid.NewGuid().ToString("N");
+            // Persist a usable journal before starting any network work. A new round or shutdown can
+            // cancel the request below; the memory and round counter must already be on disk.
+            memory.AddJournal(name, job, fallback, m.MaxJournal, countRound: true, scope: scope, entryId: entryId);
             string provider = string.IsNullOrEmpty(m.SummaryProvider) ? ProviderFor(agent) : m.SummaryProvider;
-            if (!m.RoundSummary)
-            {
-                memory.AddJournal(agent.Name, agent.Job, fallback, m.MaxJournal, countRound: true);
-                continue;
-            }
+            if (!m.RoundSummary || !summarize) continue;
             var user = "Events of the round:\n- " + string.Join("\n- ", log) +
                        (notes.Count > 0 ? "\nYour notes:\n- " + string.Join("\n- ", notes) : "");
-            string name = agent.Name, job = agent.Job, scope = memory.Scope;   // the campaign this round belonged to
             int maxJournal = m.MaxJournal, maxFacts = m.MaxFacts;
+            memory.Flush();
             Track(Task.Run(async () =>
             {
                 string entry = fallback;
@@ -171,7 +196,7 @@ public sealed partial class AgentManager
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception e) { Log.Warn($"[{name}] round summary failed: {e.Message}; using the plain one"); }
-                memory.AddJournal(name, job, entry, maxJournal, countRound: true, scope);
+                memory.AddJournal(name, job, entry, maxJournal, countRound: false, scope: scope, entryId: entryId);
                 foreach (var fact in lessons) memory.AddFact(name, job, fact, maxFacts, scope);
                 memory.Flush();
                 Log.Info($"[{name}] journal: {entry}" + (lessons.Count > 0 ? $" | kept: {string.Join(" | ", lessons)}" : ""));

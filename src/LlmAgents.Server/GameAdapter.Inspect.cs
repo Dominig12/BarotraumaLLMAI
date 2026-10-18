@@ -20,6 +20,8 @@ public sealed partial class GameAdapter
         if (Find(botId) is not { } c) return "error: character gone";
         switch (kind)
         {
+            case "bodies":
+                return InspectBodies(c, query);
             case "patient":
             {
                 var q = query.Trim().ToLowerInvariant();
@@ -51,7 +53,10 @@ public sealed partial class GameAdapter
                 if (found.Count == 0)
                     return ItemsAt(c, query) is { } p1 ? DescribePlace(p1.Items, p1.Where, c) : $"no '{query}' on the sub (try a plainer word: 'tools', 'medical', 'ammo', 'suit', or a room id to see what is there)";
                 var groups = found.GroupBy(i => i.Prefab).Take(byKind ? 8 : 5).Select(g =>
-                    $"{ItemQueries.Label(g.Key)}: " + string.Join(", ", g.GroupBy(i => ItemQueries.Where(i, c)).Take(4).Select(w => $"{w.Count()} {w.Key}")));
+                    $"{ItemQueries.Label(g.Key)}: " + string.Join("; ", g.GroupBy(i => (Where: ItemQueries.Where(i, c), Percent: i.MaxCondition > 0 ? (int)Math.Round(100 * i.Condition / i.MaxCondition) : -1))
+                        .OrderBy(w => w.Key.Percent).Take(8)
+                        .Select(w => $"{w.Count()} {w.Key.Where}" + (w.Key.Percent >= 0 ? $" ({w.Key.Percent}% condition/charge)" : "")
+                            + $" [{string.Join(", ", w.Take(6).Select(i => $"#{i.ID}"))}]")));
                 return string.Join("; ", groups);
             }
             case "recipe":

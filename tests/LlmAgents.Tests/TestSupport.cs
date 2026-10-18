@@ -49,6 +49,7 @@ public sealed class FakeGame : IGameApi
             CurrentOrder = src.CurrentOrder, Doing = src.Doing, Rooms = src.Rooms.ToList(), Crew = src.Crew.ToList(),
             Gear = src.Gear, Submarine = src.Submarine, CurrentTask = src.CurrentTask,
             Threats = src.Threats.ToList(), Leaks = src.Leaks.ToList(), Inventory = src.Inventory.ToList(),
+            Bodies = src.Bodies.ToList(),
             Equipped = src.Equipped.ToList(), Infestations = src.Infestations.ToList(), Marks = src.Marks.ToList(),
         };
     }
@@ -83,7 +84,8 @@ public sealed class FakeGame : IGameApi
         Act(botId, $"deconstruct {item}{(from != null ? " from " + from : "")}{(count > 0 ? " x" + count : "")}", "ok, started");
     public string Treat(int botId, string target, string? item) => Act(botId, $"treat {target}{(item != null ? " with " + item : "")}", "ok, started");
     public string Unequip(int botId, string item) => Act(botId, $"unequip {item}");
-    public string Drop(int botId, string item) => Act(botId, $"drop {item}");
+    public string DropResult = "ok";
+    public string Drop(int botId, string item) => Act(botId, $"drop {item}", DropResult);
     public string MoveItem(int botId, string item, string to, int count = 0) => Act(botId, $"move {item} -> {to}" + (count > 0 ? $" x{count}" : ""), "ok, started");
     public string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority) =>
         Act(botId, $"order {orderId}" + (option != null ? ":" + option : "") + (target != null ? $" @{target}" : "") + $" [p{priority}]");
@@ -92,6 +94,9 @@ public sealed class FakeGame : IGameApi
     public string TidyInventory(int botId, string? keep) => Act(botId, "tidy" + (keep != null ? " keep " + keep : ""), "ok, started: tidy");
     public string Attack(int botId, string target, string? weapon) =>
         Act(botId, $"attack {target}" + (weapon != null ? $" with {weapon}" : ""), "ok, started: attack " + target);
+    public string DragBody(int botId, string target, string to) => Act(botId, $"drag {target} -> {to}", "ok, started: drag body");
+    public string LootBody(int botId, string target, string? item = null, int count = 0) =>
+        Act(botId, $"loot {target}" + (item == null ? "" : " item " + item) + $" x{count}", "ok, started: loot body");
     public string Unpack(int botId, string container, bool carry = true) =>
         Act(botId, $"unpack {container}" + (carry ? "" : " (no carry)"), "ok, started: unpack " + container);
     public string TakeItem(int botId, string item, int count, string? from = null) =>
