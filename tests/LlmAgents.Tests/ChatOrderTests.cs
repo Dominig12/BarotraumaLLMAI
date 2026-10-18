@@ -205,7 +205,7 @@ public class ChatOrderTests
     public async Task PrefixFiltersMessages()
     {
         var (mgr, llm) = Create("\"chat\": { \"prefix\": \"!\" },");
-        llm.Dispatch = _ => Fixtures.OpenAiToolResponse((ChatDispatcher.ToolName, "{\"recipients\":[\"all\"]}"));
+        llm.Dispatch = _ => Fixtures.OpenAiToolResponse((ChatDispatcher.ToolName, "{\"recipients\":[\"Anna Kuznetsova\",\"Max Volkov\",\"Oleg Sidorov\",\"Ivan Petrov\"]}"));
         await Run(mgr, 1);
         mgr.SubmitChat(Chat("just talking"));
         await Run(mgr, 1);
@@ -214,6 +214,24 @@ public class ChatOrderTests
         await Run(mgr, 2);
         Assert.Contains("\"все в командный отсек\"", llm.DispatchPrompts.Single());
         Assert.Equal(4, llm.Decisions.Count(d => d.Orders.Count > 0));
+    }
+
+    [Fact]
+    public async Task InvalidDispatcherArgumentsAreRetriedBeforeAnyRecipientGetsTheMessage()
+    {
+        var (mgr, llm) = Create();
+        int attempts = 0;
+        llm.Dispatch = _ => Fixtures.OpenAiToolResponse((ChatDispatcher.ToolName, ++attempts == 1
+            ? "{\"recipients\":[\"all\"]}"
+            : "{\"recipients\":[\"Max Volkov\"]}"));
+        await Run(mgr, 1);
+        mgr.SubmitChat(Chat("Все, кроме Макса, продолжайте; Макс, проверь насос"));
+        await Run(mgr, 3);
+        Assert.Equal(2, attempts);
+        Assert.Contains("Previous routing response rejected", llm.DispatchPrompts.Last());
+        var received = llm.Decisions.Where(d => d.Orders.Count > 0).ToList();
+        Assert.Equal("Max Volkov", Assert.Single(received).Bot);
+        Assert.DoesNotContain(game.Notices, n => n.Text.Contains("Приказ получили: Ivan"));
     }
 
     [Fact]
@@ -264,16 +282,43 @@ public class ChatDispatcherTests
 
     [Theory]
     [InlineData("{\"recipients\":[\"Max Volkov\"]}", "Max Volkov")]
-    [InlineData("{\"recipients\":[\"max volkov\",\"Oleg\"]}", "Max Volkov,Oleg Sidorov")]
-    [InlineData("{\"recipients\":[\"mechanic\"]}", "Max Volkov,Oleg Sidorov")]
-    [InlineData("{\"recipients\":[\"all\"]}", "Ivan Petrov,Max Volkov,Oleg Sidorov")]
-    [InlineData("{\"recipients\":\"Ivan Petrov, Max Volkov\"}", "Ivan Petrov,Max Volkov")]
-    [InlineData("{\"recipients\":[\"Nobody Here\"]}", "")]
+    [InlineData("{\"recipients\":[\"max volkov\",\"Oleg Sidorov\"]}", "Max Volkov,Oleg Sidorov")]
+    [InlineData("{\"recipients\":[\"Max Volkov\",\"Max Volkov\"]}", "Max Volkov")]
+    [InlineData("{\"recipients\":[\"Ivan Petrov\",\"Max Volkov\",\"Oleg Sidorov\"]}", "Ivan Petrov,Max Volkov,Oleg Sidorov")]
     [InlineData("{\"recipients\":[]}", "")]
     public void ParsesRecipients(string args, string expected)
     {
         var r = ChatDispatcher.ParseRecipients(Answer(args), Roster)!;
         Assert.Equal(expected, string.Join(",", r.Select(x => x.Name)));
+    }
+
+    [Theory]
+    [InlineData("{\"recipients\":[\"all\"]}")]
+    [InlineData("{\"recipients\":[\"mechanic\"]}")]
+    [InlineData("{\"recipients\":[\"Oleg\"]}")]
+    [InlineData("{\"recipients\":[\"Nobody Here\"]}")]
+    [InlineData("{\"recipients\":[\"Max Volkov\",\"Nobody Here\"]}")]
+    [InlineData("{\"recipients\":\"Ivan Petrov, Max Volkov\"}")]
+    [InlineData("{\"recipients\":[1]}")]
+    [InlineData("{}")]
+    public void InvalidRecipientsRequireAnotherModelDecision(string args) =>
+        Assert.Null(ChatDispatcher.ParseRecipients(Answer(args), Roster));
+
+    [Fact]
+    public void MultipleRoutesAreAmbiguous() =>
+        Assert.Null(ChatDispatcher.ParseRecipients(new LlmResponse("", new[]
+        {
+            new ToolCall(ChatDispatcher.ToolName, new JsonObject { ["recipients"] = new JsonArray("Max Volkov") }),
+            new ToolCall(ChatDispatcher.ToolName, new JsonObject { ["recipients"] = new JsonArray("Oleg Sidorov") }),
+        }, 0, 0), Roster));
+
+    [Fact]
+    public void DispatcherSchemaListsExactAudibleNames()
+    {
+        var tool = ChatDispatcher.ToolFor(Roster);
+        var names = tool.Parameters["properties"]!["recipients"]!["items"]!["enum"]!.AsArray().Select(n => n!.GetValue<string>());
+        Assert.Equal(Roster.Select(r => r.Name), names);
+        Assert.Null(ChatDispatcher.Tool.Parameters["properties"]!["recipients"]!["items"]!["enum"]);
     }
 
     [Fact]

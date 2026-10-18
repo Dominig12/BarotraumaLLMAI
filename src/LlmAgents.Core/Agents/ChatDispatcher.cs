@@ -37,10 +37,22 @@ public static class ChatDispatcher
                 ["reason"] = new JsonObject { ["type"] = "string", ["description"] = "Very short explanation" },
             },
             ["required"] = new JsonArray("recipients"),
+            ["additionalProperties"] = false,
         });
 
+    /// <summary>Expose the exact currently audible recipients in the schema as well as in the context.</summary>
+    public static ToolSpec ToolFor(IReadOnlyList<RosterEntry> roster)
+    {
+        var schema = (JsonObject)Tool.Parameters.DeepClone();
+        schema["properties"]!["recipients"]!["items"]!["enum"] = new JsonArray(roster.Select(r => (JsonNode?)JsonValue.Create(r.Name)).ToArray());
+        return new ToolSpec(ToolName, Tool.Description, schema);
+    }
+
     public const string SystemPrompt = @"You are the communications officer of a submarine crew in the game Barotrauma.
-A human player wrote a message in the chat. Decide which AI crew members (from the roster) it is meant for, and call route_message.
+A human player wrote a message in the chat. Interpret its meaning in context and decide which AI crew members (from the roster)
+it is meant for. Call route_message exactly once with recipients as a JSON array of exact, complete roster names.
+The runtime does not expand jobs, 'all', nicknames or partial names: resolve those yourself and enumerate every intended person.
+Use [] only when nobody in the roster should receive it. Never answer with prose or carry out the requested game action here.
 
 Rules:
 - The message can be in any language (often Russian). Names may be shortened, declined or misspelled.
@@ -83,39 +95,20 @@ Rules:
     /// <summary>Maps the LLM answer to roster entries. Returns null if the answer had no usable route_message call.</summary>
     public static List<RosterEntry>? ParseRecipients(LlmResponse? response, IReadOnlyList<RosterEntry> roster)
     {
-        var call = response?.ToolCalls.FirstOrDefault(c => c.Name == ToolName);
-        if (call == null) return null;
-
-        var names = new List<string>();
-        switch (call.Arguments["recipients"])
-        {
-            case JsonArray arr:
-                foreach (var n in arr) if (n is JsonValue v && v.TryGetValue<string>(out var s)) names.Add(s);
-                break;
-            case JsonValue v when v.TryGetValue<string>(out var s):
-                names.AddRange(s.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries));
-                break;
-        }
-
+        if (response?.ToolCalls.Count != 1 || response.ToolCalls[0].Name != ToolName) return null;
+        var call = response.ToolCalls[0];
+        if (call.Arguments["recipients"] is not JsonArray names) return null;
         var result = new List<RosterEntry>();
         foreach (var raw in names)
         {
-            var n = raw.Trim();
-            if (n.Length == 0) continue;
-            if (IsEveryone(n)) return roster.ToList();
-            var match = roster.FirstOrDefault(r => r.Name.Equals(n, StringComparison.OrdinalIgnoreCase))
-                     ?? roster.FirstOrDefault(r => r.Name.Contains(n, StringComparison.OrdinalIgnoreCase) || n.Contains(r.Name, StringComparison.OrdinalIgnoreCase));
-            if (match != null) { if (!result.Contains(match)) result.Add(match); continue; }
-            // the model answered with a job instead of names
-            foreach (var r in roster.Where(r => r.Job.Equals(n, StringComparison.OrdinalIgnoreCase)))
-                if (!result.Contains(r)) result.Add(r);
+            if (raw is not JsonValue value || !value.TryGetValue<string>(out var name)) return null;
+            var match = roster.FirstOrDefault(r => r.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            // An invalid recipient is a malformed answer, not a deliberate decision that nobody should receive it.
+            if (match == null) return null;
+            if (!result.Contains(match)) result.Add(match);
         }
         return result;
     }
-
-    static readonly string[] Everyone = { "all", "everyone", "everybody", "crew", "все", "всем", "экипаж" };
-
-    static bool IsEveryone(string s) => Everyone.Any(e => s.Equals(e, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>What every listener gets when the dispatcher could not tell who a message is for.</summary>
     public static string FormatUnsure(ChatCommand cmd, RosterEntry me)
@@ -134,9 +127,7 @@ Rules:
         var who = cmd.SenderJob != null ? $"{cmd.SenderName} ({cmd.SenderJob})" : cmd.SenderName;
         var also = others.Count == 0 ? "" : $" [also sent to: {string.Join(", ", others)}]";
         var where = cmd.SenderRoom != null ? $", in {cmd.SenderRoom}" : "";
-        var hint = OrderHints.Suggest(cmd.Text, cmd.SenderName, cmd.SenderRoom);
-        return $"{who}{(cmd.ViaRadio ? " on radio" : "")}{where}: \"{cmd.Text}\"{also} ('me' = {cmd.SenderName})" +
-               (hint != null ? $" Hint: probably {hint}." : "");
+        return $"{who}{(cmd.ViaRadio ? " on radio" : "")}{where}: \"{cmd.Text}\"{also} ('me' = {cmd.SenderName})";
     }
 }
 

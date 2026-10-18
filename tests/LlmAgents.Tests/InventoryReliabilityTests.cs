@@ -8,19 +8,16 @@ namespace LlmAgents.Tests;
 public class InventoryReliabilityTests
 {
     [Theory]
-    [InlineData("empty ammo boxes", "ammo", ItemConditionFilter.Empty)]
-    [InlineData("пустые ящики с боеприпасами", "с боеприпасами", ItemConditionFilter.Empty)]
-    [InlineData("почти пустой ящик с боеприпасами", "с боеприпасами", ItemConditionFilter.Low)]
-    [InlineData("low coilgun ammo boxes", "coilgun ammo", ItemConditionFilter.Low)]
-    [InlineData("малозаряженные боеприпасы", "боеприпасы", ItemConditionFilter.Low)]
-    [InlineData("разряженные батареи", "батареи", ItemConditionFilter.Empty)]
-    [InlineData("неполные кислородные баллоны", "кислородные баллоны", ItemConditionFilter.Used)]
-    [InlineData("spent fuel rod", "fuel rod", ItemConditionFilter.Empty)]
-    public void Charge_qualifiers_do_not_become_part_of_the_item_name(string input, string expected, ItemConditionFilter condition)
+    [InlineData("empty ammo boxes")]
+    [InlineData("пустые ящики с боеприпасами")]
+    [InlineData("Empty Fuel Rod")]
+    [InlineData("low coilgun ammo boxes")]
+    [InlineData("Used Diving Suit")]
+    public void WordsInNamesNeverBecomeImplicitFilters(string input)
     {
         var query = InventoryQuery.Parse(input);
-        Assert.Equal(expected, System.Text.RegularExpressions.Regex.Replace(query.Text, @"\s+", " "));
-        Assert.Equal(condition, query.Condition);
+        Assert.Equal(input, query.Text);
+        Assert.Null(query.EntityId);
     }
 
     [Theory]
@@ -35,33 +32,25 @@ public class InventoryReliabilityTests
     }
 
     [Theory]
-    [InlineData("empty ammo", 0, 200, true)]
-    [InlineData("empty ammo", 1, 200, false)]
-    [InlineData("low ammo", 59, 200, true)]
-    [InlineData("low ammo", 61, 200, false)]
-    [InlineData("used ammo", 198, 200, true)]
-    [InlineData("used ammo", 200, 200, false)]
-    [InlineData("empty ammo", 0, 0, false)]
-    [InlineData("ammo", 200, 200, true)]
+    [InlineData("empty", 0, 200, true)]
+    [InlineData("empty", 1, 200, false)]
+    [InlineData("low", 59, 200, true)]
+    [InlineData("low", 61, 200, false)]
+    [InlineData("used", 199.9f, 200, true)]
+    [InlineData("used", 200, 200, false)]
+    [InlineData("empty", 0, 0, false)]
+    [InlineData("any", 200, 200, true)]
     public void Charge_filter_uses_the_fraction_instead_of_assuming_maximum_100(string input, float condition, float maximum, bool expected) =>
-        Assert.Equal(expected, InventoryQuery.Parse(input).MatchesCondition(condition, maximum));
+        Assert.Equal(expected, new ItemFilter(Condition: input).MatchesCondition(condition, maximum));
 
     [Fact]
-    public void Empty_boxes_still_resolve_to_the_ammunition_group()
+    public void ExactInstanceAndExplicitChargeFiltersCanBeCombined()
     {
-        var query = InventoryQuery.Parse("пустые ящики с боеприпасами");
-        Assert.Equal(new[] { ItemGroup.Ammo }, ItemWords.Groups(query.Text));
-        Assert.Equal(new[] { ItemGroup.Ammo }, ItemWords.Groups(InventoryQuery.Parse("empty ammo boxes").Text));
-    }
-
-    [Fact]
-    public void Exact_instance_and_charge_filters_can_be_combined()
-    {
-        var query = InventoryQuery.Parse("empty coilgun ammo #412");
-        Assert.Equal("coilgun ammo", query.Text);
+        var query = InventoryQuery.Parse("#412");
         Assert.Equal(412, query.EntityId);
-        Assert.True(query.MatchesCondition(0, 100));
-        Assert.False(query.MatchesCondition(100, 100));
+        var filter = new ItemFilter(Category: "ammo", Condition: "empty");
+        Assert.True(filter.MatchesCondition(0, 100));
+        Assert.False(filter.MatchesCondition(100, 100));
     }
 
     [Fact]
@@ -96,28 +85,26 @@ public class InventoryReliabilityTests
     }
 
     [Fact]
-    public void MissingExactInstanceDoesNotFallBackToOtherMarkedItems()
+    public void ExplicitPercentageBoundsAreInclusiveAndCombineWithState()
     {
-        var marked = new[] { 100, 200 };
-        var result = InventoryTaskRules.FilterMarked(marked, "#412", (id, text) => InventoryQuery.Parse(text).EntityId == id);
-        Assert.Empty(result);
-        Assert.Equal(new[] { 200 }, InventoryTaskRules.FilterMarked(marked, "#200", (id, text) => InventoryQuery.Parse(text).EntityId == id));
+        var filter = new ItemFilter(Condition: "low", MinConditionPercent: 10, MaxConditionPercent: 40);
+        Assert.True(filter.MatchesCondition(20, 200));
+        Assert.True(filter.MatchesCondition(60, 200));
+        Assert.False(filter.MatchesCondition(10, 200));
+        Assert.False(filter.MatchesCondition(70, 200));
     }
 
     [Fact]
-    public void MissingEmptyAmmoDoesNotFallBackToFullMarkedBoxes()
+    public void OutOfRangeInstanceNeverFallsBackToNameOnly()
     {
-        var result = InventoryTaskRules.FilterMarked(new[] { 100f, 100f }, "empty ammo",
-            (charge, text) => InventoryQuery.Parse(text).MatchesCondition(charge, 100));
-        Assert.Empty(result);
-        Assert.Equal(new[] { 0f }, InventoryTaskRules.FilterMarked(new[] { 100f, 0f }, "empty ammo",
-            (charge, text) => InventoryQuery.Parse(text).MatchesCondition(charge, 100)));
+        Assert.Equal(-1, InventoryQuery.Parse("Railgun Shell #9999999999999999999").EntityId);
     }
 
     [Fact]
-    public void PlainMarkedDescriptionStillAllowsTheExistingFallback()
+    public void FilterReaderRejectsNaturalLanguageValuesAndContradictoryBounds()
     {
-        var marked = new[] { "first marked item", "second marked item" };
-        Assert.Equal(marked, InventoryTaskRules.FilterMarked(marked, "crate", (_, _) => false));
+        foreach (var json in new[] { "{\"category\":\"боеприпасы\"}", "{\"condition\":\"почти пустой\"}", "{\"mark\":\"marked crate\"}",
+            "{\"min_condition_percent\":60,\"max_condition_percent\":20}", "{\"linked_to\":\"locker near fabricator\"}", "{\"max_condition_percent\":\"30\"}" })
+            Assert.NotNull(ItemFilter.Read(System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject()).Error);
     }
 }

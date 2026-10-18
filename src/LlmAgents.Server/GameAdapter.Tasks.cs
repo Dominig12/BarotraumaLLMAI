@@ -95,43 +95,35 @@ public sealed partial class GameAdapter
     HashSet<Item> ClaimedByOthers(Character c) =>
         tasks.Where(kv => kv.Key != c.ID).SelectMany(kv => kv.Value.Claimed).ToHashSet();
 
-    FindReplacement Replacer(Character c, string? query = null) => (failed, tried) => ItemQueries.Replacement(c, failed, tried, ClaimedByOthers(c), query);
+    FindReplacement Replacer(Character c, string? query = null, ItemFilter? filter = null) => (failed, tried) => ItemQueries.Replacement(c, failed, tried, ClaimedByOthers(c), query, filter);
 
     string NotFound(Character c, string query)
     {
-        var kinds = ItemWords.Groups(query);
-        return kinds.Count > 0
-            ? $"error: no {string.Join("/", kinds).ToLowerInvariant()} items available on the sub (everything is carried by someone or used up)"
-            : $"error: no '{query}' available; try inspect(kind='items', query='{query}') or a plainer word (e.g. 'suit', 'medical', 'ammo', 'tools')";
+        return $"error: no available item matches '{query}' and the explicit filters; inspect(kind='items') to discover exact identifiers and #IDs";
     }
 
-    public string Equip(int botId, string query)
+    public string Equip(int botId, string query, ItemFilter? filter = null)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
-        // "diving gear" to put on = the suit (a mask only when no suit is left)
-        var kinds = ItemWords.Groups(query);
-        Func<Item, bool>? filter = kinds.Count == 1 && kinds[0] == ItemGroup.DivingGear && ItemQueries.Find(c, "diving suit").Any()
-            ? i => i.HasTag(Tags.HeavyDivingGear) : null;
         // already wearing something that fits ("diving suit" while in a combat suit): keep it, do not swap
         var worn = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>())
-            .FirstOrDefault(i => c.HasEquippedItem(i) && (filter == null || filter(i)) && ItemQueries.MatchScore(i, query) > 0);
+            .FirstOrDefault(i => c.HasEquippedItem(i) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) > 0);
         if (worn != null) return $"ok ({worn.Name} is already equipped)";
-        var item = ItemQueries.Find(c, query, filter, ClaimedByOthers(c)).FirstOrDefault();
+        var item = ItemQueries.Find(c, query, avoid: ClaimedByOthers(c), selection: filter).FirstOrDefault();
         if (item == null) return NotFound(c, query);
         if (c.HasEquippedItem(item)) return $"ok ({item.Name} is already equipped)";
-        return StartTask(c, new EquipTask(c, ai, item, Replacer(c, query)), evenOverPlayerOrders: true);
+        return StartTask(c, new EquipTask(c, ai, item, Replacer(c, query, filter)), evenOverPlayerOrders: true);
     }
 
     public const int MaxTake = 8;
 
-    static bool IsAll(string query) =>
-        query.Trim().ToLowerInvariant() is "all" or "everything" or "*" or "все" or "всё" or "everything in it" or "всё что есть" or "все что есть";
+    static bool IsAll(string query) => query.Trim() == "*";
 
     /// <summary>
     /// Pick items up into the inventory. A kind of items ("medical") takes a mix, nearest first. With 'from' only items
     /// in that container, room or the room of that crew member ("take the tools from here").
     /// </summary>
-    public string TakeItem(int botId, string query, int count, string? from = null)
+    public string TakeItem(int botId, string query, int count, string? from = null, ItemFilter? filter = null)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
         count = Math.Clamp(count, 1, MaxTake);
@@ -139,7 +131,7 @@ public sealed partial class GameAdapter
         bool all = IsAll(query);
         List<Item> found;
         string? where = null;
-        if (from != null && FindCrew(from.Trim(), c, includeSelf: false) is { } holder && HandOver(c, ai, holder, query, count, all) is { } handed)
+        if (from != null && FindCrew(from.Trim(), c, includeSelf: false) is { } holder && HandOver(c, ai, holder, query, count, all, filter) is { } handed)
             return handed;
         if (from != null)
         {
@@ -147,7 +139,7 @@ public sealed partial class GameAdapter
             if (place == null) return $"error: no container, room or crew member '{from}'; use a room id from 'rooms', a container name (cabinet, locker...) or a name";
             where = place.Value.Where;
             found = place.Value.Items
-                .Where(i => ItemQueries.IsAvailableTo(i, c) && i.GetRootInventoryOwner() != c && !claimed.Contains(i))
+                .Where(i => ItemQueries.IsAvailableTo(i, c) && ItemQueries.Matches(c, i, filter) && i.GetRootInventoryOwner() != c && !claimed.Contains(i))
                 .Select(i => (i, score: all ? 1 : ItemQueries.MatchScore(i, query)))
                 .Where(t => t.score > 0)
                 .OrderByDescending(t => t.score)
@@ -158,16 +150,17 @@ public sealed partial class GameAdapter
         }
         else
         {
-            if (all) return "error: 'all' needs 'from' (a container, a room or a crew member's name)";
+            if (all && filter?.Category == null && filter?.Mark is not ("ai" or "deconstruct") && filter?.LinkedTo == null)
+                return "error: item='*' requires 'from', 'category', 'mark', or 'linked_to' to scope the selection";
             // not what the bot already carries, not what others are going for
-            found = ItemQueries.Find(c, query, i => i.GetRootInventoryOwner() != c && !claimed.Contains(i))
+            found = ItemQueries.Find(c, query, i => i.GetRootInventoryOwner() != c && !claimed.Contains(i), selection: filter)
                 .OrderByDescending(i => ItemQueries.MatchScore(i, query)).ThenByDescending(i => InMachineOutput(i)).ToList();
-            if (ItemQueries.Find(c, query).FirstOrDefault(i => i.GetRootInventoryOwner() == c) is { } own
+            if (!all && ItemQueries.Find(c, query, selection: filter).FirstOrDefault(i => i.GetRootInventoryOwner() == c) is { } own
                 && ItemQueries.MatchScore(own, query, kinds: false) >= 3 && (found.Count == 0 || ItemQueries.MatchScore(found[0], query, kinds: false) < 3))
                 return $"ok (you already carry {own.Name}; none left to take)";
             if (!ItemQueries.IsKindQuery(query) && ItemQueries.NoneFree(c, query, found.FirstOrDefault()) is { } busy) return "error: " + busy;
             if (found.Count == 0)
-                return ItemQueries.Find(c, query).Any(i => i.GetRootInventoryOwner() == c)
+                return ItemQueries.Find(c, query, selection: filter).Any(i => i.GetRootInventoryOwner() == c)
                     ? $"ok (you already carry {query}; none left to take)"
                     : NotFound(c, query);
         }
@@ -190,9 +183,9 @@ public sealed partial class GameAdapter
             : string.Join(", ", pick.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))) + (where != null ? $" from {where}" : "");
         // with 'from' a replacement must come from the same place
         var inPlace = where != null ? found.ToHashSet() : null;
-        FindReplacement replace = inPlace == null ? Replacer(c, query)
+        FindReplacement replace = inPlace == null ? Replacer(c, query, filter)
             : (failed, tried) => InventoryTaskRules.SelectReplacement(inPlace, failed, tried, ClaimedByOthers(c),
-                i => i.Prefab == failed.Prefab && ItemQueries.IsAvailableTo(i, c) && i.GetRootInventoryOwner() != c && (all || ItemQueries.MatchScore(i, query) > 0));
+                i => i.Prefab == failed.Prefab && ItemQueries.IsAvailableTo(i, c) && ItemQueries.Matches(c, i, filter) && i.GetRootInventoryOwner() != c && (all || ItemQueries.MatchScore(i, query) > 0));
         var r = StartTask(c, new TakeItemsTask(c, ai, pick, label, replace), evenOverPlayerOrders: true);
         return pick.Count < count && r.StartsWith("ok") && !all ? r + $"; only {pick.Count} found" : r;
     }
@@ -201,19 +194,11 @@ public sealed partial class GameAdapter
     (List<Item> Items, string Where)? ItemsAt(Character c, string from)
     {
         var f = from.Trim();
-        if (f.Split(new[] { " in ", " в ", " из ", " from " }, StringSplitOptions.RemoveEmptyEntries).Length == 2)
-        {
-            var (scoped, description) = ContainersAt(c, f, outputs: true);
-            return scoped.Count == 0 ? null : (scoped.SelectMany(ic => ic.Inventory.AllItems).ToList(), description);
-        }
         Hull? hull = null;
         if (IsRoomRef(f)) hull = ResolveRoom(f);
-        if (f.ToLowerInvariant() is "here" or "this room" or "здесь" or "тут" or "отсюда" or "сюда" or "эта комната" or "этот отсек")
-            hull = c.CurrentHull;
         var person = hull == null && f.Length >= 3 ? FindCrew(f, c, includeSelf: true) : null;
         if (person != null) hull = person.CurrentHull;
-        hull ??= ResolveRoom(f) ?? Hull.HullList.FirstOrDefault(h => h.Submarine == c.Submarine && f.Length >= 4
-                    && RoomId(h).StartsWith(f, StringComparison.OrdinalIgnoreCase));
+        hull ??= ResolveRoom(f);
         if (hull != null)
         {
             // loose on the floor, or directly in a cabinet / locker / crate of that room (not inside a gun or a machine)
@@ -269,10 +254,10 @@ public sealed partial class GameAdapter
     }
 
     /// <summary>Empty a crate or container and put everything where it belongs (stacks first). Multi-step task.</summary>
-    public string Unpack(int botId, string query, bool carry = true)
+    public string Unpack(int botId, string query, bool carry = true, ItemFilter? filter = null)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
-        bool HasStuff(Item i) => IsStorage(i) && i.OwnInventory?.AllItems.Any() == true;
+        bool HasStuff(Item i) => IsStorage(i) && i.OwnInventory?.AllItems.Any() == true && ItemQueries.Matches(c, i, filter);
         // what the bot holds, a marked or named container, or the fullest container in the named room
         var box = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>()).FirstOrDefault(i => HasStuff(i) && ItemQueries.MatchScore(i, query) > 0);
         box ??= ItemQueries.Find(c, query, HasStuff).FirstOrDefault();
@@ -316,10 +301,10 @@ public sealed partial class GameAdapter
         return StartTask(c, new RefuelReactorTask(c, ai, reactor, container, spare));
     }
 
-    public string Craft(int botId, string query, int amount, bool salvage = false)
+    public string Craft(int botId, string query, int amount, bool salvage = false, string? machine = null)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
-        var (fabricator, recipe, error) = Crafting.Find(c, query);
+        var (fabricator, recipe, error) = Crafting.Find(c, query, machine);
         if (error != null) return error;
         var stock = Crafting.Stock(c, fabricator);
         // amount = items wanted; one craft can make several (harpoons: 6)
@@ -342,18 +327,18 @@ public sealed partial class GameAdapter
                $" ({runs} craft(s), {runs * Crafting.Yield(r)} items)" + $"; will first deconstruct {string.Join(", ", plan.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))}";
     }
 
-    public string Deconstruct(int botId, string query, string? from = null, int count = 0)
+    public string Deconstruct(int botId, string query, string? from = null, int count = 0, ItemFilter? filter = null)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
         if (!Crafting.HasDeconstructor(c)) return "error: no deconstructor on this submarine";
-        bool all = query.Trim().ToLowerInvariant() is "all" or "everything" or "*" or "все" or "всё" or "everything in it";
+        bool all = IsAll(query);
 
         if (!string.IsNullOrWhiteSpace(from))
         {
             var (places, where) = ContainersAt(c, from!);
             if (places.Count == 0) return $"error: no container or room '{from}'; use a room id from 'rooms' or a container name (cabinet, locker, crate...)";
             var candidates = places.SelectMany(ic => ic.Inventory.AllItems)
-                .Where(i => i.Prefab.AllowDeconstruct && i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i))
+                .Where(i => i.Prefab.AllowDeconstruct && i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i) && ItemQueries.Matches(c, i, filter))
                 .Select(i => (i, score: all ? 1 : ItemQueries.MatchScore(i, query)))
                 .Where(t => t.score > 0).ToList();
             // only the best match: "Сварочный аппарат" is the welding tool, not every "Топливный бак сварочного аппарата" next to it
@@ -366,11 +351,10 @@ public sealed partial class GameAdapter
         }
 
         // what players marked for deconstruction (or for the AI) with the middle mouse button
-        if (MarkWords.Of(query) is var mark && mark != MarkQuery.None)
+        if (filter?.Mark is "ai" or "deconstruct")
         {
-            var pool = ItemQueries.Marked(c, MarkQuery.Deconstruct);
-            if (mark == MarkQuery.Ai && pool.Count == 0) pool = ItemQueries.Marked(c, MarkQuery.Ai);
-            var items = pool.Where(i => ItemQueries.IsAvailableTo(i, c) && i.Prefab.AllowDeconstruct && i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i))
+            var pool = ItemQueries.Marked(c, filter.Mark == "ai" ? MarkQuery.Ai : MarkQuery.Deconstruct);
+            var items = pool.Where(i => ItemQueries.IsAvailableTo(i, c) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) > 0 && i.Prefab.AllowDeconstruct && i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i))
                 .OrderBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)).Take(MaxDeconstructBatch).ToList();
             if (items.Count == 0) return "error: nothing marked that you can deconstruct (players mark items with the middle mouse button)";
             return StartTask(c, new DeconstructManyTask(c, ai, items, "marked items")) +
@@ -380,7 +364,7 @@ public sealed partial class GameAdapter
         if (all) return "error: 'all' needs 'from' (a container or room), so nothing important is broken down by accident";
         // without 'from' the item must be named: "tools" or "medical" alone would break down whatever is nearest
         // (with 'from', "инструменты из шкафа" is fine: only that cabinet)
-        var found = ItemQueries.Find(c, query, i => i.Prefab.DeconstructItems.Any() && i.Prefab.AllowDeconstruct && !c.HasEquippedItem(i), kinds: false);
+        var found = ItemQueries.Find(c, query, i => i.Prefab.DeconstructItems.Any() && i.Prefab.AllowDeconstruct && !c.HasEquippedItem(i), kinds: false, selection: filter);
         if (found.Count == 0)
         {
             // maybe they named the material they want
@@ -404,35 +388,9 @@ public sealed partial class GameAdapter
             || m.GetComponent<Deconstructor>()?.OutputContainer?.Inventory == i.ParentInventory;
     }
 
-    /// <summary>"шкаф у фабрикатора", "the locker next to the reactor": the storage of that kind nearest to the named thing
-    /// (a machine, a station, any item), within a few metres. null = not such a phrase, or nothing near it.</summary>
-    internal (ItemContainer Container, string Where)? NearAnchor(Character c, string text, Item? toPut = null)
-    {
-        if (ItemWords.SplitNear(text) is not { } near) return null;
-        var (what, anchorText) = near;
-        var anchor = Item.ItemList
-            .Where(i => !i.Removed && i.Submarine == c.Submarine && i.GetRootInventoryOwner() is not Character && ItemQueries.MatchScore(i, anchorText, kinds: false) > 0)
-            .OrderByDescending(i => ItemQueries.MatchScore(i, anchorText, kinds: false))
-            .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition))
-            .FirstOrDefault();
-        if (anchor == null) return null;
-        var storages = Item.ItemList
-            .Where(i => !i.Removed && i != anchor && i.Submarine == c.Submarine && i.GetRootInventoryOwner() is not Character && IsStorage(i)
-                        && Vector2.Distance(i.WorldPosition, anchor.WorldPosition) < 700f)
-            .Select(i => (i, ic: i.GetComponent<ItemContainer>()!))
-            .Where(t => toPut == null || t.ic.Inventory.CanBePut(toPut))
-            .ToList();
-        // of that kind if any is there ("шкаф"), else any storage next to it
-        var kind = storages.Where(t => ItemQueries.MatchScore(t.i, what, kinds: false) > 0).ToList();
-        var pick = (kind.Count > 0 ? kind : storages).OrderBy(t => Vector2.DistanceSquared(t.i.WorldPosition, anchor.WorldPosition)).FirstOrDefault();
-        if (pick.ic == null) return null;
-        return (pick.ic, $"{pick.i.Name} next to {anchor.Name} in {(pick.i.CurrentHull != null ? RoomId(pick.i.CurrentHull) : "?")}");
-    }
-
     /// <param name="outputs">also fabricators and deconstructors by name, meaning their output (to take products from)</param>
     (List<ItemContainer> Containers, string Where) ContainersAt(Character c, string from, bool outputs = false)
     {
-        if (NearAnchor(c, from) is { } near) return (new List<ItemContainer> { near.Container }, near.Where);
         var storages = Item.ItemList
             .Where(i => i.Submarine == c.Submarine && !i.Removed && i.GetRootInventoryOwner() is not Character)
             .Select(i => (item: i, ic: outputs && (i.GetComponent<Fabricator>()?.OutputContainer ?? i.GetComponent<Deconstructor>()?.OutputContainer) is { } o
@@ -443,24 +401,13 @@ public sealed partial class GameAdapter
             .ToList();
 
         var hull = IsRoomRef(from) ? ResolveRoom(from) : ResolveRoom(from.Trim());
-        var name = from;
-        // Parse explicit scope even when a bracketed room id already resolved the hull.
-        var parts = from.Split(new[] { " in ", " в ", " из ", " from " }, StringSplitOptions.RemoveEmptyEntries);
-        bool namedScope = parts.Length == 2;
-        if (namedScope)
-        {
-            name = parts[0].Trim();
-            hull = ResolveRoom(parts[1].Trim()) ?? Hull.HullList.FirstOrDefault(h => h.Submarine == c.Submarine && RoomId(h).Contains(parts[1].Trim(), StringComparison.OrdinalIgnoreCase));
-            if (hull == null) return (new List<ItemContainer>(), from);
-        }
-        var named = storages.Where(t => ItemQueries.MatchScore(t.item, name) > 0)
-            .OrderByDescending(t => ItemQueries.MatchScore(t.item, name))
+        var named = storages.Where(t => ItemQueries.MatchScore(t.item, from) > 0)
+            .OrderByDescending(t => ItemQueries.MatchScore(t.item, from))
             .ThenBy(t => Vector2.DistanceSquared(t.item.WorldPosition, c.WorldPosition)).ToList();
         if (hull != null)
         {
             var inRoom = storages.Where(t => t.item.CurrentHull == hull).ToList();
-            var both = named.Where(t => t.item.CurrentHull == hull).ToList();
-            return ((namedScope ? both.Take(1) : both.Count > 0 ? both : inRoom).Select(t => t.ic!).ToList(), RoomId(hull));
+            return (inRoom.Select(t => t.ic!).ToList(), RoomId(hull));
         }
         var nearest = named.Take(1).ToList();
         return (nearest.Select(t => t.ic!).ToList(),
@@ -470,10 +417,10 @@ public sealed partial class GameAdapter
     /// <summary>take_item(from=a crew member) when that person carries it: an AI crewmate hands it over (the taker walks
     /// to them); a human player is asked instead (nobody takes things out of a player's pockets). null = they carry
     /// nothing like it: then 'from' means the place where they are.</summary>
-    string? HandOver(Character c, HumanAIController ai, Character holder, string query, int count, bool all)
+    string? HandOver(Character c, HumanAIController ai, Character holder, string query, int count, bool all, ItemFilter? filter = null)
     {
         var items = (holder.Inventory?.AllItems ?? Enumerable.Empty<Item>())
-            .Where(i => !holder.HasEquippedItem(i) && (all || ItemQueries.MatchScore(i, query) > 0))
+            .Where(i => !holder.HasEquippedItem(i) && ItemQueries.Matches(c, i, filter) && (all || ItemQueries.MatchScore(i, query) > 0))
             .Distinct().ToList();
         if (items.Count == 0) return null;
         if (!holder.IsBot && !holder.IsIncapacitated)

@@ -99,10 +99,48 @@ internal static class Crafting
         return holder.GetComponent<Powered>() == null && holder.GetComponent<Turret>() == null; // cabinets, crates, lockers
     }
 
+    /// <summary>The game's actual outgoing ingredient sources, not nearby cabinets. Matches
+    /// Fabricator.RefreshAvailableIngredients: first ItemContainer, access check, deconstructor output.</summary>
+    public static List<ItemContainer> LinkedSupplyContainers(Fabricator fabricator, Character c) =>
+        fabricator.Item.linkedTo.OfType<Item>()
+            .Where(i => !i.Removed && !ItemQueries.IsIgnored(i))
+            .Select(i => (Item: i, Container: i.GetComponent<ItemContainer>()))
+            .Where(t => t.Container != null && t.Container.HasRequiredItems(c, false))
+            .Select(t => t.Item.GetComponent<Deconstructor>()?.OutputContainer ?? t.Container!)
+            .Where(container => container?.Inventory != null)
+            .Distinct().ToList();
+
+    /// <summary>Vanilla fabrication also searches containers nested in a source inventory.</summary>
+    public static List<Item> InventoryTree(IEnumerable<Inventory> inventories) =>
+        MachineryRules.InventoryTree<Inventory, Item>(inventories, inventory => inventory.AllItems,
+            item => item.GetComponent<ItemContainer>()?.Inventory, item => !item.Removed);
+
+    public static bool IsLinkedSupply(Fabricator fabricator, Item item, Character c)
+    {
+        if (item.Removed || ItemQueries.IsIgnored(item)) return false;
+        var sources = LinkedSupplyContainers(fabricator, c).Select(container => (Inventory)container.Inventory).ToHashSet();
+        var visited = new HashSet<Inventory>();
+        for (var inventory = item.ParentInventory; inventory != null && visited.Add(inventory);)
+        {
+            if (sources.Contains(inventory)) return true;
+            // Vanilla follows the first ItemContainer of each nested item, not all component inventories.
+            if (inventory.Owner is not Item holder || holder.GetComponent<ItemContainer>()?.Inventory != inventory) return false;
+            inventory = holder.ParentInventory;
+        }
+        return false;
+    }
+
+    /// <summary>Ingredients the station can fetch itself when StartFabricating runs. The bot's personal
+    /// inventory is deliberately carried to the input: vanilla only connects it while the UI is selected.</summary>
+    public static List<Item> NativeStock(Character c, Fabricator fabricator) =>
+        InventoryTree(LinkedSupplyContainers(fabricator, c).Select(container => (Inventory)container.Inventory)
+                .Prepend(fabricator.InputContainer.Inventory))
+            .Where(i => !c.HasEquippedItem(i) && !ItemQueries.IsIgnored(i)).ToList();
+
     /// <summary>Concrete available ingredients: condition matters for refill recipes, and one item cannot fill two requirements.</summary>
     public static List<Item> Stock(Character c, Fabricator? fabricator = null) =>
-        ItemQueries.Available(c).Where(IsSpare)
-            .Concat(fabricator?.InputContainer.Inventory.AllItems ?? Enumerable.Empty<Item>())
+        (fabricator != null ? NativeStock(c, fabricator) : Enumerable.Empty<Item>())
+            .Concat(ItemQueries.Available(c).Where(IsSpare))
             .Where(i => !i.Removed && !c.HasEquippedItem(i) && !ItemQueries.IsIgnored(i))
             .Distinct().ToList();
 
@@ -127,10 +165,21 @@ internal static class Crafting
     }
 
     /// <summary>Best recipe for a free-text query (local name, English name or identifier).</summary>
-    public static (Fabricator? Fabricator, FabricationRecipe? Recipe, string? Error) Find(Character c, string query)
+    public static (Fabricator? Fabricator, FabricationRecipe? Recipe, string? Error) Find(Character c, string query, string? machine = null)
     {
         var all = Recipes(c);
         if (all.Count == 0) return (null, null, Fabricators(c).Count == 0 ? "error: no fabricator on this submarine" : "error: the fabricators here can make nothing");
+        if (!string.IsNullOrWhiteSpace(machine))
+        {
+            var selector = machine.Trim();
+            bool byId = int.TryParse(selector.StartsWith("#", StringComparison.Ordinal) ? selector.Substring(1) : selector, out int id);
+            var stations = Fabricators(c).Where(f => byId ? f.Item.ID == id
+                : f.Item.Prefab.Identifier.Value.Equals(selector, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (stations.Count != 1)
+                return (null, null, stations.Count == 0 ? $"error: no fabricator '{machine}'; inspect(kind='machines') for exact #IDs"
+                    : $"error: ambiguous fabricator '{machine}'; choose {string.Join(", ", stations.Select(f => $"#{f.Item.ID}"))}");
+            all = all.Where(t => t.Fabricator == stations[0]).ToList();
+        }
         // best name match; among several recipes for the same item, the one with the fewest missing ingredients
         var best = all.Select(t => (t.Fabricator, t.Recipe, score: ItemQueries.MatchScore(t.Recipe.TargetItem, query, kinds: false)))
             .Where(t => t.score > 0)
@@ -274,17 +323,20 @@ internal static class Crafting
             .ToList();
         var text = (ready.Count > 0 ? $"CAN MAKE NOW ({ready.Count}): {string.Join("; ", ready.Take(25))}{(ready.Count > 25 ? "; ..." : "")}. " : "Nothing can be made from what is aboard right now. ")
                  + (notReady.Count > 0 ? $"NEED MATERIALS ({notReady.Count}): {string.Join("; ", notReady.Take(10))}{(notReady.Count > 10 ? "; ..." : "")}." : "");
-        if (string.IsNullOrWhiteSpace(filter) && rows.Count > 25) text += " Filter with query (a word or category, e.g. 'medical', 'ammo').";
-        return text + " Craft with the exact name or [id]; craft(salvage=true) first breaks down scrap for missing materials.";
+        if (string.IsNullOrWhiteSpace(filter) && rows.Count > 25) text += " Filter query by a recipe identifier, item label, or fabrication category.";
+        return text + " Craft using the exact recipe identifier. Inspect a recipe for its station #ID and linked sources; craft(salvage=true) first breaks down scrap for missing materials.";
     }
 
     /// <summary>inspect(kind='recipe'): one recipe with stock and where missing materials can come from.</summary>
     public static string RecipeDetails(Character c, Fabricator f, FabricationRecipe r)
     {
         var stock = Stock(c, f);
-        var parts = r.RequiredItems.Select(q => $"{IngredientName(q)} x{q.Amount} (have {Have(q, stock)})");
+        var native = NativeStock(c, f);
+        var parts = r.RequiredItems.Select(q => $"{IngredientName(q)} x{q.Amount} (have {Have(q, stock)}, already in input/linked supplies {Have(q, native)})");
         var skills = r.RequiredSkills.Length > 0 ? "; skills: " + string.Join(", ", r.RequiredSkills.Select(s => $"{s.Identifier} {s.Level:0}")) : "";
-        var text = $"{Label(r.TargetItem)} at {f.Item.Name}: makes {Yield(r)} per craft; needs {string.Join(", ", parts)}{skills}; time {r.RequiredTime:0}s. ";
+        var sources = LinkedSupplyContainers(f, c);
+        var text = $"{Label(r.TargetItem)} at {ItemQueries.InstanceLabel(f.Item)}: makes {Yield(r)} per craft; needs {string.Join(", ", parts)}{skills}; time {r.RequiredTime:0}s. "
+            + (sources.Count > 0 ? $"Automatic ingredient sources: {string.Join(", ", sources.Select(s => $"{ItemQueries.InstanceLabel(s.Item)}{(s.Item.GetComponent<Deconstructor>() != null ? " output" : " inventory")}"))}; craft uses these without carrying their contents. " : "No linked ingredient containers. ");
         var missing = Missing(r, stock);
         if (missing.Count == 0) return text + "All ingredients available.";
         var notes = new List<string>();
@@ -317,8 +369,8 @@ internal static class Crafting
         var bySource = SourcesFor(c, p => materials.Contains(p)).GroupBy(s => s.Item.Prefab).Take(8).ToList();
         if (bySource.Count > 0)
             return $"For {string.Join("/", materials.Take(3).Select(m => m.Name.Value))} deconstruct: " +
-                   string.Join("; ", bySource.Select(g => $"{Label(g.Key)} x{g.Count()} (gives {g.First().Yield} each{(g.First().Random ? ", random" : "")}, {ItemQueries.Where(g.First().Item, c)})")) +
-                   ". Then deconstruct(item) or craft(..., salvage=true).";
+                   string.Join("; ", bySource.Select(g => $"{Label(g.Key)} x{g.Count()} (gives {g.First().Yield} each{(g.First().Random ? ", random" : "")}, {ItemQueries.Where(g.First().Item, c)}; {string.Join(", ", g.Take(6).Select(s => $"#{s.Item.ID}"))})")) +
+                   ". Select a source #ID with deconstruct, or use craft(salvage=true) to plan the required scrap automatically.";
 
         // an item: what does it give?
         var item = ItemQueries.Find(c, query, i => i.Prefab.DeconstructItems.Any()).FirstOrDefault();

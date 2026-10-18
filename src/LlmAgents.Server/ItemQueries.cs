@@ -27,8 +27,8 @@ internal static class ItemQueries
     public static int MatchScore(Item item, string query, bool kinds = true)
     {
         var parsed = InventoryQuery.Parse(query);
-        if ((parsed.EntityId.HasValue && parsed.EntityId != item.ID) || !parsed.MatchesCondition(item.Condition, item.MaxCondition)) return 0;
-        return string.IsNullOrWhiteSpace(parsed.Text) && (parsed.EntityId.HasValue || parsed.Condition != ItemConditionFilter.Any)
+        if (parsed.EntityId.HasValue && parsed.EntityId != item.ID) return 0;
+        return parsed.Text == "*" || string.IsNullOrWhiteSpace(parsed.Text) && parsed.EntityId.HasValue
             ? 3 : MatchScore(item.Prefab, parsed.Text, kinds);
     }
 
@@ -42,6 +42,7 @@ internal static class ItemQueries
     {
         var q = Norm(query);
         if (q.Length == 0) return 0;
+        if (q == "*") return 1;
         var id = Norm(p.Identifier.Value);
         if (ItemWords.BracketId(query) is { } bracket && Norm(bracket) == id) return 3;
         var name = Norm(p.Name.Value);
@@ -51,10 +52,6 @@ internal static class ItemQueries
         if (id.Contains(q) || name.Contains(q) || (en.Length > 0 && en.Contains(q))) return 2;
         if (q.Length >= 4 && (q.Contains(id) || q.Contains(name) || (en.Length > 0 && q.Contains(en)))) return 1;
         if (p.Tags.Any(t => t.Value.Equals(query.Trim(), StringComparison.OrdinalIgnoreCase))) return 1;
-        if (ItemWords.WordsMatch(query, new[] { p.Name.Value, enName, p.Identifier.Value })) return 1;
-        if (!kinds) return 0;
-        var groups = ItemWords.Groups(query);
-        if (groups.Count > 0 && groups.Any(g => InGroup(p, g))) return 1;
         return 0;
     }
 
@@ -98,7 +95,30 @@ internal static class ItemQueries
         || AmmoWords.Any(w => p.Identifier.Value.Contains(w, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>The query names a kind of items, not one item ("медикаменты", "ammo").</summary>
-    public static bool IsKindQuery(string query) => ItemWords.Groups(InventoryQuery.Parse(query).Text).Count > 0;
+    public static bool IsKindQuery(string query) => query.Trim() == "*";
+
+    public static bool Matches(Character c, Item item, ItemFilter? selection)
+    {
+        if (selection == null) return true;
+        if (!selection.MatchesCondition(item.Condition, item.MaxCondition)) return false;
+        ItemGroup? group = selection.Category switch
+        {
+            "weapon" => ItemGroup.Weapon, "ammo" => ItemGroup.Ammo, "medical" => ItemGroup.Medical,
+            "tool" => ItemGroup.Tool, "diving_gear" => ItemGroup.DivingGear, "diving_suit" => ItemGroup.DivingSuit,
+            "diving_mask" => ItemGroup.DivingMask, "oxygen" => ItemGroup.Oxygen, "reactor_fuel" => ItemGroup.ReactorFuel,
+            "extinguisher" => ItemGroup.Extinguisher, "battery" => ItemGroup.Battery, "material" => ItemGroup.Material, _ => null,
+        };
+        if (selection.Category != null && (group == null || !InGroup(item.Prefab, group.Value))) return false;
+        if (selection.Mark == "ai" && !ContextMarks.All().Any(m => m.Item == item)) return false;
+        if (selection.Mark == "deconstruct" && !Item.DeconstructItems.Contains(item)) return false;
+        if (selection.LinkedTo is { } linked)
+        {
+            if (!ushort.TryParse(linked.TrimStart('#'), out var id)
+                || (Entity.FindEntityByID(id) as Item)?.GetComponent<Fabricator>() is not { } fab
+                || !Crafting.IsLinkedSupply(fab, item, c)) return false;
+        }
+        return true;
+    }
 
     /// <summary>Items the bot may take: in its own inventory, or anywhere on its sub that is not on another character or built in.</summary>
     public static bool IsAvailableTo(Item i, Character c)
@@ -137,26 +157,17 @@ internal static class ItemQueries
     /// Best matching available items, own inventory first, then by distance. Items another bot is already going for
     /// (<paramref name="avoid"/>) come after the free ones, so two bots do not run for the same diving suit.
     /// </summary>
-    public static List<Item> Find(Character c, string query, Func<Item, bool>? filter = null, ICollection<Item>? avoid = null, bool kinds = true)
+    public static List<Item> Find(Character c, string query, Func<Item, bool>? filter = null, ICollection<Item>? avoid = null, bool kinds = true, ItemFilter? selection = null)
     {
-        // "the marked crate": what players marked with the middle mouse button
-        var mark = MarkWords.Of(query);
-        if (mark != MarkQuery.None)
-        {
-            var list = Marked(c, mark).Where(i => IsAvailableTo(i, c) && (filter == null || filter(i))).ToList();
-            list = InventoryTaskRules.FilterMarked(list, MarkWords.Rest(query), (item, rest) => MatchScore(item, rest, kinds) > 0);
-            return list.OrderBy(i => avoid != null && avoid.Contains(i) ? 1 : 0)
-                .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)).ToList();
-        }
         var parsed = InventoryQuery.Parse(query);
         var scores = new Dictionary<ItemPrefab, int>();
         return Available(c)
             .Where(i => filter == null || filter(i))
-            .Where(i => (!parsed.EntityId.HasValue || parsed.EntityId == i.ID) && parsed.MatchesCondition(i.Condition, i.MaxCondition))
+            .Where(i => (!parsed.EntityId.HasValue || parsed.EntityId == i.ID) && Matches(c, i, selection))
             .Select(i =>
             {
                 if (!scores.TryGetValue(i.Prefab, out var score))
-                    scores[i.Prefab] = score = string.IsNullOrWhiteSpace(parsed.Text) && (parsed.EntityId.HasValue || parsed.Condition != ItemConditionFilter.Any)
+                    scores[i.Prefab] = score = string.IsNullOrWhiteSpace(parsed.Text) && parsed.EntityId.HasValue
                         ? 3 : MatchScore(i.Prefab, parsed.Text, kinds);
                 return (i, score);
             })
@@ -170,10 +181,10 @@ internal static class ItemQueries
     }
 
     /// <summary>Another item of the same kind for a task whose item was taken by someone else or could not be reached.</summary>
-    public static Item? Replacement(Character c, Item failed, ICollection<Item> tried, ICollection<Item>? avoid = null, string? query = null) =>
+    public static Item? Replacement(Character c, Item failed, ICollection<Item> tried, ICollection<Item>? avoid = null, string? query = null, ItemFilter? selection = null) =>
         InventoryTaskRules.SelectReplacement(Available(c).OrderBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)),
             failed, tried, avoid ?? Array.Empty<Item>(),
-            i => i.Prefab == failed.Prefab && i.GetRootInventoryOwner() != c && (query == null || MatchScore(i, query) > 0));
+            i => i.Prefab == failed.Prefab && i.GetRootInventoryOwner() != c && (query == null || MatchScore(i, query) > 0) && Matches(c, i, selection));
 
     public static string Where(Item i, Character c)
     {

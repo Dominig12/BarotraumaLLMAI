@@ -13,11 +13,11 @@ public class Log4ParserTests
         string.Join(" | ", TextToolCallParser.Parse(text, Tools.All).Select(c => $"{c.Name}({Tools.ArgsToString(c)})"));
 
     [Fact]
-    public void Calls_written_as_strings_inside_the_list()
+    public void Calls_written_as_strings_inside_the_list_are_not_executable()
     {
-        Assert.Equal("inspect(kind=\"recipes\", query=\"грап\") | inspect(kind=\"items\", query=\"Инженерный отсек [h4]\")",
+        Assert.Equal("",
             Calls("{\"calls\":[\"inspect(kind=\\\"recipes\\\",query=\\\"грап\\\")\",\"inspect(kind=\\\"items\\\",query=\\\"Инженерный отсек [h4]\\\")\"]}"));
-        Assert.StartsWith("inspect(kind=\"items\", query=\"fabricator\")",
+        Assert.Equal("",
             Calls("{\"calls\":[\"inspect(kind=\\\"items\\\", query=\\\"fabricator\\\"), {\\\"name\\\":\\\"inspect\\\",\\\"arguments\\\":{\\\"kind\\\":\\\"recipes\\\"}}\"]}"));
     }
 
@@ -38,8 +38,8 @@ public class Log4ParserTests
     public void An_empty_list_means_carry_on() => Assert.Equal("carry_on()", Calls("{\"calls\":[]}"));
 
     [Fact]
-    public void Quoted_names_with_arguments_still_work() =>
-        Assert.Equal("say(text=\"Есть\")", Calls("\"say\", {\"text\": \"Есть\"}"));
+    public void Quoted_name_without_a_structured_call_is_not_executable() =>
+        Assert.Equal("", Calls("\"say\", {\"text\": \"Есть\"}"));
 }
 
 public class Log4CoreTests
@@ -75,19 +75,4 @@ public class Log4CoreTests
         for (int i = 0; i < 4; i++) { mgr.Update(); await mgr.WhenIdle(); clock.Advance(0.5); }
         Assert.Contains("1:fix_leaks", game.Actions);
     }
-}
-
-public class NearPhraseTests
-{
-    [Theory]
-    [InlineData("шкаф у фабрикатора", "шкаф", "фабрикатора")]
-    [InlineData("шкафчик рядом с фабрикатором", "шкафчик", "фабрикатором")]
-    [InlineData("the locker next to the reactor", "the locker", "the reactor")]
-    [InlineData("ящик возле деконструктора", "ящик", "деконструктора")]
-    public void Splits(string text, string what, string anchor) => Assert.Equal((what, anchor), ItemWords.SplitNear(text));
-
-    [Theory]
-    [InlineData("Большой стальной шкаф")]
-    [InlineData("Инженерный отсек [h4]")]
-    public void Plain_names_are_not_near_phrases(string text) => Assert.Null(ItemWords.SplitNear(text));
 }

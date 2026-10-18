@@ -328,17 +328,6 @@ public sealed class BotAgent
     /// <summary>A reply that failed at once was answered with one more request; the next failure gets none (no loops).</summary>
     public int ErrorStreak { get; set; }
 
-    readonly Dictionary<ToolGroup, double> usedGroups = new();
-
-    /// <summary>A tool of this group was used: the group stays in the bot's requests for a while.</summary>
-    public void UsedTool(string tool, double now)
-    {
-        if (Tools.Def(tool) is { } d) usedGroups[d.Group] = now;
-    }
-
-    public ToolGroup StickyGroups(double now) =>
-        usedGroups.Where(kv => now - kv.Value < ToolSelection.StickySeconds).Aggregate((ToolGroup)0, (acc, kv) => acc | kv.Key);
-
     // ------------------------------------------------------------------ monitoring
 
     /// <summary>What the bot did lately, for the in-game monitor: decisions, calls with results, task reports, orders.</summary>

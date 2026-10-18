@@ -347,14 +347,14 @@ public class AgentManagerTests
     }
 
     [Fact]
-    public async Task GemmaTextRepliesAreExecutedAndHistoryStaysClean()
+    public async Task JsonTextDecisionsExecuteAndProseRepliesGetFeedback()
     {
         game.AddBot(1, "Alan Beltran", "medicaldoctor");
         var (mgr, llm) = Create();
         mgr.Settings.Bots.Autonomy = "always";
         int n = 0;
         llm.ByBot["Alan Beltran"] = _ => n++ == 0
-            ? Fixtures.OpenAiTextResponse("go_to_room{room:<|\"|>Engine Room [h10]<|\"|>}<tool_call|>")
+            ? Fixtures.OpenAiTextResponse("{\"calls\":[{\"name\":\"go_to_room\",\"arguments\":{\"room\":\"Engine Room [h10]\"}}]}")
             : Fixtures.OpenAiTextResponse("// Okay, I'm thinking about what to do next, the reactor is fine.");
         await Step(mgr); await Step(mgr);
         Assert.Contains("1:goto Engine Room [h10]", game.Actions);

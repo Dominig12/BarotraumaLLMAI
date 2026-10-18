@@ -34,21 +34,16 @@ public class BodyToolsTests
         Assert.Empty(game.Actions);
         Assert.StartsWith("ok", Run("drag_body", "{\"target\":\"[c42]\",\"to\":\"Medbay [h7]\"}"));
         Assert.Contains("1:drag [c42] -> Medbay [h7]", game.Actions);
-        Assert.StartsWith("ok", Run("loot_body", "{\"target\":\"[c42]\",\"item\":\"medical\",\"count\":999}"));
+        Assert.StartsWith("ok", Run("loot_body", "{\"target\":\"[c42]\",\"item\":\"medical\",\"count\":32}"));
         Assert.Contains("1:loot [c42] item medical x32", game.Actions);
         Assert.Contains("bodies", Tools.InspectKinds);
         Assert.All(new[] { "drag_body", "loot_body", "drop" }, t => Assert.Contains(t, Tools.TaskTools));
     }
 
-    [Theory]
-    [InlineData("Ларисса, оттащи тело в медотсек")]
-    [InlineData("обыщи труп монстра")]
-    [InlineData("loot the crawler corpse")]
-    public void BodyOrdersOfferTheTools(string order)
+    [Fact]
+    public void BodyToolsAreAvailableBeforeAnyOrderIsParsed()
     {
-        var bot = new BotAgent(new BotHandle(1, "Ann", "assistant"));
-        var groups = ToolSelection.For(bot, new Observation(), new[] { order }, 0, false);
-        var tools = Tools.For(new string[0], false, false, groups);
+        var tools = Tools.For(new string[0], false, false);
         Assert.Contains(tools, t => t.Name == "drag_body");
         Assert.Contains(tools, t => t.Name == "loot_body");
     }

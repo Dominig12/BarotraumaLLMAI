@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Barotrauma;
+using LlmAgents.Agents;
 using Microsoft.Xna.Framework;
 
 namespace LlmAgents;
@@ -100,18 +101,20 @@ internal sealed class LootBodyTask : BodyTask
 {
     readonly string? query;
     readonly int count;
+    readonly ItemFilter? filter;
     readonly List<string> taken = new();
     readonly HashSet<Item> skipped = new();
     public override string Name => $"loot {GameAdapter.BodyLabel(Target)}";
-    public LootBodyTask(Character bot, HumanAIController ai, Character target, string? query, int count) : base(bot, ai, target)
+    public LootBodyTask(Character bot, HumanAIController ai, Character target, string? query, int count, ItemFilter? filter = null) : base(bot, ai, target)
     {
         this.query = query;
         this.count = count;
+        this.filter = filter;
     }
 
     List<Item> Candidates() => (Target.Inventory?.FindAllItems(recursive: true) ?? Enumerable.Empty<Item>())
-        .Where(i => !i.Removed && !skipped.Contains(i) && i.GetRootInventoryOwner() == Target
-            && (string.IsNullOrWhiteSpace(query) || query.Trim().ToLowerInvariant() is "all" or "всё" or "все" or "*" || ItemQueries.MatchScore(i.Prefab, query!) > 0))
+        .Where(i => !i.Removed && !skipped.Contains(i) && i.GetRootInventoryOwner() == Target && ItemQueries.Matches(Bot, i, filter)
+            && (string.IsNullOrWhiteSpace(query) || query.Trim() == "*" || ItemQueries.MatchScore(i, query!) > 0))
         .Distinct().ToList();
     public override IEnumerable<Item> Claimed => Candidates();
 

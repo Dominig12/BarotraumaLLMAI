@@ -15,13 +15,4 @@ public static class InventoryTaskRules
         ICollection<T> claimed, Func<T, bool> eligible) where T : class =>
         candidates.FirstOrDefault(item => item != failed && !excluded.Contains(item) && !claimed.Contains(item) && eligible(item));
 
-    /// <summary>A missing exact instance or condition match must never fall back to an unrelated marked item.</summary>
-    public static List<T> FilterMarked<T>(IEnumerable<T> marked, string remainder, Func<T, string, bool> matches)
-    {
-        var all = marked.ToList();
-        if (string.IsNullOrWhiteSpace(remainder)) return all;
-        var narrowed = all.Where(item => matches(item, remainder)).ToList();
-        var query = InventoryQuery.Parse(remainder);
-        return narrowed.Count > 0 || query.EntityId.HasValue || query.Condition != ItemConditionFilter.Any ? narrowed : all;
-    }
 }

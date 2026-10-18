@@ -56,6 +56,7 @@ public sealed partial class GameAdapter
             .Take(20).ToList();
         o.InventorySpace = InventoryView.Space(c);
         o.Gear = DescribeGear(c);
+        o.Machines = ObserveMachines(c);
 
         var sub = c.Submarine;
         if (sub != null)

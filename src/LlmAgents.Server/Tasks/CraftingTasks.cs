@@ -94,18 +94,18 @@ internal sealed class CraftTask : BotTask
         else if (fabricator.IsActive)
             return Failure("someone started using the fabricator while ingredients were being collected");
 
-        // 1. bring every ingredient into the fabricator's input, one concrete item at a time:
-        //    pick it up first (also out of cabinets and the deconstructor's output), then put it in.
-        //    "Contain item by identifier" alone gave up on items in machine outputs ("could not bring steel bar").
+        // 1. Vanilla moves ingredients from the input and actual linked inventories itself.
+        // Carry only ingredients that the station cannot already reach through its native links.
         var input = fabricator.InputContainer.Inventory;
         while (true)
         {
-            var assigned = Crafting.Allocate(recipe, input.AllItems.Distinct().ToList());
+            var native = Crafting.NativeStock(Bot, fabricator).ToHashSet();
+            var assigned = Crafting.Allocate(recipe, native.ToList());
             int ingredientIndex = Enumerable.Range(0, recipe.RequiredItems.Length)
                 .FirstOrDefault(index => assigned[index].Count < recipe.RequiredItems[index].Amount, -1);
             if (ingredientIndex < 0) break;
 
-            if (fetching != null && (fetching.Removed || fetching.ParentInventory == input || !Crafting.Matches(recipe.RequiredItems[fetchingRequirement], fetching)))
+            if (fetching != null && (fetching.Removed || native.Contains(fetching) || !Crafting.Matches(recipe.RequiredItems[fetchingRequirement], fetching)))
             {
                 fetching = null;
                 ClearObjective();
@@ -123,11 +123,11 @@ internal sealed class CraftTask : BotTask
             {
                 var available = Crafting.Stock(Bot, fabricator)
                     .Where(i => !unreachable.Contains(i))
-                    .OrderBy(i => i.ParentInventory == input ? 0 : 1)
+                    .OrderBy(i => native.Contains(i) ? 0 : 1)
                     .ThenBy(i => i.GetRootInventoryOwner() == Bot ? 0 : 1)
                     .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, Bot.WorldPosition))
                     .ToList();
-                var next = CraftingRules.NextIngredient(Crafting.Allocate(recipe, available), i => i.ParentInventory == input);
+                var next = CraftingRules.NextIngredient(Crafting.Allocate(recipe, available), native.Contains);
                 if (next == null)
                 {
                     var missing = Crafting.Missing(recipe, available);
@@ -205,6 +205,8 @@ internal sealed class CraftTask : BotTask
             if (!cleared.HasRoom)
                 return Failure($"could not clear the output of {fabricator.Item.Name} ({string.Join(", ", output.AllItems.Select(i => i.Name).Distinct().Take(4))})");
         }
+        // Refresh must check linked container access for this bot, rather than the machine's last user.
+        fabricator.user = Bot;
         fabricator.RefreshAvailableIngredients();
         if (!fabricator.CanBeFabricated(recipe, fabricator.availableIngredients, Bot))
             return Failure("the recipe cannot be fabricated with the current ingredients, recipe access, money, or fabrication limit");
@@ -214,9 +216,9 @@ internal sealed class CraftTask : BotTask
         fabricator.Item.CreateServerEvent(fabricator);
         if (!fabricator.IsActive)
         {
-            var missingNow = Crafting.Missing(recipe, input.AllItems.Distinct().ToList()).Select(r => r.Req.FirstMatchingPrefab?.Name.Value ?? "?").ToList();
+            var missingNow = Crafting.Missing(recipe, Crafting.NativeStock(Bot, fabricator)).Select(r => r.Req.FirstMatchingPrefab?.Name.Value ?? "?").ToList();
             return missingNow.Count > 0
-                ? Failure($"ingredients went missing from the fabricator's input ({string.Join(", ", missingNow)})")
+                ? Failure($"ingredients went missing from the input or linked sources ({string.Join(", ", missingNow)})")
                 : Failure("the fabricator refused to start");
         }
         started = true;
@@ -237,12 +239,12 @@ internal sealed class CraftTask : BotTask
     {
         int inOutput = products.Count(i => !i.Removed && i.ParentInventory == fabricator.OutputContainer?.Inventory);
         var locations = products.Where(i => !i.Removed).GroupBy(i => ItemQueries.Where(i, Bot))
-            .Select(g => $"{g.Count()} in/at {g.Key}");
+            .Select(g => $"{g.Count()} in/at {g.Key} ({string.Join(", ", g.Select(i => $"#{i.ID}"))})");
         string room = fabricator.Item.CurrentHull != null ? GameAdapter.RoomId(fabricator.Item.CurrentHull) : fabricator.Item.Name;
         return $"ok: made {products.Count}x {recipe.DisplayName.Value} ({made} craft{(made > 1 ? "s" : "")}); {inOutput} newly made in the output of {fabricator.Item.Name} in {room}; products now: {string.Join("; ", locations)}" +
                (clearedOutput.Count > 0 ? $"; cleared output into your inventory: {string.Join(", ", clearedOutput.Distinct())}" : "") +
                (droppedOutput.Count > 0 ? $"; cleared output onto the floor by the fabricator in {room}: {string.Join(", ", droppedOutput.Distinct())}" : "") +
-               (inOutput > 0 ? $". Take the output with take_item(item=\"{recipe.TargetItemPrefabIdentifier}\", count={inOutput}, from=\"{room}\")" : "");
+               (inOutput > 0 ? $". Take the output with take_item(item=\"{recipe.TargetItemPrefabIdentifier}\", count={inOutput}, from=\"#{fabricator.Item.ID}\")" : "");
     }
 
     protected override void OnFinish()
@@ -303,7 +305,7 @@ internal sealed class DeconstructTask : BotTask
     }
 }
 
-/// <summary>deconstruct(item='all', from=...): several items, one after another.</summary>
+/// <summary>deconstruct(item='*', from=...): several items, one after another.</summary>
 internal sealed class DeconstructManyTask : BotTask
 {
     readonly Queue<Item> items;

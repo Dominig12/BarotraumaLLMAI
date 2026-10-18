@@ -6,107 +6,73 @@ using Xunit;
 
 namespace LlmAgents.Tests;
 
-/// <summary>Real replies from a local Gemma model (llm_agents.log, 2026-10-15) that came back as text, not tool calls.</summary>
+/// <summary>Prompt mode executes explicit JSON decisions and refuses guesses from older loose reply formats.</summary>
 public class TextToolCallTests
 {
     static string Calls(string text) =>
         string.Join(" | ", TextToolCallParser.Parse(text, Tools.All).Select(c => $"{c.Name}({Tools.ArgsToString(c)})"));
 
     [Fact]
-    public void GemmaSay()
+    public void StructuredCallsPreserveArgumentValuesAndTypes()
     {
-        Assert.Equal("say(text=\"Принято. Сейчас вхожу в Инженерный отсек, чтобы посмотреть, как там дела с ремонтом.\")",
-            Calls("say{text:<|\"|>Принято. Сейчас вхожу в Инженерный отсек, чтобы посмотреть, как там дела с ремонтом.<|\"|>}<tool_call|>"));
-    }
-
-    [Fact]
-    public void GemmaGoToRoomAndFollow()
-    {
-        Assert.Equal("go_to_room(room=\"Инженерный отсек [h4]\")", Calls("go_to_room{room:<|\"|>Инженерный отсек [h4]<|\"|>}<tool_call|>"));
-        Assert.Equal("follow(target=\"Miranda Dimauro\")", Calls("follow{target:<|\"|>Miranda Dimauro<|\"|>}<tool_call|>"));
-        Assert.Equal("go_to_room(room=\"Реакторный отсек [h163]\")", Calls("call:go_to_room{room:<|\"|>Реакторный отсек [h163]<|\"|>}<tool_call|>"));
-    }
-
-    [Fact]
-    public void GemmaTwoCallsWithUnquotedSayFirst()
-    {
-        var text = "sayЯ в Инженерном отсеке. Miranda уже там, занимается ремонтом. Похоже, реактор падает дальше...\n\n" +
-                   "message_crew{text:<|\"|>Всем привет! Я в Инженерном отсеке (h4).<|\"|>,to:<|\"|>all<|\"|>}<tool_call|>";
-        var calls = TextToolCallParser.Parse(text, Tools.All);
-        Assert.Equal(new[] { "say", "message_crew" }, calls.Select(c => c.Name));
-        Assert.StartsWith("Я в Инженерном отсеке.", Tools.Str(calls[0].Arguments, "text"));
-        Assert.Equal("all", Tools.Str(calls[1].Arguments, "to"));
-        Assert.Equal("Всем привет! Я в Инженерном отсеке (h4).", Tools.Str(calls[1].Arguments, "text"));
-    }
-
-    [Fact]
-    public void GemmaRemember()
-    {
-        Assert.Equal("remember(note=\"Miranda Dimauro (mechanic) is in Reactor Room [h163] working on repairs.\")",
-            Calls("remember{note:<|\"|>Miranda Dimauro (mechanic) is in Reactor Room [h163] working on repairs.<|\"|>}<tool_call|>"));
-    }
-
-    [Fact]
-    public void CommaStyleWithKeys()
-    {
-        var text = "remember,\"note\":\"Miranda Dimauro is fixing systems in the Living Quarters [h146].\"\n" +
-                   "message_crew,\"to\":\"all\",\"text\":\"All clear for now, but keeping an eye on things.\"";
-        Assert.Equal("remember(note=\"Miranda Dimauro is fixing systems in the Living Quarters [h146].\") | " +
-                     "message_crew(to=\"all\", text=\"All clear for now, but keeping an eye on things.\")", Calls(text));
-    }
-
-    [Fact]
-    public void CommaStylePositional()
-    {
-        var text = "remember,\"Miranda Dimauro is currently repairing systems in the Central Access Shaft [h138].\"\n" +
-                   "message_crew,\"all\",\"Everything looks stable for now.\"\n" +
-                   "go_to_room,\"Пункт управления [h55]\"";
-        Assert.Equal("remember(note=\"Miranda Dimauro is currently repairing systems in the Central Access Shaft [h138].\") | " +
-                     "message_crew(to=\"all\", text=\"Everything looks stable for now.\") | " +
-                     "go_to_room(room=\"Пункт управления [h55]\")", Calls(text));
-    }
-
-    [Fact]
-    public void BareNameAndVanillaOrderAlias()
-    {
-        Assert.Equal("wait()", Calls("wait"));
-        Assert.Equal("repair_systems()", Calls("//s:[<|\"|>Need to keep these systems running! Reactor's dropping fast.<|\"|>], \"repairsystems\""));
-    }
-
-    [Fact]
-    public void QuotedNameWithJsonArgs()
-    {
-        Assert.Equal("go_to_room(room=\"Инженерный отсек [h4]\")",
-            Calls("//g:[<|\"|>Alright, I'm in the living quarters now.<|\"|>], \"go_to_room\" { \"room\": \"Инженерный отсек [h4]\" }"));
+        var calls = TextToolCallParser.Parse("{\"calls\":[{\"name\":\"craft\",\"arguments\":{\"item\":\"railgun shell\",\"amount\":2,\"salvage\":false}},{\"name\":\"say\",\"arguments\":{\"text\":\"I'm on it, don't worry\"}}]}", Tools.All);
+        Assert.Equal(new[] { "craft", "say" }, calls.Select(c => c.Name));
+        Assert.Equal("railgun shell", calls[0].Arguments["item"]!.GetValue<string>());
+        Assert.Equal(2, calls[0].Arguments["amount"]!.GetValue<int>());
+        Assert.False(calls[0].Arguments["salvage"]!.GetValue<bool>());
+        Assert.Equal("I'm on it, don't worry", calls[1].Arguments["text"]!.GetValue<string>());
     }
 
     [Theory]
-    [InlineData("// Okay, I'm in the Central Passage now. Systems repair is still my priority.")]
+    [InlineData("say{text:<|\"|>Есть<|\"|>}<tool_call|>")]
+    [InlineData("call:go_to_room{room:<|\"|>Реакторный отсек [h163]<|\"|>}<tool_call|>")]
+    [InlineData("sayЯ в Инженерном отсеке.\nmessage_crew{text:<|\"|>Привет<|\"|>,to:<|\"|>all<|\"|>}")]
+    [InlineData("remember,\"note\":\"Miranda is fixing systems\"")]
+    [InlineData("message_crew,\"all\",\"Everything is stable\"")]
+    [InlineData("wait")]
+    [InlineData("\"repairsystems\"")]
+    [InlineData("\"go_to_room\" {\"room\":\"Инженерный отсек [h4]\"}")]
+    [InlineData("say(\"Ready\") wait()")]
     [InlineData("Wait, the reactor is dropping. I should say something to the captain.")]
-    [InlineData("I will follow Miranda and wait there.")]
-    [InlineData("say")]                       // required text missing
-    [InlineData("go_to_room")]
-    public void ProseIsNotACall(string text)
+    [InlineData("Ok. {\"calls\":[{\"name\":\"operate\",\"arguments\":{\"role\":\"reactor\"}}]}")]
+    [InlineData("```json\n{\"calls\":[{\"name\":\"wait\",\"arguments\":{}}]}\n```")]
+    [InlineData("{\"calls\":[\"wait()\"]}")]
+    [InlineData("{\"calls\":[{\"name\":\"fixleaks\",\"arguments\":{}}]}")]
+    public void LegacySyntaxAndProseNeverBecomeCommands(string text) => Assert.Equal("", Calls(text));
+
+    [Theory]
+    [InlineData("{\"name\":\"attack\"}")]
+    [InlineData("{\"name\":\"attack\",\"arguments\":\"broken\"}")]
+    [InlineData("{\"name\":\"attack\",\"arguments\":[]}")]
+    [InlineData("{\"name\":\"attack\",\"arguments\":null}")]
+    [InlineData("{\"calls\":{},\"name\":\"attack\",\"arguments\":{}}")]
+    [InlineData("{\"calls\":[],\"actions\":[{\"name\":\"attack\",\"arguments\":{}}]}")]
+    [InlineData("{\"name\":\"say\",\"name\":\"attack\",\"arguments\":{}}")]
+    [InlineData("{\"name\":\"say\",\"arguments\":{\"text\":\"hello\",\"text\":\"attack\"}}")]
+    [InlineData("{\"name\":\"say\",\"arguments\":\"{\\\"text\\\":\\\"hello\\\",\\\"text\\\":\\\"attack\\\"}\"}")]
+    [InlineData("{\"calls\":[{\"name\":\"say\",\"arguments\":{\"text\":\"hello\"}}, {\"name\":\"attack\"}]}")]
+    [InlineData("{\"calls\":[{\"name\":\"say\",\"arguments\":{\"text\":\"hello\"}},null]}")]
+    [InlineData("{\"calls\":[{\"name\":\"say\",\"arguments\":{\"text\":\"hello\"}}, {\"name\":\"go_to_room\",\"arguments\":{\"room\":\"Eng")]
+    public void InvalidDecisionsDoNotExecuteFragmentsOrInventDefaultArguments(string text) => Assert.Equal("", Calls(text));
+
+    [Fact]
+    public void JsonArgumentTextIsNotSearchedForNestedCommands()
     {
-        Assert.Equal("", Calls(text));
+        var text = "{\"name\":\"say\",\"arguments\":{\"text\":\"wait() {\\\"name\\\":\\\"attack\\\",\\\"arguments\\\":{}}\"}}";
+        var call = Assert.Single(TextToolCallParser.Parse(text, Tools.All));
+        Assert.Equal("say", call.Name);
+        Assert.StartsWith("wait()", call.Arguments["text"]!.GetValue<string>());
     }
 
     [Fact]
-    public void JsonStillPreferred()
-    {
-        Assert.Equal("operate(role=\"reactor\")", Calls("Ok. {\"calls\":[{\"name\":\"operate\",\"arguments\":{\"role\":\"reactor\"}}]}"));
-        Assert.Equal("fix_leaks() | say(text=\"go\")", Calls("[{\"name\":\"fixleaks\"},{\"name\":\"say\",\"arguments\":{\"text\":\"go\"}}]"));
-    }
-
-    [Fact]
-    public void OnlyAllowedToolsAreParsed()
+    public void OnlyOfferedToolNamesAreAccepted()
     {
         var onlySay = Tools.Filtered(new[] { "say" });
-        Assert.Empty(TextToolCallParser.Parse("wait", onlySay));
-        Assert.Single(TextToolCallParser.Parse("say{text:\"hi\"}", onlySay));
+        Assert.Empty(TextToolCallParser.Parse("{\"name\":\"wait\",\"arguments\":{}}", onlySay));
+        Assert.Equal("say", Assert.Single(TextToolCallParser.Parse("{\"name\":\"say\",\"arguments\":{\"text\":\"hi\"}}", onlySay)).Name);
+        Assert.Empty(TextToolCallParser.Parse("{\"name\":\"SAY\",\"arguments\":{\"text\":\"hi\"}}", onlySay));
     }
 }
-
 public class ProviderHealthAndModesTests
 {
     static readonly LlmTurn[] Turns = { new("user", "{}") };
@@ -165,7 +131,10 @@ public class ProviderHealthAndModesTests
         Assert.Equal("json_object", body["response_format"]!["type"]!.GetValue<string>());
         var system = body["messages"]![0]!["content"]!.GetValue<string>();
         Assert.StartsWith("SYS", system);
-        Assert.Contains("- operate(role: string one of reactor|navigation|weapons|pumps, option: string (optional), priority: integer (optional))", system);
+        Assert.Contains("Tool name: operate", system);
+        Assert.Contains("Arguments JSON Schema:", system);
+        Assert.Contains("Station", system);
+        Assert.Contains("\"reactor\"", system);
         Assert.Contains("{\"calls\": [", system);
 
         var anth = AnthropicProvider.BuildBody(cfg, req);

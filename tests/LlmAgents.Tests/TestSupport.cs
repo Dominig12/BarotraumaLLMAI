@@ -77,32 +77,35 @@ public sealed class FakeGame : IGameApi
     public readonly Dictionary<int, bool> Authority = new();
     public readonly List<GameReport> PendingReports = new();
     public void BeginCommand(int botId, bool playerAuthority) => Authority[botId] = playerAuthority;
-    public string Equip(int botId, string item) => Act(botId, $"equip {item}", "ok, started: equip " + item);
+    public ItemFilter? LastFilter;
+    public string? LastDestination, LastMachine, LastTargetType;
+    string Capture(ItemFilter? filter, string result) { LastFilter = filter; return result; }
+    public string Equip(int botId, string item, ItemFilter? filter = null) => Capture(filter, Act(botId, $"equip {item}", "ok, started: equip " + item));
     public string RefuelReactor(int botId) => Act(botId, "refuel", "ok, started: refuel reactor");
-    public string Craft(int botId, string item, int amount, bool salvage = false) => Act(botId, $"craft {item} x{amount}{(salvage ? " salvage" : "")}", "ok, started: craft " + item);
-    public string Deconstruct(int botId, string item, string? from = null, int count = 0) =>
-        Act(botId, $"deconstruct {item}{(from != null ? " from " + from : "")}{(count > 0 ? " x" + count : "")}", "ok, started");
+    public string Craft(int botId, string item, int amount, bool salvage = false, string? machine = null) { LastMachine = machine; return Act(botId, $"craft {item} x{amount}{(salvage ? " salvage" : "")}", "ok, started: craft " + item); }
+    public string Deconstruct(int botId, string item, string? from = null, int count = 0, ItemFilter? filter = null) =>
+        Capture(filter, Act(botId, $"deconstruct {item}{(from != null ? " from " + from : "")}{(count > 0 ? " x" + count : "")}", "ok, started"));
     public string Treat(int botId, string target, string? item) => Act(botId, $"treat {target}{(item != null ? " with " + item : "")}", "ok, started");
-    public string Unequip(int botId, string item) => Act(botId, $"unequip {item}");
+    public string Unequip(int botId, string item, ItemFilter? filter = null) => Capture(filter, Act(botId, $"unequip {item}"));
     public string DropResult = "ok";
-    public string Drop(int botId, string item) => Act(botId, $"drop {item}", DropResult);
-    public string MoveItem(int botId, string item, string to, int count = 0) => Act(botId, $"move {item} -> {to}" + (count > 0 ? $" x{count}" : ""), "ok, started");
+    public string Drop(int botId, string item, ItemFilter? filter = null) => Capture(filter, Act(botId, $"drop {item}", DropResult));
+    public string MoveItem(int botId, string item, string to, int count = 0, string destination = "auto", ItemFilter? filter = null) { LastDestination = destination; return Capture(filter, Act(botId, $"move {item} -> {to}" + (count > 0 ? $" x{count}" : ""), "ok, started")); }
     public string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority) =>
         Act(botId, $"order {orderId}" + (option != null ? ":" + option : "") + (target != null ? $" @{target}" : "") + $" [p{priority}]");
-    public string PutIn(int botId, string item, string into) => Act(botId, $"put {item} into {into}", "ok, started: put " + item);
-    public string Refill(int botId, string? item) => Act(botId, "refill" + (item != null ? " " + item : ""), "ok, started: refill");
+    public string PutIn(int botId, string item, string into, ItemFilter? filter = null) => Capture(filter, Act(botId, $"put {item} into {into}", "ok, started: put " + item));
+    public string Refill(int botId, string? item, ItemFilter? filter = null) => Capture(filter, Act(botId, "refill" + (item != null ? " " + item : ""), "ok, started: refill"));
     public string TidyInventory(int botId, string? keep) => Act(botId, "tidy" + (keep != null ? " keep " + keep : ""), "ok, started: tidy");
-    public string Attack(int botId, string target, string? weapon) =>
-        Act(botId, $"attack {target}" + (weapon != null ? $" with {weapon}" : ""), "ok, started: attack " + target);
+    public string Attack(int botId, string target, string? weapon, string targetType = "character") { LastTargetType = targetType; return
+        Act(botId, $"attack {target}" + (weapon != null ? $" with {weapon}" : ""), "ok, started: attack " + target); }
     public string DragBody(int botId, string target, string to) => Act(botId, $"drag {target} -> {to}", "ok, started: drag body");
-    public string LootBody(int botId, string target, string? item = null, int count = 0) =>
-        Act(botId, $"loot {target}" + (item == null ? "" : " item " + item) + $" x{count}", "ok, started: loot body");
-    public string Unpack(int botId, string container, bool carry = true) =>
-        Act(botId, $"unpack {container}" + (carry ? "" : " (no carry)"), "ok, started: unpack " + container);
-    public string TakeItem(int botId, string item, int count, string? from = null) =>
-        Act(botId, $"take {item} x{count}" + (from != null ? $" from {from}" : ""), "ok, started: take " + item);
+    public string LootBody(int botId, string target, string? item = null, int count = 0, ItemFilter? filter = null) =>
+        Capture(filter, Act(botId, $"loot {target}" + (item == null ? "" : " item " + item) + $" x{count}", "ok, started: loot body"));
+    public string Unpack(int botId, string container, bool carry = true, ItemFilter? filter = null) =>
+        Capture(filter, Act(botId, $"unpack {container}" + (carry ? "" : " (no carry)"), "ok, started: unpack " + container));
+    public string TakeItem(int botId, string item, int count, string? from = null, ItemFilter? filter = null) =>
+        Capture(filter, Act(botId, $"take {item} x{count}" + (from != null ? $" from {from}" : ""), "ok, started: take " + item));
     public string KeepGear(int botId, bool on) => Act(botId, $"keepgear {on}");
-    public string Inspect(int botId, string kind, string query) => $"{kind} {query}: " + new string('x', 2000);
+    public string Inspect(int botId, string kind, string query, ItemFilter? filter = null) => Capture(filter, $"{kind} {query}: " + new string('x', Tools.MaxInspectLength + 100));
     public readonly Dictionary<int, bool> Control = new();
     public readonly List<ControlEvent> PendingControl = new();
     public void SetAiControl(int botId, bool on) => Control[botId] = on;

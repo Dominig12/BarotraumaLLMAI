@@ -54,6 +54,8 @@ public sealed class Observation
     public List<string>? MedicalSupplies { get; set; }
     public SubInfo? Submarine { get; set; }
     public List<RoomInfo> Rooms { get; set; } = new();
+    /// <summary>Known stations and actual directed links, including automatic fabrication ingredient sources.</summary>
+    public List<MachineryInfo> Machines { get; set; } = new();
     public List<CrewInfo> Crew { get; set; } = new();
     public List<ThreatInfo> Threats { get; set; } = new();
     /// <summary>Nearby corpses and incapacitated characters, with stable entity references for body tasks.</summary>

@@ -10,29 +10,15 @@ namespace LlmAgents.Tests;
 /// <summary>Problems seen in the in-game log of 2026-10-15 16:00 (orders ignored, chatter, "разберите все в шкафчике").</summary>
 public class Log2FixesTests
 {
-    [Theory]
-    [InlineData("ВСЕ ЗА МНОЙ!", "follow(target=\"Dan\")")]
-    [InlineData("follow me", "follow(target=\"Dan\")")]
-    [InlineData("Иди ко мне", "come_to(target=\"Dan\")")]
-    [InlineData("Все ко мне", "come_to(target=\"Dan\")")]
-    [InlineData("разберите все в шкафчике из щитовой", "deconstruct(item=\"all\"")]
-    [InlineData("Механики, заварите течи", "fix_leaks()")]
-    [InlineData("стой", "wait()")]
-    public void HintsForCommonOrders(string text, string expected) =>
-        Assert.Contains(expected, OrderHints.Suggest(text, "Dan", "Engine [h4]"));
-
     [Fact]
-    public void NoHintForSmallTalk() => Assert.Null(OrderHints.Suggest("Привет всем", "Dan", null));
-
-    [Fact]
-    public void OrderTextNamesTheSenderAndHints()
+    public void OrderTextGivesSpeakerContextWithoutGuessingAnAction()
     {
         var cmd = new ChatCommand("Смертельное Рандеву", "Инженер", "ВСЕ ЗА МНОЙ!", new[] { 1 }, true, "Реакторный отсек [h163]");
         var me = new RosterEntry(1, "Ann", "mechanic", null, "none");
         var text = ChatDispatcher.FormatOrder(cmd, new[] { me }, me);
         Assert.Contains("in Реакторный отсек [h163]", text);
         Assert.Contains("('me' = Смертельное Рандеву)", text);
-        Assert.Contains("Hint: probably follow(target=\"Смертельное Рандеву\")", text);
+        Assert.Equal("Смертельное Рандеву (Инженер) on radio, in Реакторный отсек [h163]: \"ВСЕ ЗА МНОЙ!\" ('me' = Смертельное Рандеву)", text);
     }
 
     [Fact]

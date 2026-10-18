@@ -15,17 +15,19 @@ public sealed partial class GameAdapter
 {
     // --------------------------------------------------------------- inspect
 
-    public string Inspect(int botId, string kind, string query)
+    public string Inspect(int botId, string kind, string query, ItemFilter? filter = null)
     {
         if (Find(botId) is not { } c) return "error: character gone";
         switch (kind)
         {
+            case "machines":
+                return InspectMachines(c, query);
             case "bodies":
                 return InspectBodies(c, query);
             case "patient":
             {
                 var q = query.Trim().ToLowerInvariant();
-                if (q is "" or "all" or "everyone" or "crew" or "all crew" or "injured" or "все" or "экипаж")
+                if (q is "" or "*")
                 {
                     var hurt = Character.CharacterList
                         .Where(x => !x.IsDead && !x.Removed && x.IsHuman && x.TeamID == c.TeamID && ItemQueries.TreatableAfflictions(x).Any())
@@ -40,18 +42,25 @@ public sealed partial class GameAdapter
             }
             case "items":
             {
-                if (NearAnchor(c, query) is { } near) return DescribePlace(near.Container.Inventory.AllItems.ToList(), near.Where, c);
-                // a room id, a container or a crew member's name: what is there ("what's in Электрика [h140]?")
-                bool placeFirst = query.Contains("[h") || ResolveRoom(query.Trim()) != null
-                    || (FindCrew(query.Trim(), c, includeSelf: true) != null && query.Trim().Length >= 3);
-                if (placeFirst && ItemsAt(c, query) is { } p0) return DescribePlace(p0.Items, p0.Where, c);
-                bool byKind = ItemQueries.IsKindQuery(query);
-                var found = ItemQueries.Find(c, query).Take(byKind ? 60 : 30).ToList();
-                var noneFree = byKind ? null : ItemQueries.NoneFree(c, query, found.FirstOrDefault());
+                string itemQuery = string.IsNullOrWhiteSpace(query) ? "*" : query;
+                List<Item> found;
+                bool byKind = itemQuery == "*";
+                if (filter?.From is { } source)
+                {
+                    // Source and item identity are independent fields, never guessed from query words.
+                    if (FindCrew(source, c, includeSelf: true) is { } person)
+                        found = Carried(person).Where(i => ItemQueries.MatchScore(i, itemQuery) > 0 && ItemQueries.Matches(c, i, filter)).ToList();
+                    else if (ItemsAt(c, source) is { } place)
+                        found = place.Items.Where(i => ItemQueries.IsAvailableTo(i, c) && ItemQueries.MatchScore(i, itemQuery) > 0 && ItemQueries.Matches(c, i, filter)).ToList();
+                    else return $"error: no exact source '{source}'; use a container #ID, room [hID], or crew name";
+                }
+                else found = ItemQueries.Find(c, itemQuery, selection: filter);
+                found = found.Take(byKind ? 100 : 50).ToList();
+                var noneFree = byKind || filter?.From != null || filter?.Category != null ? null : ItemQueries.NoneFree(c, query, found.FirstOrDefault());
                 if (noneFree != null)
                     return noneFree + (found.Count > 0 ? $". Other matches: {string.Join(", ", found.Select(i => i.Prefab).Distinct().Take(3).Select(ItemQueries.Label))}" : "");
                 if (found.Count == 0)
-                    return ItemsAt(c, query) is { } p1 ? DescribePlace(p1.Items, p1.Where, c) : $"no '{query}' on the sub (try a plainer word: 'tools', 'medical', 'ammo', 'suit', or a room id to see what is there)";
+                    return $"no items match '{itemQuery}' and the explicit filters; use query without filters to discover identifiers, or from=<exact source #ID/room>";
                 var groups = found.GroupBy(i => i.Prefab).Take(byKind ? 8 : 5).Select(g =>
                     $"{ItemQueries.Label(g.Key)}: " + string.Join("; ", g.GroupBy(i => (Where: ItemQueries.Where(i, c), Percent: i.MaxCondition > 0 ? (int)Math.Round(100 * i.Condition / i.MaxCondition) : -1))
                         .OrderBy(w => w.Key.Percent).Take(8)

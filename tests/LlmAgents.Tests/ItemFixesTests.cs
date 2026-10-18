@@ -11,21 +11,22 @@ using Xunit;
 
 namespace LlmAgents.Tests;
 
-/// <summary>Item words: kinds of items and other word forms, so plain orders find the right things.</summary>
+/// <summary>Canonical selection tokens and literal label matching; natural language belongs to the model.</summary>
 public class ItemWordsTests
 {
     [Theory]
-    [InlineData("медикаменты", new[] { ItemGroup.Medical })]
-    [InlineData("Возьми лекарства", new ItemGroup[0])]                 // "возьми" is not an item word: a specific query
-    [InlineData("Водолазный костюм", new[] { ItemGroup.DivingSuit })] // the item is called "Водолазный скафандр"
-    [InlineData("запасные скафандры", new[] { ItemGroup.DivingSuit })]
-    [InlineData("водолазное снаряжение", new[] { ItemGroup.DivingGear })]
-    [InlineData("diving gear", new[] { ItemGroup.DivingGear })]
-    [InlineData("подводная маска", new[] { ItemGroup.DivingMask })]
-    [InlineData("оружие и патроны", new[] { ItemGroup.Weapon, ItemGroup.Ammo })]
-    [InlineData("инструменты", new[] { ItemGroup.Tool })]
-    [InlineData("tools", new[] { ItemGroup.Tool })]
-    [InlineData("кислородные баллоны", new[] { ItemGroup.Oxygen })]
+    [InlineData("medical", new[] { ItemGroup.Medical })]
+    [InlineData("ammo", new[] { ItemGroup.Ammo })]
+    [InlineData("diving_suit", new[] { ItemGroup.DivingSuit })]
+    [InlineData("diving_gear", new[] { ItemGroup.DivingGear })]
+    [InlineData("diving_mask", new[] { ItemGroup.DivingMask })]
+    [InlineData("reactor_fuel", new[] { ItemGroup.ReactorFuel })]
+    [InlineData("tool", new[] { ItemGroup.Tool })]
+    [InlineData("oxygen", new[] { ItemGroup.Oxygen })]
+    [InlineData("медикаменты", new ItemGroup[0])]
+    [InlineData("оружие и патроны", new ItemGroup[0])]
+    [InlineData("diving gear", new ItemGroup[0])]
+    [InlineData("tools", new ItemGroup[0])]
     [InlineData("бинт", new ItemGroup[0])]
     [InlineData("костюм", new ItemGroup[0])]                          // just clothes
     [InlineData("сварочное топливо", new ItemGroup[0])]                // the name says it, not reactor fuel
@@ -34,21 +35,24 @@ public class ItemWordsTests
         Assert.Equal(expected, ItemWords.Groups(query));
 
     [Theory]
-    [InlineData("скафандры водолазные", "Водолазный скафандр", true)]
-    [InlineData("fuel rods", "Fuel Rod", true)]
-    [InlineData("сварочное топливо", "Бак со сварочным топливом", true)]
-    [InlineData("Водолазный костюм", "Водолазный скафандр", false)] // "костюм" is not "скафандр": the kind covers it
+    [InlineData("скафандры водолазные", "Водолазный скафандр", false)]
+    [InlineData("fuel rods", "Fuel Rod", false)]
+    [InlineData("fuel rod", "Fuel Rod", true)]
+    [InlineData("водолазный скафандр", "Водолазный скафандр", true)]
+    [InlineData("сварочное топливо", "Бак со сварочным топливом", false)]
+    [InlineData("Водолазный костюм", "Водолазный скафандр", false)]
     [InlineData("бинт", "Морфин", false)]
-    [InlineData("все запасные", "Бинт", false)]                     // filler only
-    public void OtherWordForms(string query, string name, bool match) =>
+    [InlineData("spare fuel rod", "Fuel Rod", false)]
+    public void LiteralWords(string query, string name, bool match) =>
         Assert.Equal(match, ItemWords.WordsMatch(query, new[] { name }));
 
     [Theory]
     [InlineData("Lorriane Connors", true)]
-    [InlineData("lorriane", true)]
-    [InlineData("себе", true)]
-    [InlineData("me", true)]
-    [InlineData("в инвентарь", true)]
+    [InlineData("lorriane", false)]
+    [InlineData("self", true)]
+    [InlineData("себе", false)]
+    [InlineData("me", false)]
+    [InlineData("в инвентарь", false)]
     [InlineData("Смертельное Рандеву", false)]
     [InlineData("medical cabinet", false)]
     public void TheBotItself(string to, bool self) => Assert.Equal(self, ItemWords.IsSelf(to, "Lorriane Connors"));
@@ -93,7 +97,7 @@ public class ItemPlanTests
     [Theory]
     [InlineData("{\"item\":\"medical\",\"count\":5}", "1:take medical x5")]
     [InlineData("{\"item\":\"Бинт\"}", "1:take Бинт x1")]
-    [InlineData("{\"item\":\"ammo\",\"amount\":50}", "1:take ammo x8")]
+    [InlineData("{\"item\":\"coilgunammobox\",\"count\":8}", "1:take coilgunammobox x8")]
     [InlineData("{\"item\":\"tools\",\"count\":3,\"from\":\"Электрика [h140]\"}", "1:take tools x3 from Электрика [h140]")]
     [InlineData("{\"item\":\"tools\",\"from\":\" \"}", "1:take tools x1")]
     public void TakeItemArguments(string args, string action)
@@ -108,10 +112,10 @@ public class ItemPlanTests
     [Theory]
     [InlineData("pick_up(item=\"bandage\", count=2)")]
     [InlineData("take(item=\"bandage\", count=2)")]
-    public void TakeAliases(string text)
+    public void TakeAliasesRequireAnExplicitCanonicalToolCall(string text)
     {
         var calls = TextToolCallParser.Parse(text, Tools.All);
-        Assert.Equal("take_item", Assert.Single(calls).Name);
+        Assert.Empty(calls);
     }
 
     [Fact]
@@ -217,77 +221,23 @@ public class ItemPlanTests
     }
 }
 
-/// <summary>Hints next to chat orders (log db9d61e0).</summary>
-public class OrderHintTests
-{
-    [Theory]
-    [InlineData("Трейси, бери отсюда инструменты", "take_item", "come_to")]       // "отсюда" is "from here", not "come here"
-    [InlineData("Трейси, ко мне", "come_to", "take_item")]
-    [InlineData("иди сюда", "come_to", null)]
-    [InlineData("Медик, хватай из шкафа медикаменты и за мной!", "take_item", null)]
-    [InlineData("у тебя мало при себе медикаментов, бери еще!", "take_item", null)]
-    [InlineData("Медик, Подготовь медикаменты!", "take_item", null)]
-    [InlineData("Садитесь за пушки!", "operate(role=\"weapons\")", null)]
-    [InlineData("Надеваем водолазное снаряжение!", "equip(item=\"diving suit\")", null)]
-    [InlineData("Не снимаем снаряжение!", "keep_gear(on=true)", "equip")]
-    [InlineData("Трейси, ко мне, тебе надо в щитовой взять инструменты и разобрать их", "deconstruct", null)]
-    public void Hints(string text, string expected, string? notExpected)
-    {
-        var hint = OrderHints.Suggest(text, "Daniil", "Электрика [h140]");
-        Assert.NotNull(hint);
-        Assert.Contains(expected, hint);
-        if (notExpected != null) Assert.DoesNotContain(notExpected, hint);
-    }
-
-    [Fact]
-    public void TakeFromHereNamesTheSpeakersRoom() =>
-        Assert.Contains("from=\"Электрика [h140]\"", OrderHints.Suggest("бери отсюда инструменты", "Daniil", "Электрика [h140]"));
-
-    [Fact]
-    public void PlainTalkHasNoHint() => Assert.Null(OrderHints.Suggest("как дела?", "Daniil", null));
-}
-
 /// <summary>Marks (middle mouse button) and unpacking a crate.</summary>
 public class MarksAndUnpackTests
 {
     [Theory]
-    [InlineData("помеченный ящик", MarkQuery.Ai, "ящик")]
-    [InlineData("marked", MarkQuery.Ai, "")]
-    [InlineData("the marked crate", MarkQuery.Ai, "crate")]
-    [InlineData("помеченное на разбор", MarkQuery.Deconstruct, "")]
-    [InlineData("marked for deconstruction", MarkQuery.Deconstruct, "")]
-    [InlineData("металлический ящик", MarkQuery.None, "металлический ящик")]
-    public void MarkQueries(string query, MarkQuery kind, string rest)
-    {
-        Assert.Equal(kind, MarkWords.Of(query));
-        if (kind != MarkQuery.None) Assert.Equal(rest, MarkWords.Rest(query));
-    }
-
-    [Theory]
-    [InlineData("на место", true)]
-    [InlineData("по местам", true)]
-    [InlineData("away", true)]
-    [InlineData("its place", true)]
+    [InlineData("storage", true)]
+    [InlineData("на место", false)]
+    [InlineData("по местам", false)]
+    [InlineData("away", false)]
+    [InlineData("its place", false)]
     [InlineData("медицинский шкаф", false)]
     [InlineData("Daniil", false)]
     public void ItsPlace(string to, bool expected) => Assert.Equal(expected, ItemWords.IsItsPlace(to));
 
     [Theory]
-    [InlineData("Возьми металлический ящик и разнеси что в нём по подлодке", "unpack")]
-    [InlineData("Разложи помеченный ящик", "unpack")]
-    [InlineData("Разложи помеченный ящик", "item=\"marked\"")]
-    [InlineData("Отнеси это помеченное в медотсек", "item=\"marked\"")]
-    public void Hints(string text, string expected) =>
-        Assert.Contains(expected, OrderHints.Suggest(text, "Daniil", "Грузовой отсек [h3]"));
-
-    [Fact]
-    public void BattleStationsIsNotUnpacking() =>
-        Assert.DoesNotContain("unpack", OrderHints.Suggest("Все по местам!", "Daniil", null) ?? "");
-
-    [Theory]
     [InlineData("{\"container\":\"metal crate\"}", "1:unpack metal crate")]
     [InlineData("{\"container\":\"marked\",\"carry\":false}", "1:unpack marked (no carry)")]
-    [InlineData("{\"item\":\"ящик\"}", "1:unpack ящик")]
+    [InlineData("{\"container\":\"ящик\"}", "1:unpack ящик")]
     public void UnpackArguments(string args, string action)
     {
         var game = new FakeGame();
@@ -356,26 +306,10 @@ public class GiveOrderTests
     }
 
     [Fact]
-    public void TextAlias() => Assert.Equal("give_order", Assert.Single(TextToolCallParser.Parse("order(order=\"repairmechanical\")", Tools.All)).Name);
+    public void OrderAliasDoesNotCreateAToolCall() => Assert.Empty(TextToolCallParser.Parse("order(order=\"repairmechanical\")", Tools.All));
 
     [Fact]
     public void OfferedToTheModel() => Assert.Contains(Tools.All, t => t.Name == "give_order");
-}
-
-public class VanillaOrderHintTests
-{
-    [Theory]
-    [InlineData("Трейси, займись электрикой", "repairelectrical")]
-    [InlineData("Заряди батареи", "chargebatteries")]
-    [InlineData("Загрузите боеприпасы в пушки", "loaditems")]
-    public void Hints(string text, string id) => Assert.Contains(id, OrderHints.Suggest(text, "Daniil", null));
-}
-
-public class RoomNameIsNotAnOrderTests
-{
-    [Fact]
-    public void GoingToTheElectricalRoomIsNotRepairing() =>
-        Assert.DoesNotContain("repairelectrical", OrderHints.Suggest("Иди в Электрику", "Daniil", null) ?? "");
 }
 
 /// <summary>Ballast flora: seen, woken for, attacked with a chosen tool.</summary>
@@ -403,7 +337,7 @@ public class FloraTests
     [Theory]
     [InlineData("{\"target\":\"ballast flora\",\"weapon\":\"welding tool\"}", "1:attack ballast flora with welding tool")]
     [InlineData("{\"target\":\"Crawler\"}", "1:attack Crawler")]
-    [InlineData("{}", "1:attack nearest")]
+    [InlineData("{\"target\":\"Crawler [c42]\"}", "1:attack Crawler [c42]")]
     public void Arguments(string args, string action)
     {
         var game = new FakeGame();
@@ -414,12 +348,6 @@ public class FloraTests
         Assert.StartsWith("ok", r);
         Assert.Equal(action, game.Actions.Last());
     }
-
-    [Theory]
-    [InlineData("Софи, выжги флору в балласте сваркой", "ballast flora")]
-    [InlineData("В балласте завелась флора!", "ballast flora")]
-    [InlineData("Берта, убей ползуна из гарпуна", "weapon=<what they named>")]
-    public void Hints(string text, string expected) => Assert.Contains(expected, OrderHints.Suggest(text, "Daniil", null));
 
     [Fact]
     public void AttackIsATask() => Assert.Contains("attack", AgentManager.TaskTools);
@@ -439,7 +367,7 @@ public class InventoryToolTests
 
     [Theory]
     [InlineData("put_in", "{\"item\":\"welding fuel\",\"into\":\"welding tool\"}", "1:put welding fuel into welding tool")]
-    [InlineData("put_in", "{\"item\":\"oxygen tank\",\"to\":\"diving suit\"}", "1:put oxygen tank into diving suit")]
+    [InlineData("put_in", "{\"item\":\"oxygen tank\",\"into\":\"diving suit\"}", "1:put oxygen tank into diving suit")]
     [InlineData("refill", "{}", "1:refill")]
     [InlineData("refill", "{\"item\":\"welding tool\"}", "1:refill welding tool")]
     [InlineData("tidy_inventory", "{\"keep\":\"bandage, welding fuel\"}", "1:tidy keep bandage, welding fuel")]
@@ -461,22 +389,10 @@ public class InventoryToolTests
     }
 
     [Theory]
-    [InlineData("reload(item=\"revolver\")", "refill")]
-    [InlineData("insert(item=\"battery\", into=\"flashlight\")", "put_in")]
-    [InlineData("stow()", "tidy_inventory")]
-    public void TextAliases(string text, string tool) => Assert.Equal(tool, Assert.Single(TextToolCallParser.Parse(text, Tools.All)).Name);
-
-    [Theory]
-    [InlineData("Заправь сварку", "refill")]
-    [InlineData("Смени баллон в скафандре", "refill")]
-    [InlineData("Перезаряди револьвер", "refill")]
-    [InlineData("Вставь батарейку в фонарик", "put_in")]
-    [InlineData("Разгрузи инвентарь", "tidy_inventory")]
-    public void Hints(string text, string tool) => Assert.Contains(tool, OrderHints.Suggest(text, "Daniil", null));
-
-    [Fact]
-    public void RefuellingTheReactorIsNotARefill() =>
-        Assert.DoesNotContain("refill(", OrderHints.Suggest("Заправь реактор топливом", "Daniil", null) ?? "");
+    [InlineData("reload(item=\"revolver\")")]
+    [InlineData("insert(item=\"battery\", into=\"flashlight\")")]
+    [InlineData("stow()")]
+    public void TextAliasesDoNotSelectInventoryTools(string text) => Assert.Empty(TextToolCallParser.Parse(text, Tools.All));
 
     [Fact]
     public void TheModelSeesFreeSpace() =>

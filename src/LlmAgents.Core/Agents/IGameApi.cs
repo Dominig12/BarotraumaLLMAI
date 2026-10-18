@@ -74,47 +74,47 @@ public interface IGameApi
     void Speak(int botId, string text);
 
     // ---- items and machinery: start a multi-step task, completion comes later through DrainReports
-    string Equip(int botId, string item);
+    string Equip(int botId, string item, ItemFilter? filter = null);
     string RefuelReactor(int botId);
     /// <summary>salvage = deconstruct scrap aboard for missing ingredients first.</summary>
-    string Craft(int botId, string item, int amount, bool salvage = false);
+    string Craft(int botId, string item, int amount, bool salvage = false, string? machine = null);
     /// <summary>from = a container or room: deconstruct the matching items in it (item "all" = everything there).</summary>
     /// <param name="count">0 = the default: one of a named item, everything for 'all' / 'marked'.</param>
-    string Deconstruct(int botId, string item, string? from = null, int count = 0);
+    string Deconstruct(int botId, string item, string? from = null, int count = 0, ItemFilter? filter = null);
     /// <summary>item null = choose the cheapest treatment that is good enough.</summary>
     string Treat(int botId, string target, string? item);
 
     // ---- inventory
     /// <summary>Move a worn/held item into the bot's own inventory.</summary>
-    string Unequip(int botId, string item);
-    string Drop(int botId, string item);
+    string Unequip(int botId, string item, ItemFilter? filter = null);
+    string Drop(int botId, string item, ItemFilter? filter = null);
     /// <summary>to = container name, room id, or crew member name ("me" = take it). Multi-step task.</summary>
     /// <param name="count">0 = the whole stack.</param>
-    string MoveItem(int botId, string item, string to, int count = 0);
+    string MoveItem(int botId, string item, string to, int count = 0, string destination = "auto", ItemFilter? filter = null);
     /// <summary>
     /// Pick up to <paramref name="count"/> matching items into the inventory; a kind ("medical") takes a mix. Multi-step task.
     /// from = a container, a room or a crew member (the room they are in); null = anywhere, nearest first.
     /// </summary>
-    string TakeItem(int botId, string item, int count, string? from = null) => "error: not supported in this game backend";
+    string TakeItem(int botId, string item, int count, string? from = null, ItemFilter? filter = null) => "error: not supported in this game backend";
     /// <summary>Attack ballast flora (burnt with a fire tool) or a creature / intruder, with a chosen tool or weapon. Multi-step task.</summary>
-    string Attack(int botId, string target, string? weapon) => "error: not supported in this game backend";
+    string Attack(int botId, string target, string? weapon, string targetType = "character") => "error: not supported in this game backend";
     /// <summary>Drag a dead or incapacitated character to a room or crew member. Completion is reported later.</summary>
     string DragBody(int botId, string target, string to) => "error: not supported in this game backend";
     /// <summary>Search a dead or incapacitated character and take matching items; null item means all loot.</summary>
-    string LootBody(int botId, string target, string? item = null, int count = 0) => "error: not supported in this game backend";
+    string LootBody(int botId, string target, string? item = null, int count = 0, ItemFilter? filter = null) => "error: not supported in this game backend";
     /// <summary>Load an item into carried gear or a world container (including C4 into a railgun shell). Task when travel is needed.</summary>
-    string PutIn(int botId, string item, string into) => "error: not supported in this game backend";
+    string PutIn(int botId, string item, string into, ItemFilter? filter = null) => "error: not supported in this game backend";
     /// <summary>Refill what the bot carries (or one item) with full fuel, tanks, batteries, ammo. Multi-step task.</summary>
-    string Refill(int botId, string? item) => "error: not supported in this game backend";
+    string Refill(int botId, string? item, ItemFilter? filter = null) => "error: not supported in this game backend";
     /// <summary>Put away what the bot carries but does not wear or hold. Multi-step task.</summary>
     string TidyInventory(int botId, string? keep) => "error: not supported in this game backend";
     /// <summary>Empty a crate or container: every item goes where it belongs (stacks of the same items first). Multi-step task.</summary>
-    string Unpack(int botId, string container, bool carry = true) => "error: not supported in this game backend";
+    string Unpack(int botId, string container, bool carry = true, ItemFilter? filter = null) => "error: not supported in this game backend";
     /// <summary>While on, the bot never takes its diving gear off by itself (except when its suit runs out of air).</summary>
     string KeepGear(int botId, bool on);
 
     /// <summary>Immediate lookup, kind from <see cref="Tools.InspectKinds"/>.</summary>
-    string Inspect(int botId, string kind, string query);
+    string Inspect(int botId, string kind, string query, ItemFilter? filter = null);
 
     /// <summary>Task results and other events since the last call.</summary>
     IReadOnlyList<GameReport> DrainReports();

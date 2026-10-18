@@ -209,8 +209,7 @@ public sealed partial class GameAdapter : IGameApi
     {
         var crew = Character.CharacterList
             .Where(x => (includeSelf || x != self) && !x.IsDead && !x.Removed && x.IsHuman && x.TeamID == self.TeamID).ToList();
-        return crew.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-            ?? crew.FirstOrDefault(x => x.Name.Contains(name, StringComparison.OrdinalIgnoreCase))
-            ?? crew.FirstOrDefault(x => Translit.ToLatin(x.Name).Contains(Translit.ToLatin(name), StringComparison.OrdinalIgnoreCase));
+        return crew.FirstOrDefault(x => x.Name.Equals(name.Trim(), StringComparison.OrdinalIgnoreCase)
+            || name.Trim().Equals($"[c{x.ID}]", StringComparison.OrdinalIgnoreCase));
     }
 }

@@ -30,8 +30,9 @@ public sealed partial class GameAdapter
         }
     }
 
-    static Item? FindCarried(Character c, string query) =>
+    static Item? FindCarried(Character c, string query, ItemFilter? filter = null) =>
         Carried(c)
+            .Where(i => ItemQueries.Matches(c, i, filter))
             .Select(i => (i, score: ItemQueries.MatchScore(i, query)))
             .Where(t => t.score > 0)
             .OrderByDescending(t => t.score)
@@ -39,10 +40,10 @@ public sealed partial class GameAdapter
             .Select(t => t.i)
             .FirstOrDefault();
 
-    public string Unequip(int botId, string query)
+    public string Unequip(int botId, string query, ItemFilter? filter = null)
     {
         if (Find(botId) is not { } c) return "error: character gone";
-        var item = FindCarried(c, query);
+        var item = FindCarried(c, query, filter);
         if (item == null) return $"error: you don't carry '{query}'";
         if (!c.HasEquippedItem(item)) return $"ok ({item.Name} is not equipped)";
         if (item.HasTag(Tags.HeavyDivingGear) && GearLock.IsLocked(c) && !PlayerSaidSo(c))
@@ -51,16 +52,16 @@ public sealed partial class GameAdapter
         return $"error: no free inventory slot for {item.Name}; drop or store something first";
     }
 
-    public string Drop(int botId, string query)
+    public string Drop(int botId, string query, ItemFilter? filter = null)
     {
         if (Find(botId) is not { } c) return "error: character gone";
-        var item = FindCarried(c, query);
+        var item = FindCarried(c, query, filter);
         if (item == null)
         {
             // Products can occupy both hands and every output slot. Eject them at the machine without
             // requiring another free character slot first.
             var claimed = ClaimedByOthers(c);
-            item = ItemQueries.Find(c, query, i => InMachineOutput(i) && !claimed.Contains(i)).FirstOrDefault();
+            item = ItemQueries.Find(c, query, i => InMachineOutput(i) && !claimed.Contains(i), selection: filter).FirstOrDefault();
             if (item == null || !Ai(c, out var ai)) return $"error: you don't carry '{query}', and it is not in a machine output";
             return StartTask(c, new DropOutputTask(c, ai, item), evenOverPlayerOrders: true);
         }
@@ -74,7 +75,7 @@ public sealed partial class GameAdapter
 
     /// <summary>The item and the rest of its stack: all of that item the bot carries, or all in the same cabinet or machine
     /// output (or lying loose next to it). count &gt; 0 = that many, nearest first.</summary>
-    List<Item> StackOf(Character c, Item item, int count, string query)
+    List<Item> StackOf(Character c, Item item, int count, string query, ItemFilter? filter = null)
     {
         int max = count > 0 ? Math.Min(count, MaxMoveStack) : MaxMoveStack;
         IEnumerable<Item> same;
@@ -87,37 +88,37 @@ public sealed partial class GameAdapter
                                             && Vector2.Distance(i.WorldPosition, item.WorldPosition) < 200f);
         var claimed = ClaimedByOthers(c);
         var list = new List<Item> { item };
-        list.AddRange(same.Where(i => i != item && !claimed.Contains(i) && ItemQueries.IsAvailableTo(i, c) && ItemQueries.MatchScore(i, query) > 0).Take(max - 1));
+        list.AddRange(same.Where(i => i != item && !claimed.Contains(i) && ItemQueries.IsAvailableTo(i, c) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) > 0).Take(max - 1));
         if (count > list.Count)
         {
             // asked for more than one stack holds: the nearest others of the same item
             list.AddRange(ItemQueries.Find(c, item.Prefab.Identifier.Value, i => i.Prefab == item.Prefab && i.GetRootInventoryOwner() != c, claimed)
-                .Where(i => !list.Contains(i) && !claimed.Contains(i) && ItemQueries.MatchScore(i, query) > 0).Take(max - list.Count));
+                .Where(i => !list.Contains(i) && !claimed.Contains(i) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) > 0).Take(max - list.Count));
         }
         return list;
     }
 
-    public string MoveItem(int botId, string query, string to, int count = 0)
+    public string MoveItem(int botId, string query, string to, int count = 0, string destination = "auto", ItemFilter? filter = null)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
-        // "to me" / "себе" / its own name: pick it up into the inventory
-        if (ItemWords.IsSelf(to, c.Name)) return TakeItem(botId, query, count > 0 ? count : 1);
+        if (destination == "self") return TakeItem(botId, query, count > 0 ? count : 1, filter: filter);
+        if (destination is not ("auto" or "container" or "room" or "character" or "storage")) return "error: invalid 'destination' type";
 
         // what it carries first, but not the diving suit it has to keep on: then a spare one from the sub
         bool Locked(Item i) => i.HasTag(Tags.HeavyDivingGear) && c.HasEquippedItem(i) && GearLock.IsLocked(c) && !PlayerSaidSo(c);
         var claimed = ClaimedByOthers(c);
-        var carried = FindCarried(c, query);
+        var carried = FindCarried(c, query, filter);
         var item = carried != null && !Locked(carried) ? carried
-            : ItemQueries.Find(c, query, i => i.GetRootInventoryOwner() != c && !claimed.Contains(i))
+            : ItemQueries.Find(c, query, i => i.GetRootInventoryOwner() != c && !claimed.Contains(i), selection: filter)
                 .OrderByDescending(i => ItemQueries.MatchScore(i, query)).ThenByDescending(i => InMachineOutput(i) ? 1 : 0).FirstOrDefault();
         if (item == null)
             return carried != null ? "error: your diving gear is locked (danger or keep_gear) and there is no spare one aboard" : NotFound(c, query);
         if (item != carried && !ItemQueries.IsKindQuery(query) && ItemQueries.NoneFree(c, query, item) is { } busy) return "error: " + busy;
-        var replace = Replacer(c, query);
-        var stack = StackOf(c, item, count, query);
+        var replace = Replacer(c, query, filter);
+        var stack = StackOf(c, item, count, query, filter);
 
         // "на место" / "away": where it belongs (onto the same items first)
-        if (ItemWords.IsItsPlace(to))
+        if (destination == "storage")
         {
             var place = StoragePlanner.Choose(c, item, new HashSet<Item>());
             if (place == null) return $"error: no fitting place for {item.Name} on the sub; name a container or a room";
@@ -126,17 +127,15 @@ public sealed partial class GameAdapter
             return StartTask(c, new MoveItemTask(c, ai, stack, place.Container, null, null, StoragePlanner.Describe(place.Container), replace));
         }
 
-        // "шкаф у фабрикатора": the cabinet next to that machine
-        if (NearAnchor(c, to, item) is { } near)
-            return StartTask(c, new MoveItemTask(c, ai, stack, near.Container, null, null, near.Where, replace));
-
         // a crew member?
-        var receiver = FindCrew(to, c, includeSelf: false);
+        var receiver = destination is "auto" or "character" ? FindCrew(to, c, includeSelf: false) : null;
         if (receiver != null) return StartTask(c, new MoveItemTask(c, ai, stack, null, null, receiver, receiver.Name, replace));
+        if (destination == "character") return $"error: no exact crew member '{to}'";
 
         // a room?
-        var hull = IsRoomRef(to) ? ResolveRoom(to) : null;
+        var hull = destination is "auto" or "room" ? ResolveRoom(to) : null;
         if (hull != null) return StartTask(c, new MoveItemTask(c, ai, stack, null, hull, null, RoomId(hull), replace));
+        if (destination == "room") return $"error: no exact room '{to}'";
 
         // a container on the sub that accepts the item
         var container = Item.ItemList
@@ -166,7 +165,7 @@ public sealed partial class GameAdapter
     }
 
     /// <summary>Load a carried or world container: fuel into a tool, C4 into a shell, ammo into a loader.</summary>
-    public string PutIn(int botId, string query, string into)
+    public string PutIn(int botId, string query, string into, ItemFilter? filter = null)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
         var claimed = ClaimedByOthers(c);
@@ -182,7 +181,7 @@ public sealed partial class GameAdapter
         // Loaded payloads are not spare supplies, even when the bot carries the other shell or tool.
         // Claims are strict here: two loading tasks cannot reserve the same C4 block.
         var item = ItemQueries.Find(c, query, i => i != holder && i.Container != holder && !claimed.Contains(i) && ic.CanBeContained(i)
-                    && (i.Container == null || IsStorage(i.Container) || InMachineOutput(i)), claimed).FirstOrDefault();
+                    && (i.Container == null || IsStorage(i.Container) || InMachineOutput(i)), claimed, selection: filter).FirstOrDefault();
         var loaded = ic.Inventory.AllItems.FirstOrDefault(i => ItemQueries.MatchScore(i, query) > 0 && !ItemRules.IsSpent(i.MaxCondition > 0 ? i.Condition / i.MaxCondition : 1));
         if (loaded != null && (item == null || !ic.Inventory.CanBePut(item)
             && loaded.Condition / Math.Max(1, loaded.MaxCondition) >= item.Condition / Math.Max(1, item.MaxCondition)))
@@ -202,19 +201,17 @@ public sealed partial class GameAdapter
     }
 
     /// <summary>Refill what the bot carries (or one item): welding fuel, oxygen tanks, batteries, ammo.</summary>
-    public string Refill(int botId, string? query)
+    public string Refill(int botId, string? query, ItemFilter? filter = null)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
         Item? only = null;
-        string note = "";
         if (!string.IsNullOrWhiteSpace(query))
         {
-            only = Carried(c).Where(i => i.GetComponent<ItemContainer>() != null && ItemQueries.MatchScore(i, query!) > 0).FirstOrDefault();
-            // models name the refill itself ("oxygen tank") or a suit by another word: refill whatever needs it
-            if (only == null) note = $" ('{query}' is not something you carry that takes a refill: refilling what needs one)";
+            only = Carried(c).Where(i => i.GetComponent<ItemContainer>() != null && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query!) > 0).FirstOrDefault();
+            if (only == null) return $"error: no carried refillable container matches '{query}'; item selects the holder, not its fuel or ammo";
         }
-        var needs = InventoryView.NeedRefill(c, only);
-        if (needs.Count == 0) return only != null ? $"ok ({only.Name} does not need anything)" : "ok (nothing you carry needs refilling)" + note;
+        var needs = InventoryView.NeedRefill(c, only).Where(n => ItemQueries.Matches(c, n.Holder, filter)).ToList();
+        if (needs.Count == 0) return only != null ? $"ok ({only.Name} does not need anything)" : "ok (nothing selected needs refilling)";
         var pairs = new List<(Item, ItemContainer)>();
         var used = new HashSet<Item>(ClaimedByOthers(c));
         var missing = new List<string>();
@@ -228,7 +225,7 @@ public sealed partial class GameAdapter
         if (pairs.Count == 0) return $"error: nothing aboard to refill {string.Join(", ", missing)}";
         var label = "refill " + string.Join(", ", pairs.Select(p => p.Item2.Item.Name).Distinct());
         var r = StartTask(c, new PutInTask(c, ai, pairs, label), evenOverPlayerOrders: true);
-        return r + $"; {string.Join(", ", pairs.Select(p => $"{p.Item1.Name} -> {p.Item2.Item.Name}"))}" + (missing.Count > 0 ? $"; nothing for {string.Join(", ", missing)}" : "") + note;
+        return r + $"; {string.Join(", ", pairs.Select(p => $"{p.Item1.Name} -> {p.Item2.Item.Name}"))}" + (missing.Count > 0 ? $"; nothing for {string.Join(", ", missing)}" : "");
     }
 
     /// <summary>Put away what the bot carries but does not wear or hold (except 'keep').</summary>

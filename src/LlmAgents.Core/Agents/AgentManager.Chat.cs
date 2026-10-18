@@ -22,6 +22,7 @@ public sealed partial class AgentManager
         public ConversationLog.Line Line = null!;
         public int Attempts;
         public bool InFlight;
+        public string? ValidationError;
     }
 
     readonly List<PendingChat> pendingChats = new();
@@ -113,8 +114,7 @@ public sealed partial class AgentManager
             if (roster.Count == 0)
             {
                 Log.Info($"chat from {cmd.SenderName}: no AI crew heard it");
-                if (OrderHints.Suggest(cmd.Text, cmd.SenderName, null) != null)
-                    Tell(cmd.SenderName, "Приказ никто из ИИ-экипажа не услышал (далеко или нет рации).");
+                Tell(cmd.SenderName, "Сообщение никто из ИИ-экипажа не услышал (далеко или нет рации).");
                 conversation.SetRecipients(p.Line, Array.Empty<string>());
                 pendingChats.RemoveAt(i);
                 continue;
@@ -161,6 +161,8 @@ public sealed partial class AgentManager
         // the message itself is the last line of the conversation: not twice
         if (talk.Count > 0 && talk[^1].EndsWith($"\"{p.Cmd.Text}\"")) talk.RemoveAt(talk.Count - 1);
         var user = ChatDispatcher.UserPrompt(p.Cmd, roster, talk);
+        if (p.ValidationError != null)
+            user += "\n\nPrevious routing response rejected: " + p.ValidationError + "\nCall route_message again using the roster above.";
         var r0 = router;
         CountRequest();
         if (Settings.Global.LogPrompts) Log.Info($"dispatch -> {reservation.Provider}: {user.Replace('\n', ' ')}");
@@ -170,7 +172,7 @@ public sealed partial class AgentManager
             try
             {
                 r = await r0.CompleteAsync(reservation, ChatDispatcher.SystemPrompt,
-                    new[] { new LlmTurn("user", user) }, new[] { ChatDispatcher.Tool }, cts.Token).ConfigureAwait(false);
+                    new[] { new LlmTurn("user", user) }, new[] { ChatDispatcher.ToolFor(roster) }, cts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { return; }
             catch (Exception e) { r = new RouteResult(RouteStatus.Failed, null, reservation.Provider, e.Message); }
@@ -193,8 +195,11 @@ public sealed partial class AgentManager
             Deliver(p, parsed, "dispatcher: " + why);
             return;
         }
+        p.ValidationError = r.Status == RouteStatus.Ok
+            ? "Expected exactly one route_message call whose recipients is an array of full roster names; do not use jobs, nicknames or 'all'. Use [] only for no recipients."
+            : null;
         var detail = r.Status != RouteStatus.Ok ? r.Detail
-            : "no route_message call" + (string.IsNullOrWhiteSpace(r.Response?.Text) ? "" : ": " + Tools.Clip(JsonUtil.OneLine(r.Response!.Text), 300));
+            : p.ValidationError + (string.IsNullOrWhiteSpace(r.Response?.Text) ? "" : ": " + Tools.Clip(JsonUtil.OneLine(r.Response!.Text), 300));
         Log.Warn($"dispatch of \"{Tools.Clip(p.Cmd.Text, 60)}\" failed ({detail})" + (p.Attempts < DispatchAttempts ? "; asking again" : ""));
         if (p.Attempts < DispatchAttempts) return;   // stays pending: asked again next tick
         pendingChats.Remove(p);

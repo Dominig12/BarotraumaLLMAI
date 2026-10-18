@@ -11,8 +11,7 @@ namespace LlmAgents.Agents;
 /// reports back, an order hands the vanilla AI a job, a plan tool is about plans themselves.</summary>
 public enum ToolKind { Talk, Lookup, Memory, Order, Task, Plan }
 
-/// <summary>Which tools a request carries. Core is always there; the others when the bot's job or situation needs
-/// them (<see cref="ToolSelection"/>), so a small local model is not handed 40 schemas every time.</summary>
+/// <summary>Tool groups for configuration and presentation. The model receives the full permitted tool contract.</summary>
 [Flags]
 public enum ToolGroup
 {
@@ -34,14 +33,9 @@ public sealed record ToolContext(ToolCall Call, BotAgent Agent, IGameApi Game, A
 {
     public JsonObject A => Call.Arguments;
     public string? Str(string key) => Tools.Str(A, key);
-    public string? Str(params string[] keys) => keys.Select(k => Tools.Str(A, k)).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
     public bool? Bool(string key) => Tools.Bool(A, key);
     public int Priority => Tools.Priority(A);
-    public int Int(string key, int fallback, int min, int max, params string[] more)
-    {
-        var s = Str(new[] { key }.Concat(more).ToArray());
-        return Math.Clamp(int.TryParse(s, out var n) ? n : fallback, min, max);
-    }
+    public int Int(string key, int fallback) => A[key] is JsonValue v && v.TryGetValue<int>(out var n) ? n : fallback;
     public string Need(string? v, string name, Func<string, string> f) => string.IsNullOrEmpty(v) ? $"error: missing '{name}'" : f(v!);
     public int Id => Agent.Id;
 }
@@ -63,7 +57,7 @@ public static class Tools
 
     public static readonly IReadOnlyList<string> OperateRoles = new[] { "reactor", "navigation", "weapons", "pumps" };
 
-    public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipes", "recipe", "salvage", "orders", "inventory", "tools", "bodies" };
+    public static readonly IReadOnlyList<string> InspectKinds = new[] { "patient", "items", "recipes", "recipe", "salvage", "orders", "inventory", "tools", "bodies", "machines" };
 
     public const int MaxCraftAmount = 24;
     public const int MaxTakeCount = 8;
@@ -83,7 +77,7 @@ public static class Tools
 
     public const int MaxSayLength = 160;
     public const int MaxMessageLength = 300;
-    public const int MaxInspectLength = 1400;
+    public const int MaxInspectLength = 5000;
 
     // ---------------------------------------------------------------------------------------------- schemas
 
@@ -99,10 +93,59 @@ public static class Tools
             p[name] = o;
             if (required) req.Add(name);
         }
-        return new JsonObject { ["type"] = "object", ["properties"] = p, ["required"] = req };
+        return new JsonObject { ["type"] = "object", ["properties"] = p, ["required"] = req, ["additionalProperties"] = false };
     }
 
-    static JsonObject NoArgs() => new() { ["type"] = "object", ["properties"] = new JsonObject() };
+    static JsonObject NoArgs() => Schema();
+
+    const string ItemReference = "Exact #ID of an item instance, prefab identifier, or copied exact localized item name. No natural-language categories, modifiers or instructions. '*' explicitly selects all matching items. May be omitted only when category or mark selects items.";
+
+    static JsonObject ItemArgs(params (string Name, string Type, string Desc, string[]? Enum, bool Required)[] props) => Schema(props.Concat(new[]
+    {
+        Arg("category", "Structured item category; combine with item to narrow the selection. Omit when selecting an exact item.", false, en: ItemFilter.Categories),
+        Arg("condition", "Remaining item condition: any (default); empty = 0%; low = at most 30%; used = below 100%. Ammo box percentage means remaining ammunition.", false, en: ItemFilter.Conditions),
+        Arg("min_condition_percent", "Inclusive minimum remaining condition, 0-100. Combine with max_condition_percent for an exact range.", false, "number"),
+        Arg("max_condition_percent", "Inclusive maximum remaining condition, 0-100; must be at least min_condition_percent.", false, "number"),
+        Arg("mark", "Explicit player mark: none (default, no mark constraint), ai (marked for AI), deconstruct (marked for deconstruction).", false, en: ItemFilter.Marks),
+        Arg("linked_to", "Only items in inventories explicitly linked to this machine. Copy machine #ID from inspect(kind='machines'); nearby cabinets are not automatically linked.", false),
+    }).ToArray());
+
+    static JsonObject PlanArgs(bool update = false)
+    {
+        JsonObject StepList(string description) => new()
+        {
+            ["type"] = "array", ["description"] = description, ["maxItems"] = PlanTree.MaxNodes,
+            ["items"] = new JsonObject { ["$ref"] = "#/$defs/step" },
+        };
+        var action = Schema(Arg("do", "Exact offered tool name. Cannot be plan/update_plan/keep_plan/carry_on; use canonical tool names only."),
+            Arg("args", "Arguments object conforming to that tool's full JSON Schema. Omit only for tools requiring no arguments.", false, "object"));
+        var conditional = Schema(Arg("if", "Condition expression, checked when this node starts."));
+        conditional["properties"]!["then"] = StepList("Steps when if is true.");
+        conditional["properties"]!["else"] = StepList("Optional steps when if is false.");
+        conditional["required"]!.AsArray().Add("then");
+        var wait = Schema(Arg("wait_until", "Condition expression; remain at this node until true or timeout."),
+            Arg("timeout", $"Seconds until failure, 1-{PlanTree.MaxWaitSeconds}, default 60.", false, "number"));
+        wait["properties"]!["timeout"]!["minimum"] = 1;
+        wait["properties"]!["timeout"]!["maximum"] = PlanTree.MaxWaitSeconds;
+        var repeat = Schema(Arg("until", "Stop before the next iteration when this expression is true; optional when only max limits repetition.", false),
+            Arg("max", $"Maximum iterations, 1-{PlanTree.MaxRepeat}, default 3. The until condition is checked before each iteration.", false, "integer"));
+        repeat["properties"]!["repeat"] = StepList("Steps to repeat.");
+        repeat["required"]!.AsArray().Add("repeat");
+        repeat["properties"]!["max"]!["minimum"] = 1;
+        repeat["properties"]!["max"]!["maximum"] = PlanTree.MaxRepeat;
+        var attempt = Schema();
+        attempt["properties"]!["try"] = StepList("Steps to attempt. A failed step cancels this branch and starts catch instead of failing the whole plan.");
+        attempt["properties"]!["catch"] = StepList("Optional recovery steps after try fails; last result is available to result()/last_failed conditions.");
+        attempt["required"]!.AsArray().Add("try");
+        var schema = update ? Schema(Arg("node", "Exact node id shown in the running plan, e.g. n3.")) : Schema();
+        schema["properties"]!["steps"] = StepList($"Plan nodes; at most {PlanTree.MaxNodes} total nodes and {PlanTree.MaxDepth} nesting levels. Nested actions use the same argument schemas as top-level calls.");
+        schema["required"]!.AsArray().Add("steps");
+        schema["$defs"] = new JsonObject
+        {
+            ["step"] = new JsonObject { ["oneOf"] = new JsonArray(action, conditional, wait, repeat, attempt) },
+        };
+        return schema;
+    }
 
     static readonly (string, string, string, string[]?, bool) PriorityArg =
         ("priority", "integer", "1-3, default 3 = first. Your other orders move one step down (max 3)", null, false);
@@ -113,8 +156,35 @@ public static class Tools
     static (string, string, string, string[]?, bool) Arg(string name, string desc, bool required = true, string type = "string", string[]? en = null) =>
         (name, type, desc, en, required);
 
-    static ToolDef T(string name, string desc, JsonObject schema, ToolKind kind, ToolGroup group, Func<ToolContext, string> run) =>
-        new(name, desc, schema, kind, group, run);
+    static ToolDef T(string name, string desc, JsonObject schema, ToolKind kind, ToolGroup group, Func<ToolContext, string> run)
+    {
+        var props = schema["properties"]!.AsObject();
+        void Bound(string key, int min, int max)
+        {
+            if (props[key] is not JsonObject p) return;
+            p["minimum"] = min;
+            p["maximum"] = max;
+        }
+        Bound("priority", name == "set_order_priority" ? 0 : 1, TopPriority);
+        Bound("amount", 1, MaxCraftAmount);
+        Bound("count", 1, name == "take_item" ? MaxTakeCount : name == "deconstruct" ? MaxDeconstructCount : MaxMoveCount);
+        Bound("min_condition_percent", 0, 100);
+        Bound("max_condition_percent", 0, 100);
+        return new(name, desc, schema, kind, group, run);
+    }
+
+    static string WithFilter(ToolContext c, Func<ItemFilter?, string> run)
+    {
+        var (filter, error) = ItemFilter.Read(c.A);
+        return error != null ? error.StartsWith("error:", StringComparison.Ordinal) ? error : "error: " + error : run(filter);
+    }
+
+    static string WithItem(ToolContext c, string key, Func<string, ItemFilter?, string> run) => WithFilter(c, filter =>
+    {
+        var item = c.Str(key);
+        if (item == null && (filter?.Category != null || filter?.Mark is "ai" or "deconstruct")) item = "*";
+        return item == null ? $"error: missing '{key}'; supply an exact item reference, '*', category or mark" : run(item, filter);
+    });
 
     static ToolDef SimpleOrder(string name, string desc) =>
         T(name, desc, OrderArgs(), ToolKind.Order, ToolGroup.Orders, c => c.Game.SimpleOrder(c.Id, name, c.Priority)) with { MovesOn = name != "wait" };
@@ -130,7 +200,7 @@ public static class Tools
         T("follow", "Follow a crew member.",
             OrderArgs(Arg("target", "Crew member name from 'crew'")), ToolKind.Order, ToolGroup.Core,
             c => c.Need(c.Str("target"), "target", v => c.Game.Follow(c.Id, v, c.Priority))) with { MovesOn = true },
-        T("come_to", "Go to a crew member wherever they are now and stay a while, then the order is over ('come to me', 'ко мне', 'сюда').",
+        T("come_to", "Walk to a crew member's current position and stay briefly; this task then finishes. Does not transfer items.",
             Schema(Arg("target", "Crew member name (the one who called)")), ToolKind.Task, ToolGroup.Core,
             c => c.Need(c.Str("target"), "target", v => c.Game.ComeTo(c.Id, v))) with { MovesOn = true },
         SimpleOrder("fix_leaks", "Weld hull breaches anywhere on the sub."),
@@ -155,7 +225,7 @@ public static class Tools
             OrderArgs(Arg("order", "Order id, e.g. 'repairelectrical'"),
                       Arg("option", "Optional mode, e.g. steer 'navigatetactical'", required: false),
                       Arg("target", "Optional device or room; default the nearest free one", required: false)),
-            ToolKind.Order, ToolGroup.Orders, c => c.Need(c.Str("order", "id", "name"), "order", v =>
+            ToolKind.Order, ToolGroup.Orders, c => c.Need(c.Str("order"), "order", v =>
             {
                 var option = c.Str("option");
                 var target = c.Str("target");
@@ -165,8 +235,8 @@ public static class Tools
             Schema(Arg("order", "As in currentOrder (e.g. 'fixleaks') or the tool name"), Arg("priority", "0-3", type: "integer")),
             ToolKind.Order, ToolGroup.Orders, c => c.Need(c.Str("order"), "order", v =>
             {
-                var p = c.Str("priority");
-                if (p == null || !int.TryParse(p, out var n) || n < 0 || n > TopPriority) return $"error: priority must be 0-{TopPriority}";
+                var n = c.Int("priority", -1);
+                if (n < 0 || n > TopPriority) return $"error: 'priority' must be an integer between 0 and {TopPriority}";
                 return c.Game.SetOrderPriority(c.Id, v, n);
             })),
         T("return_to_default", "Drop your orders, let your normal instincts take over.", NoArgs(), ToolKind.Order, ToolGroup.Core,
@@ -203,10 +273,10 @@ public static class Tools
             + "Conditions: health, oxygen, room_water, room_fire, threats, leaks, flora, reactor, reactor_fuel, sub_oxygen, injured, time, task, last_ok, last_failed, marked; "
             + "in_room('X'), has('item'), wearing('item'), order('id'), threat('kind'), water('room'), fires('room'), near('name'), result('text'); "
             + "< > <= >= == !=, and, or, not. Replaces the current plan.",
-            Schema(("steps", "array", "The steps", null, true)), ToolKind.Plan, ToolGroup.Plans,
+            PlanArgs(), ToolKind.Plan, ToolGroup.Plans,
             _ => "error: 'plan' is read with the whole reply; it cannot run inside a plan"),
         T("update_plan", "Replace one node of the running plan ('plan' shows ids like n3) with new steps; the rest goes on.",
-            Schema(Arg("node", "Node id, e.g. 'n3'"), ("steps", "array", "New steps, as in plan", null, true)), ToolKind.Plan, ToolGroup.Plans,
+            PlanArgs(update: true), ToolKind.Plan, ToolGroup.Plans,
             _ => "error: no plan is running to update; send the steps as a new reply"),
         T("keep_plan", "Only when 'plan' is shown: carry it on after this reply's other calls.", NoArgs(), ToolKind.Plan, ToolGroup.Core,
             c => c.Agent.Busy ? "ok, continuing the plan" : "ok (no plan left)"),
@@ -241,43 +311,42 @@ public static class Tools
             }) with { ControlOnly = true },
 
         // ---- items (multi-step tasks report their result in lastActionResults)
-        T("equip", "Take an item and wear / hold it: diving suit, weapon, welding tool...",
-            Schema(Arg("item", "Name, [id] or plain word ('diving suit', 'weapon')")), ToolKind.Task, ToolGroup.Core,
-            c => c.Need(c.Str("item"), "item", v => c.Game.Equip(c.Id, v))) with { MovesOn = true },
-        T("take_item", "Pick items up into your inventory to carry: medicine, spare tools, ammo. A kind ('medical', 'tools', 'ammo') takes a mix.",
-            Schema(Arg("item", "Name, [id] or a kind"), Arg("count", $"1-{MaxTakeCount}, default 1", required: false, type: "integer"),
-                   Arg("from", "Optional: a container, a room id, or a crew member's name (an AI crewmate hands over what they carry; otherwise their room)", required: false)),
-            ToolKind.Task, ToolGroup.Core, c => c.Need(c.Str("item"), "item",
-                v => c.Game.TakeItem(c.Id, v, c.Int("count", 1, 1, MaxTakeCount, "amount"), c.Str("from")))) with { MovesOn = true },
-        T("move_item", "Carry items into a container, to a room, or to a crew member; to='its place' = where they belong. "
-            + "Moves the whole stack (all of that item you carry, or all in the same cabinet or machine output) in your pockets, unless count is given.",
-            Schema(Arg("item", "Item (yours or on the sub)"), Arg("to", "Container name, room id, crew member or 'its place'"),
-                   Arg("count", $"How many, 1-{MaxMoveCount}; default: the whole stack", required: false, type: "integer")),
-            ToolKind.Task, ToolGroup.Core, c =>
+        T("equip", "Fetch one matching item and wear or hold it. Walks to it automatically. Use category for a generic suit/weapon/tool, or an exact item reference for a specific one; does not parse category words from item.",
+            ItemArgs(Arg("item", ItemReference, false)), ToolKind.Task, ToolGroup.Core,
+            c => WithItem(c, "item", (v, f) => c.Game.Equip(c.Id, v, f))) with { MovesOn = true },
+        T("take_item", "Fetch matching items into your inventory; walks to their source automatically. Does not equip them. Use category, condition and mark fields for broad selections.",
+            ItemArgs(Arg("item", ItemReference, false), Arg("count", $"Maximum individual items to take, 1-{MaxTakeCount}, default 1; limited by available inventory space.", required: false, type: "integer"),
+                   Arg("from", "Optional exact container #ID/name, room [hID], or character [cID]/exact name. A cooperating AI crewmate can hand items over; otherwise search is limited to that character's room. Omit to search accessible items aboard.", required: false)),
+            ToolKind.Task, ToolGroup.Core, c => WithItem(c, "item",
+                (v, f) => c.Game.TakeItem(c.Id, v, c.Int("count", 1), c.Str("from"), f))) with { MovesOn = true },
+        T("move_item", "Fetch and deliver matching items. destination explicitly chooses the destination kind; storage automatically stows items in suitable storage, self carries them. "
+            + "Without count, moves the matching stack at one source (inventory, cabinet or machine output), limited to 32 items; an exact #ID selects only that instance. Heavy shells can be carried using hands.",
+            ItemArgs(Arg("item", ItemReference, false), Arg("to", "Exact destination reference: container #ID/name, room [hID], or character [cID]/exact name. Required for auto/container/room/character; omit for storage/self.", false),
+                   Arg("destination", "Destination kind; auto resolves the exact 'to' reference (default), container loads its inventory, room puts items on the floor, character hands them over, storage stows suitably, self puts them in your inventory.", false, en: new[] { "auto", "container", "room", "character", "storage", "self" }),
+                   Arg("count", $"Maximum individual items to move, 1-{MaxMoveCount}; omit for the matching stack at one source.", required: false, type: "integer")),
+            ToolKind.Task, ToolGroup.Core, c => WithItem(c, "item", (item, filter) =>
             {
-                var item = c.Str("item"); var to = c.Str("to");
-                return string.IsNullOrEmpty(item) || string.IsNullOrEmpty(to) ? "error: 'item' and 'to' are required"
-                    : c.Game.MoveItem(c.Id, item!, to!, c.Int("count", 0, 0, MaxMoveCount));
-            }) with { MovesOn = true },
-        T("unequip", "Take off a worn or held item into your inventory.", Schema(Arg("item", "Item you wear or hold")), ToolKind.Order, ToolGroup.Inventory,
-            c => c.Need(c.Str("item"), "item", v => c.Game.Unequip(c.Id, v))),
-        T("drop", "Drop an item here; a product still in a machine output is removed and dropped next to that machine.", Schema(Arg("item", "Item name or exact #ID")), ToolKind.Task, ToolGroup.Inventory,
-            c => c.Need(c.Str("item"), "item", v => c.Game.Drop(c.Id, v))) with { MovesOn = true },
+                var destination = c.Str("destination") ?? "auto";
+                var to = c.Str("to");
+                return to == null && destination is not ("storage" or "self") ? "error: missing 'to' for destination '" + destination + "'"
+                    : c.Game.MoveItem(c.Id, item, to ?? "", c.Int("count", 0), destination, filter);
+            })) with { MovesOn = true },
+        T("unequip", "Take off one matching worn or held item into your inventory; needs a free inventory slot.", ItemArgs(Arg("item", ItemReference, false)), ToolKind.Order, ToolGroup.Inventory,
+            c => WithItem(c, "item", (v, f) => c.Game.Unequip(c.Id, v, f))),
+        T("drop", "Drop one matching item here. If it is a product in a machine output, walk to the machine and remove it onto the floor beside that machine. Use exact product #ID to clear a heavy railgun shell from a fabricator.", ItemArgs(Arg("item", ItemReference, false)), ToolKind.Task, ToolGroup.Inventory,
+            c => WithItem(c, "item", (v, f) => c.Game.Drop(c.Id, v, f))) with { MovesOn = true },
         T("put_in", "Load an item into a carried or nearby container: fuel into a welding tool, a tank into a suit, ammo into a gun, C4 into a railgun shell. Walks to the destination when needed.",
-            Schema(Arg("item", "What to load; name or exact #ID"), Arg("into", "Target item or container, preferably its exact #ID")), ToolKind.Task, ToolGroup.Inventory, c =>
-            {
-                var item = c.Str("item"); var into = c.Str("into", "to", "container");
-                return string.IsNullOrEmpty(item) || string.IsNullOrEmpty(into) ? "error: 'item' and 'into' are required" : c.Game.PutIn(c.Id, item!, into!);
-            }) with { MovesOn = true },
-        T("refill", "Refill what you carry: used-up fuel, oxygen, batteries, ammo (or only the item named).",
-            Schema(Arg("item", "Optional: only this item", required: false)), ToolKind.Task, ToolGroup.Inventory,
-            c => c.Game.Refill(c.Id, c.Str("item", "target"))),
+            ItemArgs(Arg("item", ItemReference, false), Arg("into", "Exact destination item/container #ID, prefab identifier or copied exact name. For C4, inspect the shell and copy that shell's #ID; works on the floor, in a rack, or in your hands. Loads one item into a compatible free slot; does not craft.")), ToolKind.Task, ToolGroup.Inventory,
+            c => c.Need(c.Str("into"), "into", into => WithItem(c, "item", (item, f) => c.Game.PutIn(c.Id, item, into, f)))) with { MovesOn = true },
+        T("refill", "Replace depleted supplies in carried gear with available full compatible fuel/tanks/batteries/ammo. Optional item/category filters select the carried gear to service; without a selection services carried gear. Does not manufacture ammunition.",
+            ItemArgs(Arg("item", "Optional exact carried gear reference; '*' explicitly selects all carried gear. Filters apply to the gear being refilled.", required: false)), ToolKind.Task, ToolGroup.Inventory,
+            c => WithFilter(c, f => c.Game.Refill(c.Id, c.Str("item"), f))),
         T("tidy_inventory", "Put away what you carry but do not wear or hold, each where it belongs.",
             Schema(Arg("keep", "Optional: things to keep, comma separated", required: false)), ToolKind.Task, ToolGroup.Inventory,
             c => c.Game.TidyInventory(c.Id, c.Str("keep"))) with { MovesOn = true },
-        T("unpack", "Empty a crate or container and put everything where it belongs (onto the same items first). The result lists what went where.",
-            Schema(Arg("container", "Name, 'marked' or a room id"), Arg("carry", "Carry the crate (default true)", required: false, type: "boolean")),
-            ToolKind.Task, ToolGroup.Items, c => c.Need(c.Str("container", "item", "from"), "container", v => c.Game.Unpack(c.Id, v, c.Bool("carry") != false))) with { MovesOn = true },
+        T("unpack", "Empty a selected crate/container and stow its contents in suitable storage (matching stacks first). Filters select the container, not the contents. The completion result lists destinations.",
+            ItemArgs(Arg("container", "Exact container #ID, prefab identifier or copied exact name. May be omitted with category or mark; use mark='ai' for a player-marked crate.", false), Arg("carry", "Carry the crate while unpacking (default true); false leaves it at its source.", required: false, type: "boolean")),
+            ToolKind.Task, ToolGroup.Items, c => WithItem(c, "container", (v, f) => c.Game.Unpack(c.Id, v, c.Bool("carry") != false, f))) with { MovesOn = true },
         T("keep_gear", "Lock (true) or unlock your diving gear: while locked you never take it off by yourself. On in combat or when breaches are likely.",
             Schema(Arg("on", "true = keep it on", type: "boolean")), ToolKind.Order, ToolGroup.Core, c =>
             {
@@ -287,34 +356,37 @@ public static class Tools
 
         // ---- jobs
         T("drag_body", "Drag a corpse or incapacitated person to a room or crew member. Find bodies and their exact [cID] with inspect(kind='bodies').",
-            Schema(Arg("target", "Body name, species or [cID]; 'nearest' = nearest body"), Arg("to", "Destination room id or crew member")),
+            Schema(Arg("target", "Exact body [cID] or copied exact name from inspect(kind='bodies'). Use [cID] when several bodies share a name; reserved literal 'nearest' explicitly selects the closest body."), Arg("to", "Exact destination room [hID] or crew member [cID]/name")),
             ToolKind.Task, ToolGroup.Items, c =>
             {
-                var target = c.Str("target", "body"); var to = c.Str("to", "room");
+                var target = c.Str("target"); var to = c.Str("to");
                 return string.IsNullOrWhiteSpace(target) || string.IsNullOrWhiteSpace(to) ? "error: 'target' and 'to' are required"
                     : c.Game.DragBody(c.Id, target!, to!);
             }) with { MovesOn = true },
         T("loot_body", "Search a corpse or incapacitated person, including monster corpses, and take loot into your inventory. Find bodies with inspect(kind='bodies').",
-            Schema(Arg("target", "Body name, species or [cID]; 'nearest' = nearest body"),
-                   Arg("item", "Optional item filter; default all loot", required: false),
-                   Arg("count", $"How many items, 1-{MaxMoveCount}; default all matching items up to {MaxMoveCount}", required: false, type: "integer")),
-            ToolKind.Task, ToolGroup.Items, c => c.Need(c.Str("target", "body"), "target",
-                v => c.Game.LootBody(c.Id, v, c.Str("item"), c.Int("count", 0, 0, MaxMoveCount)))) with { MovesOn = true },
+            ItemArgs(Arg("target", "Exact body [cID] or copied exact name from inspect(kind='bodies'); [cID] distinguishes identical monster corpses. Reserved literal 'nearest' explicitly selects the closest body."),
+                   Arg("item", "Optional exact loot item reference or '*'; omit for all loot. category/condition/mark constrain loot, not the body.", required: false),
+                   Arg("count", $"Maximum individual loot items, 1-{MaxMoveCount}; omit for all matching loot up to {MaxMoveCount}, limited by carrying space.", required: false, type: "integer")),
+            ToolKind.Task, ToolGroup.Items, c => c.Need(c.Str("target"), "target",
+                v => WithFilter(c, f => c.Game.LootBody(c.Id, v, c.Str("item"), c.Int("count", 0), f)))) with { MovesOn = true },
         T("refuel_reactor", "Bring a fuel rod and load it into the reactor (replaces a spent one).", NoArgs(), ToolKind.Task, ToolGroup.Crafting,
             c => c.Game.RefuelReactor(c.Id)) with { MovesOn = true },
-        T("craft", "Make an item at a fabricator. Exact name or [id] from inspect(kind='recipes'); salvage=true first breaks down scrap for missing materials. "
-            + "Products stay in the fabricator's output: bring them with move_item.",
-            Schema(Arg("item", "Name or [id] from the recipes"),
-                   Arg("amount", $"How many items, 1-{MaxCraftAmount}, default 1 (one craft may make several: 'x6 per craft')", required: false, type: "integer"),
-                   Arg("salvage", "Deconstruct scrap for missing materials first", required: false, type: "boolean")),
+        T("craft", "Fabricate a recipe and wait for actual production to finish. Inspect recipes/recipe first; copy the prefab identifier or exact recipe name. "
+            + "Machine input and explicitly linked supply inventories feed crafting automatically; do not fetch those ingredients manually. Other accessible supplies may be fetched by this task. "
+            + "Needs a compatible powered usable machine, ingredients, skills/recipe unlocks and output space. salvage=true may deconstruct suitable scrap for missing ingredients. "
+            + "Products stay in machine output. After confirmed completion use move_item to deliver/stow them, or drop with exact product #ID to clear a heavy shell. An accepted/started task is not confirmed production.",
+            Schema(Arg("item", "Prefab identifier or copied exact recipe name from inspect(kind='recipes'/'recipe'). Never invent a recipe or put a quantity into this string."),
+                   Arg("amount", $"Requested individual output items, 1-{MaxCraftAmount}, default 1; rounded up to whole recipe batches (e.g. x6 per craft, amount=7 -> two batches/12 items).", required: false, type: "integer"),
+                   Arg("salvage", "Allow deconstructing suitable scrap to obtain missing ingredients (default false). Does not authorize destroying arbitrary useful equipment.", required: false, type: "boolean"),
+                   Arg("machine", "Optional exact fabricator #ID from inspect(kind='machines'); omit to choose a compatible available machine automatically. Verify its power/state and linked supplies when diagnosing failure.", false)),
             ToolKind.Task, ToolGroup.Crafting, c => c.Need(c.Str("item"), "item",
-                v => c.Game.Craft(c.Id, v, c.Int("amount", 1, 1, MaxCraftAmount), c.Bool("salvage") == true))) with { MovesOn = true },
-        T("deconstruct", "Break items down in the deconstructor: count of the named item (default 1, so 'deconstruct 3 welding tools' = count 3); "
-            + "'all' with 'from' = everything there; 'marked' = what players marked.",
-            Schema(Arg("item", "Exact name, [id], 'all' or 'marked'"), Arg("from", "Optional container or room id", required: false),
-                   Arg("count", $"How many of that item, 1-{MaxDeconstructCount}, default 1", required: false, type: "integer")),
-            ToolKind.Task, ToolGroup.Crafting, c => c.Need(c.Str("item"), "item",
-                v => c.Game.Deconstruct(c.Id, v, c.Str("from"), c.Int("count", 0, 0, MaxDeconstructCount)))) with { MovesOn = true },
+                v => c.Game.Craft(c.Id, v, c.Int("amount", 1), c.Bool("salvage") == true, c.Str("machine")))) with { MovesOn = true },
+        T("deconstruct", "Fetch matching items and break them down in a powered deconstructor. Filters explicitly select items; mark='deconstruct' targets player-marked items. "
+            + "Default is one named item, or all items selected by '*' or mark up to 12. Use from to restrict the source; inspect salvage to learn resulting materials before destroying useful equipment.",
+            ItemArgs(Arg("item", ItemReference, false), Arg("from", "Optional exact source container #ID/name or room [hID]; omit to search aboard.", required: false),
+                   Arg("count", $"Maximum individual items to destroy, 1-{MaxDeconstructCount}; omit for the selection default. Quantities belong here, never in item.", required: false, type: "integer")),
+            ToolKind.Task, ToolGroup.Crafting, c => WithItem(c, "item",
+                (v, f) => c.Game.Deconstruct(c.Id, v, c.Str("from"), c.Int("count", 0), f))) with { MovesOn = true },
         T("treat", "Treat a wounded crew member (or 'me'). Without 'item' the cheapest good-enough medicine.",
             Schema(Arg("target", "Name or 'me'"), Arg("item", "Optional medicine", required: false)), ToolKind.Task, ToolGroup.Medical,
             c => c.Need(c.Str("target"), "target", v =>
@@ -322,31 +394,38 @@ public static class Tools
                 var target = v.Equals("me", StringComparison.OrdinalIgnoreCase) || v.Equals("self", StringComparison.OrdinalIgnoreCase) ? c.Agent.Name : v;
                 return c.Game.Treat(c.Id, target, c.Str("item"));
             })) with { MovesOn = true },
-        T("attack", "Attack with a tool or weapon: target='ballast flora' burns it with a welding tool or flamer; or a threat from 'threats', weapon = what to fight with.",
-            Schema(Arg("target", "'ballast flora', a threat or 'nearest'"), Arg("weapon", "Optional tool or weapon", required: false)),
-            ToolKind.Task, ToolGroup.Combat, c => c.Need(c.Str("target", "enemy") ?? "nearest", "target", v => c.Game.Attack(c.Id, v, c.Str("weapon", "tool", "item")))) with { MovesOn = true },
+        T("attack", "Attack a hostile character, or burn ballast flora using an explicitly selected target_type. Flora requires a welding tool or flamer and is not handled by ordinary fight_intruders orders.",
+            Schema(Arg("target", "Exact observed target [cID]/name for character; '*' for ballast_flora selects active infestations, or use room [hID]/pump #ID to restrict the roots."),
+                   Arg("target_type", "Explicit target kind, default character. Set ballast_flora to burn infestations; target words do not change this kind.", false, en: new[] { "character", "ballast_flora" }),
+                   Arg("weapon", "Optional exact tool/weapon #ID, prefab identifier or copied exact name; omit to choose suitable gear automatically.", required: false)),
+            ToolKind.Task, ToolGroup.Combat, c => c.Need(c.Str("target"), "target", v => c.Game.Attack(c.Id, v, c.Str("weapon"), c.Str("target_type") ?? "character"))) with { MovesOn = true },
 
         // ---- lookups
         T("recall", "Search what you remember (answer next turn): this round's conversation, what you did and where you put things, your notes, "
             + "and long-term facts, past rounds, relationships and what players want. Use it when a player refers to something earlier "
             + "('there', 'like I said', 'the thing from before') or before you say you do not know.",
             Schema(Arg("query", "Words to look for (a name, an item, a room, a topic); empty = the latest of everything", required: false)),
-            ToolKind.Lookup, ToolGroup.Core, c => c.Mgr.Recall(c.Agent, c.Str("query", "about", "text"))),
-        T("inspect", "Look something up (answer next turn). kind: patient (injuries, medicine; no query = all hurt), items (where; query = room id or name: what is there), "
-            + "recipes (what can be made; optional filter), recipe (one item), salvage (what gives a material), orders (all game orders), inventory (your slots, contents, charge), bodies (corpses and incapacitated people, locations, loot and [cID]), tools (help for one tool).",
-            Schema(Arg("kind", "What", en: InspectKinds.ToArray()), Arg("query", "Name, item, room, material or filter", required: false)),
+            ToolKind.Lookup, ToolGroup.Core, c => c.Mgr.Recall(c.Agent, c.Str("query"))),
+        T("inspect", "Read current authoritative information; the answer arrives in your next turn, so place this last and wait before using its results. "
+            + "items: exact item references/locations/remaining condition, optional exact query plus structured filters; machines: machine #IDs, status/power and explicitly linked supplies (query optional); "
+            + "recipes: available recipes (optional exact-name/identifier filter); recipe: ingredients, batch output and requirements of one recipe (query required); "
+            + "salvage: deconstruction yields for a material; inventory: your slots, carried contents and condition; bodies: corpses/incapacitated characters, [cID], locations and loot; "
+            + "patient: injuries and treatment (no query = all injured); orders: available vanilla order IDs/options; tools: complete usage schema for a tool. "
+            + "For spent ammo use kind=items, category=ammo, condition=empty; low includes at most 30%, used includes any below 100%. linked_to limits item search to a machine's explicitly linked inventories.",
+            ItemArgs(Arg("kind", "Lookup kind", en: InspectKinds.ToArray()), Arg("query", "Optional exact #ID/prefab/name, room [hID], body [cID], recipe/material identifier or tool name as appropriate. Omit for an overview. Never put category/condition/mark instructions into query; use their fields.", required: false),
+                Arg("from", "For kind=items, restrict the contents searched to an exact container #ID/name, room [hID], or character [cID]/exact name. Use from for a source and query for the item selector; omit to search accessible items aboard.", false)),
             ToolKind.Lookup, ToolGroup.Core, c =>
             {
                 var kind = c.Str("kind")?.ToLowerInvariant();
                 var query = c.Str("query");
                 if (kind == null || !InspectKinds.Contains(kind)) return $"error: kind must be one of {string.Join(", ", InspectKinds)}";
                 if (kind == "tools") return ToolHelp(query);
-                if (string.IsNullOrEmpty(query) && kind is "items" or "recipe") return "error: missing 'query' (what to look up)";
-                return Clip(c.Game.Inspect(c.Id, kind, query ?? ""), MaxInspectLength);
+                if (string.IsNullOrEmpty(query) && kind == "recipe") return "error: missing 'query' (exact recipe to look up)";
+                return WithFilter(c, f => Clip(c.Game.Inspect(c.Id, kind, query ?? "", f), MaxInspectLength));
             }),
     };
 
-    static readonly Dictionary<string, ToolDef> ByName = Defs.ToDictionary(d => d.Name, StringComparer.OrdinalIgnoreCase);
+    static readonly Dictionary<string, ToolDef> ByName = Defs.ToDictionary(d => d.Name, StringComparer.Ordinal);
 
     public static ToolDef? Def(string name) => ByName.TryGetValue(name, out var d) ? d : null;
 
@@ -370,10 +449,7 @@ public static class Tools
     {
         if (string.IsNullOrWhiteSpace(name) || Def(name!) is not { } d)
             return "tools: " + string.Join(", ", Defs.Where(x => !x.ControlOnly).Select(x => x.Name)) + ". Ask with query=<tool name> for details.";
-        var args = d.Schema["properties"] is JsonObject p
-            ? string.Join("; ", p.Select(kv => $"{kv.Key}: {(string?)kv.Value?["description"]}"))
-            : "";
-        return $"{d.Name}: {d.Description}" + (args.Length > 0 ? $" Args: {args}" : "");
+        return $"{d.Name}: {d.Description}\nArguments JSON Schema: " + d.Schema.ToJsonString(ReadableJson);
     }
 
     public static IReadOnlyList<ToolSpec> Filtered(ICollection<string> allowed) => For(allowed, aiControl: true);
@@ -392,47 +468,93 @@ public static class Tools
     public static bool MissingAllRequired(ToolCall c)
     {
         if (Def(c.Name)?.Schema["required"] is not JsonArray req || req.Count == 0) return false;
-        return req.All(r => r?.GetValue<string>() is { } name && string.IsNullOrWhiteSpace(Str(c.Arguments, name)));
+        return req.All(r => r?.GetValue<string>() is { } name &&
+            (c.Arguments[name] == null || c.Arguments[name] is JsonValue v && v.TryGetValue<string>(out var text) && string.IsNullOrWhiteSpace(text)));
     }
 
     /// <summary>Reads the optional priority argument: 1..3, default 3.</summary>
     public static int Priority(JsonObject a, int fallback = TopPriority)
     {
-        var v = Str(a, "priority")?.ToLowerInvariant();
-        if (string.IsNullOrEmpty(v)) return fallback;
-        if (v is "high" or "top" or "highest") return 3;
-        if (v is "normal" or "medium") return 2;
-        if (v is "low" or "lowest") return 1;
-        return double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d)
-            ? Math.Clamp((int)Math.Round(d), 1, TopPriority) : fallback;
+        return a["priority"] is JsonValue v && v.TryGetValue<int>(out var n) ? n : fallback;
     }
 
-    public static bool? Bool(JsonObject a, string key) => Str(a, key)?.ToLowerInvariant() switch
-    {
-        "true" or "on" or "1" or "yes" => true,
-        "false" or "off" or "0" or "no" => false,
-        _ => null,
-    };
+    public static bool? Bool(JsonObject a, string key) =>
+        a[key] is JsonValue v && v.TryGetValue<bool>(out var b) ? b : null;
 
-    /// <summary>Reads a string argument, tolerating models that send numbers/bools instead of strings.</summary>
+    /// <summary>Reads an actual JSON string. Values are not reinterpreted as booleans, aliases or instructions.</summary>
     public static string? Str(JsonObject a, string key)
     {
-        if (!a.TryGetPropertyValue(key, out var node) || node == null) return null;
-        try
+        if (a[key] is not JsonValue v || !v.TryGetValue<string>(out var s)) return null;
+        return string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+    }
+
+    /// <summary>Checks the tool's declared wire contract before any game mutation. No coercion or clamping.</summary>
+    public static string? ValidateArguments(ToolCall call) => Def(call.Name) is { } d
+        ? ValidateNode(call.Arguments, d.Schema, "arguments")
+        : $"unknown tool '{call.Name}'";
+
+    static string? ValidateNode(JsonNode? node, JsonObject schema, string path, JsonObject? root = null)
+    {
+        root ??= schema;
+        if (schema["$ref"]?.GetValue<string>() is { } reference && reference.StartsWith("#/$defs/", StringComparison.Ordinal) &&
+            root["$defs"]?[reference.Substring("#/$defs/".Length)] is JsonObject definition)
+            return ValidateNode(node, definition, path, root);
+        if (schema["oneOf"] is JsonArray alternatives)
         {
-            if (node is JsonValue v)
-            {
-                if (v.TryGetValue<string>(out var s))
-                {
-                    var t = Unquote(s.Trim());
-                    // models write item=None / target=null for "no value"
-                    return t.Length == 0 || t.Equals("none", StringComparison.OrdinalIgnoreCase) || t.Equals("null", StringComparison.OrdinalIgnoreCase) ? null : t;
-                }
-                return v.ToJsonString().Trim('"').Trim();
-            }
-            return node.ToJsonString();
+            var results = alternatives.OfType<JsonObject>().Select(branch => (Branch: branch, Error: ValidateNode(node, branch, path, root))).ToList();
+            if (results.Count(r => r.Error == null) == 1) return null;
+            // Report the selected node's actual bad field rather than an unrelated alternative's missing key.
+            foreach (var (branch, error) in results)
+                if (node is JsonObject candidate && branch["required"] is JsonArray required &&
+                    required.FirstOrDefault()?.GetValue<string>() is { } discriminator && candidate.ContainsKey(discriminator)) return error;
+            return $"'{path}' must match one declared plan node form (do, if, wait_until, repeat or try)";
         }
-        catch { return null; }
+        var type = schema["type"]?.GetValue<string>();
+        var kind = node?.GetValueKind();
+        bool valid = type switch
+        {
+            "object" => node is JsonObject,
+            "array" => node is JsonArray,
+            "string" => kind == JsonValueKind.String,
+            "boolean" => kind is JsonValueKind.True or JsonValueKind.False,
+            "integer" => node is JsonValue iv && iv.TryGetValue<int>(out _),
+            "number" => kind == JsonValueKind.Number,
+            _ => true,
+        };
+        if (!valid) return $"'{path}' must be {type}";
+        if (schema["enum"] is JsonArray choices && !choices.Any(x => JsonNode.DeepEquals(x, node)))
+            return $"'{path}' must be one of {string.Join(", ", choices.Select(x => x?.ToJsonString(ReadableJson)))}";
+        if (kind == JsonValueKind.Number && double.TryParse(node!.ToJsonString(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var n))
+        {
+            if (schema["minimum"] is JsonValue min && n < double.Parse(min.ToJsonString(), System.Globalization.CultureInfo.InvariantCulture) ||
+                schema["maximum"] is JsonValue max && n > double.Parse(max.ToJsonString(), System.Globalization.CultureInfo.InvariantCulture))
+                return $"'{path}' must be between {schema["minimum"]} and {schema["maximum"]}";
+        }
+        if (node is JsonObject obj)
+        {
+            if (schema["required"] is JsonArray req)
+                foreach (var r in req)
+                    if (r?.GetValue<string>() is { } key && !obj.ContainsKey(key)) return $"missing '{key}'";
+            var props = schema["properties"] as JsonObject;
+            foreach (var entry in obj)
+            {
+                if (props?[entry.Key] is JsonObject property)
+                {
+                    var error = ValidateNode(entry.Value, property, path == "arguments" ? entry.Key : path + "." + entry.Key, root);
+                    if (error != null) return error;
+                }
+                else if (schema["additionalProperties"] is JsonValue additional && additional.TryGetValue<bool>(out var allowed) && !allowed)
+                    return $"unknown argument '{(path == "arguments" ? entry.Key : path + "." + entry.Key)}'; use only declared fields";
+            }
+        }
+        if (node is JsonArray array && schema["items"] is JsonObject itemSchema)
+            for (var i = 0; i < array.Count; i++)
+            {
+                var error = ValidateNode(array[i], itemSchema, path + "[" + i + "]", root);
+                if (error != null) return error;
+            }
+        return null;
     }
 
     /// <summary>Runs on the game thread. Never throws. Every tool runs, also one not offered in this request.</summary>
@@ -442,6 +564,7 @@ public static class Tools
         {
             var def = Def(call.Name);
             if (def == null) return $"error: unknown tool '{call.Name}'";
+            if (ValidateArguments(call) is { } error) return "error: " + error;
             return def.Run(new ToolContext(call, agent, game, mgr));
         }
         catch (Exception e)
@@ -450,13 +573,9 @@ public static class Tools
         }
     }
 
-    /// <summary>Small models sometimes wrap values in extra quotes: "'recipe'" -> "recipe".</summary>
-    static string Unquote(string s) =>
-        s.Length >= 2 && ((s[0] == '\'' && s[^1] == '\'') || (s[0] == '"' && s[^1] == '"')) ? s.Substring(1, s.Length - 2).Trim() : s;
-
     public static string Clip(string s, int max) => s.Length <= max ? s : s.Substring(0, max);
 
-    static readonly JsonSerializerOptions ReadableJson = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+    static readonly JsonSerializerOptions ReadableJson = new(JsonSerializerOptions.Default) { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     public static string ArgsToString(ToolCall c) =>
         string.Join(", ", c.Arguments.Select(kv => $"{kv.Key}={kv.Value?.ToJsonString(ReadableJson)}"));

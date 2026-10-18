@@ -216,7 +216,7 @@ public sealed partial class AgentManager
                 RouteResult r;
                 try
                 {
-                    r = await req.Router.CompleteAsync(reservation, req.System, req.History, req.Tools, req.Token, req.Boost, Tools.All).ConfigureAwait(false);
+                    r = await req.Router.CompleteAsync(reservation, req.System, req.History, req.Tools, req.Token, req.Boost).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { return; }
                 catch (Exception e) { r = new RouteResult(RouteStatus.Failed, null, reservation.Provider, e.Message); }
@@ -257,11 +257,9 @@ public sealed partial class AgentManager
         if (agent.CurrentGoal is { } cur) obs.Goal = $"{cur.Text} ({GoalSource(cur)}, set {ModStatus.Ago(now - cur.SetAt)})";
         obs.Plan = agent.PlanText();
 
-        ToolGroup? groups = Settings.Bots.ToolSelection == "all" ? null
-            : ToolSelection.For(agent, obs, orders.Select(o => o.Text), now, MemoryOn);
-        var tools = Tools.For(Settings.Bots.AllowedTools, agent.AiControl, MemoryOn, groups);
-        var hidden = groups == null ? null : ToolSelection.HiddenLine(tools.Select(t => t.Name).ToList(), agent.AiControl);
-        string user = UserMessage(obs, obs.ToCompactJson(), hidden);
+        // Every permitted tool is described. The model decides which capability fits an order, in any language.
+        var tools = Tools.For(Settings.Bots.AllowedTools, agent.AiControl, MemoryOn);
+        string user = UserMessage(obs, obs.ToCompactJson());
         Settings.Bots.ExtraPromptByJob.TryGetValue(agent.Job, out var extra);
         string system = Prompts.System(agent, g.MaxActionsPerDecision, extra, agent.AiControl, MemoryOn,
             persona: PersonaPrompt(agent), language: Settings.Bots.SpeechLanguage);
@@ -285,7 +283,7 @@ public sealed partial class AgentManager
 
     /// <summary>The user message: why the bot is asked, new orders in plain words (small models miss them inside a long
     /// JSON), then the observation.</summary>
-    static string UserMessage(Observation obs, string json, string? hiddenTools = null)
+    static string UserMessage(Observation obs, string json)
     {
         var sb = new StringBuilder();
         if (obs.Why.Count > 0)
@@ -300,7 +298,6 @@ public sealed partial class AgentManager
             foreach (var o in obs.PlayerOrders) sb.Append("- ").Append(o).Append('\n');
             sb.Append('\n');
         }
-        if (hiddenTools != null) sb.Append(hiddenTools).Append("\n\n");
         sb.Append("Observation:\n").Append(json);
         return sb.ToString();
     }
@@ -344,7 +341,7 @@ public sealed partial class AgentManager
         var calls = r.Response.ToolCalls.Take(g.MaxActionsPerDecision).ToList();
         // a call without any of its required arguments ({"name":"say"}) is a broken reply, not an action: left out, and
         // the bot is told, instead of failing the plan on it
-        var empty = calls.Where(c => Tools.MissingAllRequired(c)).ToList();
+        var empty = calls.Where(c => !IsPlanControl(c) && Tools.MissingAllRequired(c)).ToList();
         if (empty.Count > 0)
         {
             calls.RemoveAll(empty.Contains);

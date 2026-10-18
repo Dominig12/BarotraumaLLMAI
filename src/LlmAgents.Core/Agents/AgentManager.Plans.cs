@@ -30,6 +30,14 @@ public sealed partial class AgentManager
     void ApplyPlan(BotAgent agent, List<ToolCall> calls, bool authority, AgentGoal? autoGoal, double now)
     {
         if (!game.IsAlive(agent.Id)) return;
+        // Plan controls are consumed here rather than through Tools.Execute; enforce their wire contract before
+        // changing a goal, editing an existing tree or running any other call in this reply.
+        foreach (var call in calls.Where(IsPlanControl))
+            if (Tools.ValidateArguments(call) is { } error)
+            {
+                RejectPlan(agent, call.Name + ": " + error, now);
+                return;
+            }
         if (autoGoal is { } goal) agent.SetGoal(goal.Text, now, goal.Source, goal.Player);
         bool lookup = calls.Any(c => Tools.Def(c.Name)?.Kind == ToolKind.Lookup);
         bool rewrite = calls.Any(c => c.Name == "plan");
@@ -49,11 +57,7 @@ public sealed partial class AgentManager
         }
         catch (FormatException e)
         {
-            var line = "plan -> error: " + e.Message + ". Nothing was done; send the plan again, fixed";
-            agent.RecordResult(line);
-            agent.AddError(line);
-            Log.Info($"[{agent.Name}] {line}");
-            AskAgainOnce(agent, "your plan could not be read: " + Tools.Clip(e.Message, 160), now);
+            RejectPlan(agent, e.Message, now);
             return;
         }
 
@@ -68,6 +72,15 @@ public sealed partial class AgentManager
         Settle(agent, plan, progress, "plan done", now);
     }
 
+    void RejectPlan(BotAgent agent, string error, double now)
+    {
+        var line = "plan -> error: " + error + ". Nothing was done; send the plan again, fixed";
+        agent.RecordResult(line);
+        agent.AddError(line);
+        Log.Info($"[{agent.Name}] {line}");
+        AskAgainOnce(agent, "your plan could not be read: " + Tools.Clip(error, 160), now);
+    }
+
     /// <summary>The calls of a reply with a "plan" call as one list of tree nodes, each in its place.</summary>
     static JsonArray TreeSteps(IEnumerable<ToolCall> calls)
     {
@@ -79,7 +92,7 @@ public sealed partial class AgentManager
                 all.Add(new JsonObject { ["do"] = c.Name, ["args"] = c.Arguments.DeepClone() });
                 continue;
             }
-            var steps = c.Arguments["steps"] ?? c.Arguments["plan"] ?? c.Arguments["tree"];
+            var steps = c.Arguments["steps"];
             if (steps is JsonArray arr) foreach (var n in arr) all.Add(n?.DeepClone());
             else if (steps != null) all.Add(steps.DeepClone());
         }
@@ -90,7 +103,7 @@ public sealed partial class AgentManager
     {
         foreach (var u in calls.Where(c => c.Name == "update_plan"))
         {
-            var node = (Tools.Str(u.Arguments, "node") ?? Tools.Str(u.Arguments, "id") ?? "").Trim();
+            var node = Tools.Str(u.Arguments, "node") ?? "";
             var err = plan.Tree.Replace(node, u.Arguments["steps"], PlanToolNames);
             var line = $"update_plan(node={node}) -> {(err == null ? "ok, plan now: " + plan.Tree.Describe(300) : "error: " + err)}";
             agent.RecordResult(line);
@@ -355,7 +368,6 @@ public sealed partial class AgentManager
     string Run(BotAgent agent, ToolCall call, bool authority)
     {
         game.BeginCommand(agent.Id, authority);
-        agent.UsedTool(call.Name, clock());
         var result = Tools.Execute(call, agent, game, this);
         NoteSpeech(agent, call, result);
         var line = $"{call.Name}({Tools.ArgsToString(call)}) -> {result}";

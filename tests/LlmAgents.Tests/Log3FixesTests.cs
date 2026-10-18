@@ -28,11 +28,10 @@ public class Log3FixesTests
     }
 
     [Fact]
-    public void CutOffJsonKeepsTheCompleteCalls()
+    public void CutOffJsonDoesNotRunOnlyTheFirstStepOfAPlan()
     {
         var calls = TextToolCallParser.Parse("{\"calls\": [{\"name\": \"say\", \"arguments\": {\"text\": \"Иду.\"}}, {\"name\": \"go_to_room\", \"arguments\": {\"room\": \"Инж", Tools.All);
-        Assert.Equal("say", Assert.Single(calls).Name);
-        Assert.Equal("Иду.", calls[0].Arguments["text"]!.GetValue<string>());
+        Assert.Empty(calls);
     }
 
     [Fact]

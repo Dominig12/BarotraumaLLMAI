@@ -357,10 +357,10 @@ sealed class SimWorld : IGameApi
     public void BeginCommand(int botId, bool playerAuthority) { }
     readonly HashSet<int> gearOn = new();
     static string Started(string what) => $"ok, started: {what} (result will be reported)";
-    public string Equip(int botId, string item) { if (item.Contains("suit")) gearOn.Add(botId); Report(botId, $"task 'equip {item}' ok: equipped", 2); Do(botId, $"equip {item}"); return Started("equip " + item); }
+    public string Equip(int botId, string item, ItemFilter? filter = null) { if (filter?.Category == "diving_suit" || item.Contains("suit")) gearOn.Add(botId); Report(botId, $"task 'equip {item}' ok: equipped", 2); Do(botId, $"equip {item}"); return Started("equip " + item); }
     public string RefuelReactor(int botId) { Report(botId, "task 'refuel reactor' ok: fuel rod loaded", 5); Do(botId, "refuel reactor"); return Started("refuel reactor"); }
-    public string Craft(int botId, string item, int amount, bool salvage = false) { Report(botId, $"task 'craft {item}' ok: made {amount}", 8); Do(botId, $"craft {item} x{amount}"); return Started("craft " + item); }
-    public string Deconstruct(int botId, string item, string? from = null, int count = 0) { Report(botId, $"task 'deconstruct {item}' ok", 6); Do(botId, $"deconstruct {item}"); return Started("deconstruct " + item); }
+    public string Craft(int botId, string item, int amount, bool salvage = false, string? machine = null) { Report(botId, $"task 'craft {item}' ok: made {amount}", 8); Do(botId, $"craft {item} x{amount}" + (machine != null ? $" at {machine}" : "")); return Started("craft " + item); }
+    public string Deconstruct(int botId, string item, string? from = null, int count = 0, ItemFilter? filter = null) { Report(botId, $"task 'deconstruct {item}' ok", 6); Do(botId, $"deconstruct {item}"); return Started("deconstruct " + item); }
     public string Treat(int botId, string target, string? item)
     {
         var p = bots.FirstOrDefault(b => b.Name.Contains(target, StringComparison.OrdinalIgnoreCase));
@@ -370,19 +370,19 @@ sealed class SimWorld : IGameApi
         Do(botId, $"treat {p.Name} with {item ?? "cheapest"}");
         return Started("treat " + p.Name);
     }
-    public string Unequip(int botId, string item) => Do(botId, $"unequip {item}");
-    public string Drop(int botId, string item) => Do(botId, $"drop {item}");
-    public string MoveItem(int botId, string item, string to, int count = 0) { Report(botId, $"task 'move {item}' ok: delivered to {to}", 5); Do(botId, $"move {item} -> {to}"); return Started("move " + item); }
+    public string Unequip(int botId, string item, ItemFilter? filter = null) => Do(botId, $"unequip {item}");
+    public string Drop(int botId, string item, ItemFilter? filter = null) => Do(botId, $"drop {item}");
+    public string MoveItem(int botId, string item, string to, int count = 0, string destination = "auto", ItemFilter? filter = null) { Report(botId, $"task 'move {item}' ok: delivered to {to}", 5); Do(botId, $"move {item} -> {to}"); return Started("move " + item); }
     public string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority) =>
         Order(botId, option != null ? $"{orderId}:{option}" : orderId, priority);
-    public string PutIn(int botId, string item, string into) { Report(botId, $"task 'put {item} into {into}' ok: {item} -> {into}", 3); Do(botId, $"put {item} into {into}"); return Started("put " + item); }
-    public string Refill(int botId, string? item) { Report(botId, "task 'refill' ok: refilled", 4); Do(botId, "refill" + (item != null ? " " + item : "")); return Started("refill"); }
+    public string PutIn(int botId, string item, string into, ItemFilter? filter = null) { Report(botId, $"task 'put {item} into {into}' ok: {item} -> {into}", 3); Do(botId, $"put {item} into {into}"); return Started("put " + item); }
+    public string Refill(int botId, string? item, ItemFilter? filter = null) { Report(botId, "task 'refill' ok: refilled", 4); Do(botId, "refill" + (item != null ? " " + item : "")); return Started("refill"); }
     public string TidyInventory(int botId, string? keep) { Report(botId, "task 'put away carried items' ok: put away", 6); Do(botId, "tidy inventory"); return Started("tidy"); }
-    public string Attack(int botId, string target, string? weapon) { Report(botId, $"task 'attack {target}' ok: done", 6); Do(botId, $"attack {target}" + (weapon != null ? " with " + weapon : "")); return Started("attack " + target); }
-    public string Unpack(int botId, string container, bool carry = true) { Report(botId, $"task 'unpack {container}' ok: put away from {container}: Bandage x4 -> Medical Cabinet in Medbay [h4]", 6); Do(botId, $"unpack {container}"); return Started("unpack " + container); }
-    public string TakeItem(int botId, string item, int count, string? from = null) { Report(botId, $"task 'take {item}' ok: took {item} x{count} (in your inventory now)", 4); Do(botId, $"take {item} x{count}"); return Started("take " + item); }
+    public string Attack(int botId, string target, string? weapon, string targetType = "character") { Report(botId, $"task 'attack {target}' ok: done", 6); Do(botId, $"attack {target}" + (weapon != null ? " with " + weapon : "")); return Started("attack " + target); }
+    public string Unpack(int botId, string container, bool carry = true, ItemFilter? filter = null) { Report(botId, $"task 'unpack {container}' ok: put away from {container}: Bandage x4 -> Medical Cabinet in Medbay [h4]", 6); Do(botId, $"unpack {container}"); return Started("unpack " + container); }
+    public string TakeItem(int botId, string item, int count, string? from = null, ItemFilter? filter = null) { Report(botId, $"task 'take {item}' ok: took {item} x{count} (in your inventory now)", 4); Do(botId, $"take {item} x{count}"); return Started("take " + item); }
     public string KeepGear(int botId, bool on) => Do(botId, on ? "keep gear ON" : "keep gear off");
-    public string Inspect(int botId, string kind, string query) => kind switch
+    public string Inspect(int botId, string kind, string query, ItemFilter? filter = null) => kind switch
     {
         "patient" => $"{query}: injuries: bleeding 20 (torso); treatments: Bandage [antibleeding1] (suitability 40, price 10, available 6)",
         "recipe" => $"{query}: needs Steel Bar x1 (available 4). All ingredients available.",

@@ -67,7 +67,7 @@ public class ProviderTests
     public void OpenAiFallsBackToToolCallsWrittenAsText()
     {
         var r = OpenAiCompatibleProvider.ParseResponse(Fixtures.OpenAiTextResponse(
-            "I'll weld it. ```json\n{\"name\": \"fix_leaks\", \"arguments\": {}}\n```"), Known);
+            "{\"name\": \"fix_leaks\", \"arguments\": {}}"), Known);
         Assert.Equal("fix_leaks", r.ToolCalls.Single().Name);
     }
 
@@ -162,7 +162,7 @@ public class TextToolCallParserTests
 
     [Theory]
     [InlineData("{\"name\":\"fix_leaks\",\"arguments\":{}}", "fix_leaks")]
-    [InlineData("Sure! [{\"name\":\"say\",\"arguments\":{\"text\":\"hi }\"}}]", "say")]
+    [InlineData("[{\"name\":\"say\",\"arguments\":{\"text\":\"hi }\"}}]", "say")]
     [InlineData("{\"tool_calls\":[{\"function\":{\"name\":\"wait\",\"arguments\":\"{}\"}}]}", "wait")]
     [InlineData("{\"tool\":\"operate\",\"parameters\":{\"role\":\"reactor\"}}", "operate")]
     public void Extracts(string text, string expected)
@@ -175,6 +175,8 @@ public class TextToolCallParserTests
     [InlineData("I will fix the leaks now.")]
     [InlineData("{\"name\":\"rm_rf\",\"arguments\":{}}")]
     [InlineData("{broken json")]
+    [InlineData("Sure! [{\"name\":\"say\",\"arguments\":{\"text\":\"hi }\"}}]")]
+    [InlineData("{\"name\":\"fixleaks\",\"arguments\":{}}")]
     public void IgnoresNonCalls(string text)
     {
         Assert.Empty(TextToolCallParser.Parse(text, Known));

@@ -13,11 +13,11 @@ public class LogFixesTests
         string.Join(" | ", TextToolCallParser.Parse(text, Tools.All).Select(c => $"{c.Name}({Tools.ArgsToString(c)})"));
 
     [Fact]
-    public void BrokenJsonKeepsEveryCall()
+    public void BrokenJsonDoesNotExecuteAnExtractedFragment()
     {
         // an extra brace after the first call used to lose message_crew and keep only wait
         var raw = "{\"calls\": [{\"name\": \"message_crew\", \"arguments\": {\"to\": \"Glenda Pickett\", \"text\": \"Meet us near Engineer Bay\"}}}, {\"name\": \"wait\", \"arguments\": {}}]}";
-        Assert.Equal("message_crew(to=\"Glenda Pickett\", text=\"Meet us near Engineer Bay\") | wait()", P(raw));
+        Assert.Equal("", P(raw));
     }
 
     [Fact]
@@ -25,28 +25,28 @@ public class LogFixesTests
         Assert.Equal("fix_leaks() | say(text=\"ok\")", P("{\"calls\": [{\"name\": \"fix_leaks\", \"arguments\": {}}, {\"name\": \"say\", \"arguments\": {\"text\": \"ok\"}}]}"));
 
     [Theory]
-    [InlineData("inspect(kind='recipe', query='fuel rod')", "inspect(kind=\"recipe\", query=\"fuel rod\")")]
-    [InlineData("craft(\"medical kit\", amount=1)", "craft(amount=\"1\", item=\"medical kit\")")]
-    [InlineData("follow(\"Bettyann Mcneil\")", "follow(target=\"Bettyann Mcneil\")")]
-    [InlineData("say(\"Everyone seems green\") wait()", "say(text=\"Everyone seems green\") | wait()")]
-    [InlineData("say(\"Everyone seems green\")\nwait()", "say(text=\"Everyone seems green\") | wait()")]
-    public void LooseCallsWithQuotesAndPositionalArguments(string raw, string expected) => Assert.Equal(expected, P(raw));
+    [InlineData("{\"name\":\"inspect\",\"arguments\":{\"kind\":\"recipe\",\"query\":\"fuel rod\"}}", "inspect(kind=\"recipe\", query=\"fuel rod\")")]
+    [InlineData("{\"name\":\"craft\",\"arguments\":{\"item\":\"medical kit\",\"amount\":1}}", "craft(item=\"medical kit\", amount=1)")]
+    [InlineData("{\"name\":\"follow\",\"arguments\":{\"target\":\"Bettyann Mcneil\"}}", "follow(target=\"Bettyann Mcneil\")")]
+    [InlineData("[{\"name\":\"say\",\"arguments\":{\"text\":\"Everyone seems green\"}},{\"name\":\"wait\",\"arguments\":{}}]", "say(text=\"Everyone seems green\") | wait()")]
+    public void StructuredCallsPreserveQuotedValuesAndNamedArguments(string raw, string expected) => Assert.Equal(expected, P(raw));
 
     [Fact]
     public void ApostrophesInsideTextSurvive() =>
-        Assert.Equal("say(text=\"I'm on it, don't worry\")", P("say(text=\"I'm on it, don't worry\")"));
+        Assert.Equal("say(text=\"I'm on it, don't worry\")", P("{\"name\":\"say\",\"arguments\":{\"text\":\"I'm on it, don't worry\"}}"));
 
     [Fact]
-    public void QuotedValuesAreUnwrappedByTheExecutor()
+    public void ExecutorUsesJsonValuesWithoutRemovingInventedSyntax()
     {
         var game = new FakeGame().AddBot(1, "Ann", "mechanic");
         var mgr = new AgentManager(Fixtures.Settings(), game, new LlmRouter(Fixtures.Settings()), () => 0);
         var ann = new BotAgent(game.Bots[0]);
         var r = Tools.Execute(new ToolCall("inspect", new JsonObject { ["kind"] = "'recipe'", ["query"] = "'fuel rod'" }), ann, game, mgr);
-        Assert.StartsWith("recipe fuel rod:", r);
+        Assert.StartsWith("error: kind must be", r);
+        Assert.StartsWith("recipe fuel rod:", Tools.Execute(new ToolCall("inspect", new JsonObject { ["kind"] = "recipe", ["query"] = "fuel rod" }), ann, game, mgr));
         // patient without a query = everyone who is hurt
         Assert.StartsWith("patient :", Tools.Execute(new ToolCall("inspect", new JsonObject { ["kind"] = "patient" }), ann, game, mgr));
-        Assert.StartsWith("error: missing 'query'", Tools.Execute(new ToolCall("inspect", new JsonObject { ["kind"] = "items" }), ann, game, mgr));
+        Assert.StartsWith("items :", Tools.Execute(new ToolCall("inspect", new JsonObject { ["kind"] = "items" }), ann, game, mgr));
     }
 
     [Fact]

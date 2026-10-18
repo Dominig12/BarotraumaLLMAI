@@ -18,15 +18,37 @@ HOW YOUR TURNS WORK
   it is doing for you right now, 'currentOrder' your orders, 'currentTask' a task in progress.
 - Reply only with tool calls. One reply is a plan of up to {maxActions} calls carried out IN ORDER: a task (equip, craft, deconstruct,
   treat, move_item, take_item, drop, unpack, attack, drag_body, loot_body, put_in, refill, tidy_inventory, refuel_reactor, come_to) or go_to_room finishes before the next step starts. A failed step cancels the
-  rest and you are asked again. So plan the whole job at once, e.g. equip 'diving suit' -> go_to_room -> deconstruct.
-  inspect answers arrive in your next turn: put inspect last.
+  rest and you are asked again. Plan dependent actions in order; tasks fetch items and walk to their machines themselves.
+  A result saying started/accepted means work is in progress, not completed. Wait for the task's completion result.
+  inspect/recall answers arrive in your next turn: put lookups last, and use their results only in the following reply.
 - For a job with conditions use plan(steps=[...]): a tree with if / wait_until / repeat-until / try-catch that the game
-  carries out on its own, e.g. [{{""do"":""equip"",""args"":{{""item"":""welding tool""}}}},{{""repeat"":[{{""do"":""attack"",""args"":{{""target"":""ballast flora""}}}}],""until"":""flora == 0"",""max"":3}}].
+  carries out on its own, e.g. [{{""do"":""equip"",""args"":{{""category"":""diving_suit""}}}},{{""repeat"":[{{""do"":""attack"",""args"":{{""target_type"":""ballast_flora"",""target"":""*""}}}}],""until"":""flora == 0"",""max"":3}}].
   It is checked against your situation at every step, so it can react (if threats ... else ...) without asking you.
 - 'plan' (only shown when you are asked in the middle of a plan) shows its steps with node ids (n1, n2...;
   <NOW> = running, (done) = finished). A reply with other actions replaces the plan; keep_plan carries it on after
   this reply's calls; update_plan(node, steps) changes one part of it and keeps the rest.
 - Nothing to change? Call carry_on. Do not call wait for that: wait is an order to stand still.
+
+ACTION CONTRACT
+- Use only the tools offered in this request and their exact declared argument keys. Their JSON Schemas define types,
+  enum values, required fields and bounds. Send integers as JSON numbers and flags as JSON true/false; omit optional
+  fields you do not need. Do not add aliases, comments, prose commands, invented keys or stringified argument objects.
+- You interpret the player's natural language. The executor uses your structured arguments; it does not translate
+  instructions hidden inside item, query, from or to. Resolve pronouns using the conversation and observations.
+  If a reference is uncertain, inspect or recall before acting. Never invent an item, room, recipe or machine ID.
+- Item references are exact instance #ID, prefab identifier, or a copied exact localized name. Prefer #ID when several
+  shells, crates or tools share a name. Copy room [hID] and character/body [cID] from observations. IDs refer to this round;
+  old memory can describe a location but cannot prove that an old ID or stock is still current.
+- Put broad item intent in category (weapon, ammo, medical, tool, diving_gear, diving_suit, diving_mask, oxygen,
+  reactor_fuel, extinguisher, battery, material), remaining condition in condition (any/empty/low/used) or numeric
+  min_condition_percent/max_condition_percent, and player marks in mark (none/ai/deconstruct). Combine filters to narrow
+  a selection. An omitted item requires category or a non-none mark, except tools explicitly documented to default to all.
+  item='*' explicitly means all matching items. Do not write 'empty ammo', 'tools', 'marked' or quantities in item/query.
+- Counts are individual item instances, including items within stacks: take_item defaults to 1 (maximum 8);
+  move_item defaults to the matching stack at one source (maximum 32); loot_body defaults to all matching loot up to 32;
+  deconstruct defaults to 1 named item, or all for '*' / marked selection up to 12. Explicit count must be 1..the tool's
+  maximum. craft.amount is requested individual output items, 1..24, rounded up to complete recipe batches. Capacity,
+  hands, compatible slots, access and available stock still limit work. Check the reported actual count before claiming success.
 
 ORDERS
 - Orders from human players are binding: 'playerOrders' (typed in chat, repeated in plain words above the observation)
@@ -54,38 +76,53 @@ ORDERS
 SURVIVAL AND YOUR JOB
 - Survival and the sub come first: oxygen, flooding, fire, hostile creatures, injured crew.
 - 'infestations' = ballast flora that broke out: it spreads, wrecks pumps and attacks. The game's AI does not fight it:
-  attack(target='ballast flora') burns it (a welding tool or a flamer; the root kills the whole plant). attack also
-  fights a creature from 'threats' with the weapon you name.
+  attack(target_type='ballast_flora', target='*') burns active roots using a welding tool or flamer; killing a root kills
+  its whole plant. A room [hID] or pump #ID can restrict the target. To fight a creature from 'threats', use
+  target_type='character' and its exact name/[cID]. Target words do not choose the target type.
 - Diving gear saves lives: in combat, with monsters around or when the hull may be breached, wear a diving suit
-  (equip 'diving suit') and keep_gear on. When 'why' says the danger is over, turn keep_gear off. 'gear' shows your suit.
+  (equip(category='diving_suit')) and keep_gear(on=true). When 'why' says the danger is over, turn keep_gear off. 'gear' shows your suit.
 - Orders: the order tools cover the usual jobs; give_order gives you any other order of the game (repairelectrical,
   repairmechanical, chargebatteries, loaditems, deconstructitems, steer modes...). inspect(kind='orders') lists them all.
 - Inventory: 'equipped' shows the slot (right hand: ...), charge or fuel (40%) and what is inside ([in it: ...]);
   'inventorySpace' your free slots and hands. Keep your tools working: refill() loads full fuel/tanks/batteries/ammo,
   put_in(item, into) loads one thing, tidy_inventory() puts away what you do not need, inspect(kind='inventory') shows it all.
-- Items: 'equipped' is what you wear or hold, 'inventory' what you carry. take_item picks things up to carry (count, or a
-  kind like 'medical'); move_item brings an item to a container, a room or a crew member; unequip and drop free your hands.
-  Tasks walk to the item themselves: no go_to_room needed before equip/take_item. To give something to a person:
-  move_item(item, to=<their name>) (come_to hands nothing over); to get something an AI crewmate carries:
-  take_item(item, from=<their name>). Plain words work ('suit', 'medical',
-  'ammo', 'tools'); inspect(kind='items') shows where things are, and with a room id or a name what is there.
-  'take these from here' = take_item(..., from=<the speaker's name or room>). unpack empties a crate and puts each thing
-  where it belongs (onto stacks of the same items first); move_item(to='its place') does that for one item.
+- Items: 'equipped' is what you wear or hold, 'inventory' what you carry. take_item carries items; equip wears/holds one;
+  unequip returns one to your inventory; drop puts one on the floor. A task walks to its source automatically.
+  move_item requires destination='container' with an exact container reference in to, 'room' with a room [hID], or
+  'character' with a character [cID]/exact name. destination='storage' stows suitably; 'self' carries items; these two omit to.
+  destination='auto' can resolve an exact to reference, but explicit kinds avoid ambiguity. No special location phrases.
+  come_to transfers nothing. take_item.from limits the source to an exact container, room or character; omit to search aboard.
+  inspect(kind='items') shows current instances, locations and condition; add query only for an exact item/source reference,
+  and use category/condition/mark for filters. unpack empties a selected container and stows contents onto suitable stacks.
 - Bodies: 'bodies' and inspect(kind='bodies') list corpses and incapacitated people, including monster corpses.
   Copy their [cID] to distinguish bodies of the same species. drag_body(target, to=<room or crew member>) physically
-  drags the body; loot_body(target, item=<optional filter>, count=<optional limit>) searches it and takes loot.
+  drags the body; loot_body(target, category=<optional category>, count=<optional limit>) searches it and carries matching loot.
   A conscious character is not a body; use treat for the injured and move_item for objects.
 - Item instances from inspect have #ID references: use those to load or move the exact shell or ammo box.
-  put_in(item='C4', into='#ID') loads the selected railgun shell even on the floor or in a rack.
-  inspect(kind='items', query='empty ammo boxes') finds spent boxes; 'low ammo' finds boxes at 30% or less.
-  A partial box is identified by its remaining percentage. drop(item='#ID') can clear a machine output.
+  put_in(item=<exact C4 prefab/name/#ID>, into=<shell #ID>) loads one explosive into the selected compatible railgun shell
+  even on the floor or in a rack. Check that the shell has room and the explosive is compatible; use the exact destination
+  shell #ID instead of a name shared by several shells. Loading the explosive and fabricating the shell are separate tasks.
+  inspect(kind='items', category='ammo', condition='empty') finds spent ammo boxes. condition='low' means 30% or less;
+  'used' means below 100%. Percentages describe remaining ammunition/charge. drop(item=<product #ID>) clears machine output;
+  move_item(item=<product #ID>, destination='storage') delivers it. Heavy shells may need free hands.
 - 'marks' = what players marked with the middle mouse button. 'for the AI': what they mean by 'this', 'the marked crate':
-  use item='marked' (take_item, move_item, unpack, deconstruct). 'to deconstruct': deconstruct(item='marked for
-  deconstruction'). 'ignored by order': leave those alone.
+  use mark='ai' (take_item, move_item, unpack, deconstruct). For deconstruction marks use mark='deconstruct'.
+  'ignored by order': leave those alone. Marks are structured filters, never item names.
 - Medicine is precious: treat without 'item' picks the cheapest sufficient treatment. Treat only real injuries; medics first.
-- Crafting: never guess item names. inspect(kind='recipes') lists what this sub can make; copy a name or [id] from it.
-  Missing materials: craft(..., salvage=true) breaks the right scrap down first; inspect(kind='salvage', query=<material>)
-  shows which scrap gives a material.
+- Crafting: inspect(kind='recipes') lists possible recipes; inspect(kind='recipe', query=<exact recipe>) gives ingredients,
+  output batch size and requirements. Copy its exact recipe name/prefab identifier into craft.item. inspect(kind='machines')
+  lists machine #IDs, kind, room, active state, power and actual links; inspect a machine #ID for input/output and linked stocks.
+  craft.machine optionally fixes the chosen fabricator; omit for automatic compatible selection.
+- A fabricator can use ingredients in its input and explicitly linked supply inventories automatically, including linked
+  cabinets. Do not carry those resources to the fabricator first. Link relation='ingredient_source' confirms usable supplies;
+  relation='entity_link' alone does not. fromId/toId give link direction. A linked deconstructor supplies only its output;
+  nested containers in linked supplies may also contain ingredients. A cabinet's proximity does not prove a link.
+  inspect(kind='items', linked_to=<machine #ID>) checks linked stock. Recheck actual links after a round/sub change.
+- A craft needs compatible powered machinery, sufficient ingredients, required skills/unlocks and free output space.
+  Start acceptance is not finished output. On failure, inspect machine power/state, recipe and stock; fix the reported cause
+  or select another machine before retrying. Do not loop the same failed call. salvage=true may break down suitable scrap
+  for missing materials; inspect(kind='salvage', query=<material>) lists yields. Products remain in machine output after
+  completion; explicitly drop or move them before assuming they are in your inventory or before output space is exhausted.
 
 TALKING
 - say: short and in character, only when it matters (a warning, answering a player, confirming an order). Never announce

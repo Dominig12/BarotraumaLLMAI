@@ -27,8 +27,8 @@ public class ItemToolsTests
     [InlineData("equip", "{\"item\":\"diving suit\"}", "1:equip diving suit")]
     [InlineData("refuel_reactor", "{}", "1:refuel")]
     [InlineData("craft", "{\"item\":\"fuel rod\"}", "1:craft fuel rod x1")]
-    [InlineData("craft", "{\"item\":\"bandage\",\"amount\":50}", "1:craft bandage x24")]
-    [InlineData("craft", "{\"item\":\"bandage\",\"amount\":\"3\"}", "1:craft bandage x3")]
+    [InlineData("craft", "{\"item\":\"bandage\",\"amount\":24}", "1:craft bandage x24")]
+    [InlineData("craft", "{\"item\":\"bandage\",\"amount\":3}", "1:craft bandage x3")]
     [InlineData("deconstruct", "{\"item\":\"old wrench\"}", "1:deconstruct old wrench")]
     [InlineData("treat", "{\"target\":\"Mose Giorgio\"}", "1:treat Mose Giorgio")]
     [InlineData("treat", "{\"target\":\"me\",\"item\":\"bandage\"}", "1:treat Tyler Sexton with bandage")]
@@ -36,13 +36,29 @@ public class ItemToolsTests
     [InlineData("drop", "{\"item\":\"empty tank\"}", "1:drop empty tank")]
     [InlineData("move_item", "{\"item\":\"bandage\",\"to\":\"Mose Giorgio\"}", "1:move bandage -> Mose Giorgio")]
     [InlineData("move_item", "{\"item\":\"harpoon\",\"to\":\"Daniil\",\"count\":6}", "1:move harpoon -> Daniil x6")]
-    [InlineData("move_item", "{\"item\":\"steel\",\"to\":\"cabinet\",\"count\":99}", "1:move steel -> cabinet x32")]
+    [InlineData("move_item", "{\"item\":\"steel\",\"to\":\"cabinet\",\"count\":32}", "1:move steel -> cabinet x32")]
     [InlineData("keep_gear", "{\"on\":true}", "1:keepgear True")]
-    [InlineData("keep_gear", "{\"on\":\"off\"}", "1:keepgear False")]
+    [InlineData("keep_gear", "{\"on\":false}", "1:keepgear False")]
     public void MapsToGame(string tool, string args, string expected)
     {
         Assert.StartsWith("ok", Run(tool, args));
         Assert.Equal(expected, game.Actions.Single());
+    }
+
+    [Theory]
+    [InlineData("craft", "{\"item\":\"bandage\",\"amount\":50}")]
+    [InlineData("craft", "{\"item\":\"bandage\",\"amount\":\"3\"}")]
+    [InlineData("craft", "{\"item\":\"bandage\",\"salvage\":\"yes\"}")]
+    [InlineData("move_item", "{\"item\":\"steel\",\"to\":\"cabinet\",\"count\":99}")]
+    [InlineData("take_item", "{\"item\":\"bandage\",\"amount\":8}")]
+    [InlineData("put_in", "{\"item\":\"oxygen tank\",\"to\":\"diving suit\"}")]
+    [InlineData("keep_gear", "{\"on\":\"off\"}")]
+    [InlineData("unpack", "{\"item\":\"metalcrate\"}")]
+    [InlineData("attack", "{}")]
+    public void InvalidArgumentsAreRejectedWithoutCoercionAliasesOrClamping(string tool, string args)
+    {
+        Assert.StartsWith("error:", Run(tool, args));
+        Assert.Empty(game.Actions);
     }
 
     [Fact]
@@ -52,16 +68,16 @@ public class ItemToolsTests
         Assert.StartsWith("patient Mose:", r);
         Assert.Equal(Tools.MaxInspectLength, r.Length);
         Assert.StartsWith("error: kind must be", Run("inspect", "{\"kind\":\"weather\",\"query\":\"x\"}"));
-        Assert.StartsWith("error: missing 'query'", Run("inspect", "{\"kind\":\"items\"}"));
+        Assert.StartsWith("items :", Run("inspect", "{\"kind\":\"items\"}"));
         Assert.StartsWith("error: missing 'item'", Run("craft", "{}"));
         Assert.StartsWith("error: 'on' must be", Run("keep_gear", "{\"on\":\"maybe\"}"));
-        Assert.StartsWith("error: 'item' and 'to'", Run("move_item", "{\"item\":\"x\"}"));
+        Assert.StartsWith("error: missing 'to'", Run("move_item", "{\"item\":\"x\"}"));
     }
 
     [Fact]
-    public void GemmaStyleCallsForNewTools()
+    public void StructuredCallsForItemTools()
     {
-        var calls = TextToolCallParser.Parse("treat{target:<|\"|>Mose Giorgio<|\"|>,item:<|\"|>bandage<|\"|>}<tool_call|>\nrefuel_reactor", Tools.All);
+        var calls = TextToolCallParser.Parse("{\"calls\":[{\"name\":\"treat\",\"arguments\":{\"target\":\"Mose Giorgio\",\"item\":\"bandage\"}},{\"name\":\"refuel_reactor\",\"arguments\":{}}]}", Tools.All);
         Assert.Equal(new[] { "treat", "refuel_reactor" }, calls.Select(c => c.Name));
         Assert.Equal("bandage", Tools.Str(calls[0].Arguments, "item"));
     }

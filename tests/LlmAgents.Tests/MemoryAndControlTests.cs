@@ -264,9 +264,9 @@ public sealed class MemoryAndControlTests
     [Theory]
     [InlineData("fix_leaks", "{}", "1:fix_leaks")]
     [InlineData("fix_leaks", "{\"priority\":2}", "1:fix_leaks p2")]
-    [InlineData("fix_leaks", "{\"priority\":\"low\"}", "1:fix_leaks p1")]
-    [InlineData("fix_leaks", "{\"priority\":9}", "1:fix_leaks")]
-    [InlineData("operate", "{\"role\":\"reactor\",\"priority\":\"2\"}", "1:operate reactor p2")]
+    [InlineData("fix_leaks", "{\"priority\":1}", "1:fix_leaks p1")]
+    [InlineData("fix_leaks", "{\"priority\":3}", "1:fix_leaks")]
+    [InlineData("operate", "{\"role\":\"reactor\",\"priority\":2}", "1:operate reactor p2")]
     [InlineData("go_to_room", "{\"room\":\"Engine Room [h10]\",\"priority\":1}", "1:goto Engine Room [h10] p1")]
     [InlineData("set_order_priority", "{\"order\":\"fix_leaks\",\"priority\":0}", "1:priority fix_leaks 0")]
     public async Task OrderToolsPassThePriority(string tool, string args, string expected)
@@ -284,9 +284,23 @@ public sealed class MemoryAndControlTests
         game.AddBot(1, "Ann", "mechanic");
         var (mgr, _, _) = Create();
         await Step(mgr);
-        Assert.StartsWith("error: priority", Run(mgr, 1, "set_order_priority", "{\"order\":\"fix_leaks\",\"priority\":7}"));
-        Assert.StartsWith("error: priority", Run(mgr, 1, "set_order_priority", "{\"order\":\"fix_leaks\"}"));
+        Assert.StartsWith("error: 'priority' must be between", Run(mgr, 1, "set_order_priority", "{\"order\":\"fix_leaks\",\"priority\":7}"));
+        Assert.StartsWith("error: missing 'priority'", Run(mgr, 1, "set_order_priority", "{\"order\":\"fix_leaks\"}"));
         Assert.StartsWith("error: missing", Run(mgr, 1, "set_order_priority", "{\"priority\":1}"));
+    }
+
+    [Theory]
+    [InlineData("{\"priority\":\"low\"}")]
+    [InlineData("{\"priority\":\"2\"}")]
+    [InlineData("{\"priority\":9}")]
+    public async Task InvalidPrioritiesDoNotBecomeDefaultsOrGetClamped(string args)
+    {
+        game.AddBot(1, "Ann", "mechanic");
+        var (mgr, _, _) = Create();
+        await Step(mgr);
+        int before = game.Actions.Count;
+        Assert.StartsWith("error:", Run(mgr, 1, "fix_leaks", args));
+        Assert.Equal(before, game.Actions.Count);
     }
 
     [Fact]

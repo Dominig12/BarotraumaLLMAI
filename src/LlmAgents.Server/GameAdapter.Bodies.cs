@@ -58,13 +58,13 @@ public sealed partial class GameAdapter
         return StartTask(bot, new DragBodyTask(bot, ai, body, destination, to));
     }
 
-    public string LootBody(int botId, string target, string? item = null, int count = 0)
+    public string LootBody(int botId, string target, string? item = null, int count = 0, ItemFilter? filter = null)
     {
         if (Find(botId) is not { } bot || !Ai(bot, out var ai)) return "error: character gone";
         var body = FindBody(bot, target);
         if (body == null) return $"error: no body '{target}'; inspect(kind='bodies') lists nearby bodies";
         if (BodyBusy(bot, body) is { } busy) return busy;
         if (body.Inventory == null) return $"error: {BodyLabel(body)} has no loot inventory";
-        return StartTask(bot, new LootBodyTask(bot, ai, body, item, Math.Clamp(count == 0 ? Tools.MaxMoveCount : count, 1, Tools.MaxMoveCount)));
+        return StartTask(bot, new LootBodyTask(bot, ai, body, item, Math.Clamp(count == 0 ? Tools.MaxMoveCount : count, 1, Tools.MaxMoveCount), filter));
     }
 }

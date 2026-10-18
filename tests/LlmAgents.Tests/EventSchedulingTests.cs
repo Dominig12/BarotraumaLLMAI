@@ -391,7 +391,7 @@ public class ChatFeedbackTests
         Assert.Equal(1, dispatches);   // the model decides; nobody heard the other two
         var notes = game.Notices.Select(n => n.Text).ToList();
         Assert.Contains("[ИИ] Приказ получили: Ann, Bob", notes);
-        Assert.Single(notes, n => n.Contains("никто из ИИ-экипажа не услышал"));   // the order, not the chatter
+        Assert.Equal(2, notes.Count(n => n.Contains("никто из ИИ-экипажа не услышал"))); // Delivery feedback does not guess whether the message is an order.
         Assert.All(game.Notices, n => Assert.Equal("Daniil", n.Player));
 
         settings.Chat.ConfirmToSender = false;

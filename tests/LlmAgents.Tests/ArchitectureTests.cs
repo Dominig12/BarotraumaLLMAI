@@ -1,6 +1,9 @@
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Linq;
+using System.Net;
 using System.Text.Json.Nodes;
+using System.Threading.Tasks;
 using LlmAgents.Agents;
 using LlmAgents.Llm;
 using Xunit;
@@ -9,8 +12,6 @@ namespace LlmAgents.Tests;
 
 public class ArchitectureTests
 {
-    static BotAgent Bot(string job) => new(new BotHandle(1, "Ann", job));
-
     [Fact]
     public void Every_tool_is_defined_once_with_a_group()
     {
@@ -21,57 +22,49 @@ public class ArchitectureTests
     }
 
     [Fact]
-    public void Assistant_without_trouble_gets_the_core_tools_only()
+    public void Every_permitted_tool_is_described_without_word_or_job_filters()
     {
-        var g = ToolSelection.For(Bot("assistant"), new Observation(), new string[0], 0, memory: false);
-        Assert.True(g.HasFlag(ToolGroup.Core));
-        Assert.False(g.HasFlag(ToolGroup.Combat));
-        Assert.False(g.HasFlag(ToolGroup.Medical));
-        Assert.False(g.HasFlag(ToolGroup.Memory));
-        var offered = Tools.For(new List<string>(), false, false, g);
-        Assert.True(offered.Count < Tools.For(new List<string>(), false, false).Count);
-        Assert.Contains(offered, t => t.Name == "say");
+        var offered = Tools.For(new List<string>(), false, false);
+        Assert.Equal(Tools.Defs.Where(d => !d.ControlOnly && (d.Group != ToolGroup.Memory || d.Name == "remember")).Select(d => d.Name), offered.Select(t => t.Name));
+        foreach (var name in new[] { "say", "craft", "treat", "attack", "put_in", "drag_body", "loot_body" })
+            Assert.Contains(offered, t => t.Name == name);
     }
 
     [Fact]
-    public void Orders_and_situation_add_groups()
+    public void Tool_restrictions_follow_configuration_and_capabilities()
     {
-        var obs = new Observation();
-        obs.Infestations.Add("ballast flora in Ballast");
-        var g = ToolSelection.For(Bot("assistant"), obs, new[] { "вылечи капитана" }, 0, memory: true);
-        Assert.True(g.HasFlag(ToolGroup.Combat));
-        Assert.True(g.HasFlag(ToolGroup.Medical));
-        Assert.True(g.HasFlag(ToolGroup.Memory));
-        var unpack = ToolSelection.For(Bot("assistant"), new Observation(), new[] { "разложи ящик по местам" }, 0, false);
-        Assert.True(unpack.HasFlag(ToolGroup.Items));
-        Assert.False(unpack.HasFlag(ToolGroup.Inventory));
-        Assert.True(ToolSelection.For(Bot("assistant"), new Observation(), new[] { "заправь сварку" }, 0, false).HasFlag(ToolGroup.Inventory));
-        var full = new Observation { InventorySpace = "0 free slots; hands: right empty, left empty" };
-        Assert.True(ToolSelection.For(Bot("assistant"), full, new string[0], 0, false).HasFlag(ToolGroup.Inventory));
+        var memory = Tools.Defs.First(d => d.Group == ToolGroup.Memory && d.Name != "remember").Name;
+        var control = Tools.Defs.First(d => d.ControlOnly).Name;
+        Assert.DoesNotContain(Tools.For(new List<string>(), false, false), t => t.Name == memory || t.Name == control);
+        var enabled = Tools.For(new List<string>(), true, true);
+        Assert.Contains(enabled, t => t.Name == memory);
+        Assert.Contains(enabled, t => t.Name == control);
+        var restricted = Tools.For(new[] { "say", "craft" }, false, false);
+        Assert.Equal(new[] { "craft", "say" }, restricted.Select(t => t.Name).OrderBy(n => n));
     }
 
-    [Fact]
-    public void Used_group_stays_for_a_while()
+    [Theory]
+    [InlineData("assistant", "Réapprovisionne la tourelle avec les caisses partiellement utilisées")]
+    [InlineData("medicaldoctor", "Ларисса, загрузи C4 в снаряд из фабрикатора")]
+    [InlineData("captain", "運んだ死体から包帯を取ってください")]
+    public async Task EveryDecisionIncludesTheFullPermittedSchemasRegardlessOfLanguageAndJob(string job, string order)
     {
-        var bot = Bot("assistant");
-        var attack = Tools.Defs.First(d => d.Group == ToolGroup.Combat);
-        bot.UsedTool(attack.Name, 100);
-        Assert.True(ToolSelection.For(bot, new Observation(), new string[0], 150, false).HasFlag(ToolGroup.Combat));
-        Assert.False(ToolSelection.For(bot, new Observation(), new string[0], 100 + ToolSelection.StickySeconds + 1, false).HasFlag(ToolGroup.Combat));
-    }
-
-    [Fact]
-    public void Hidden_tools_are_listed_and_still_parsed()
-    {
-        var g = ToolSelection.For(Bot("assistant"), new Observation(), new string[0], 0, false);
-        var offered = Tools.For(new List<string>(), false, false, g);
-        var line = ToolSelection.HiddenLine(offered.Select(t => t.Name).ToList(), false);
-        Assert.NotNull(line);
-        var hidden = Tools.Defs.First(d => !offered.Any(o => o.Name == d.Name) && !d.ControlOnly);
-        Assert.Contains(hidden.Name, line);
-        Assert.DoesNotContain(Tools.Defs.First(d => d.ControlOnly).Name + ",", line);
-        var req = new LlmRequest("s", new List<LlmTurn>(), offered, 100, 0, Tools.All);
-        Assert.Contains(req.Understood, t => t.Name == hidden.Name);
+        var clock = new FakeClock();
+        var game = new FakeGame().AddBot(1, "Ann", job);
+        var settings = Fixtures.Settings();
+        var offered = new ConcurrentQueue<string[]>();
+        var handler = new FakeHandler(body =>
+        {
+            offered.Enqueue(body["tools"]!.AsArray().Select(t => t!["function"]!["name"]!.GetValue<string>()).ToArray());
+            return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("carry_on", "{}")));
+        });
+        using var manager = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get);
+        manager.Update(); await manager.WhenIdle(); clock.Advance(1); manager.Update();
+        manager.GetAgent(1)!.ReceivePlayerOrder(order);
+        for (int i = 0; i < 16; i++) { manager.Update(); await manager.WhenIdle(); clock.Advance(0.5); }
+        Assert.True(offered.Count >= 2);
+        var expected = Tools.For(settings.Bots.AllowedTools, false, false).Select(t => t.Name).ToArray();
+        Assert.All(offered, names => Assert.Equal(expected, names));
     }
 
     [Fact]
@@ -214,29 +207,24 @@ public class VersionTests
     }
 }
 
-public class OrderHintTableTests
+public class OrderPhraseTests
 {
     public static IEnumerable<object[]> Rows()
     {
-        var path = System.IO.Path.Combine(System.AppContext.BaseDirectory, "Data", "order_hints.tsv");
+        var path = System.IO.Path.Combine(System.AppContext.BaseDirectory, "Data", "order_phrases.txt");
         foreach (var line in System.IO.File.ReadAllLines(path))
         {
             if (line.Length == 0 || line.StartsWith("#")) continue;
-            var parts = line.Split('\t');
-            yield return new object[] { parts[0], parts[1] };
+            yield return new object[] { line };
         }
     }
 
     [Theory, MemberData(nameof(Rows))]
-    public void Phrase_gets_its_hint(string phrase, string expected)
+    public void Order_is_preserved_for_the_model_without_keyword_instructions(string phrase)
     {
-        var hint = OrderHints.Suggest(phrase, "Dan", "Engine [h4]");
-        if (expected == "-") { Assert.Null(hint); return; }
-        foreach (var part in expected.Split(" && "))
-        {
-            if (part.StartsWith("!")) Assert.DoesNotContain(part[1..], hint ?? "");
-            else Assert.Contains(part, hint ?? "(no hint)");
-        }
+        var me = new RosterEntry(1, "Ann", "assistant", null, "none");
+        var cmd = new ChatCommand("Dan", null, phrase, new[] { 1 }, true, "Engine [h4]");
+        Assert.Equal($"Dan on radio, in Engine [h4]: \"{phrase}\" ('me' = Dan)", ChatDispatcher.FormatOrder(cmd, new[] { me }, me));
     }
 }
 
