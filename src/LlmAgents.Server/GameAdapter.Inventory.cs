@@ -174,20 +174,22 @@ public sealed partial class GameAdapter
                     && (i.GetRootInventoryOwner() == c || i.Submarine == c.Submarine && i.GetRootInventoryOwner() is not Character)
                     && i.GetComponent<ItemContainer>() != null && ItemQueries.MatchScore(i, into) > 0)
             .OrderByDescending(i => ItemQueries.MatchScore(i, into))
-            .ThenByDescending(i => i.GetRootInventoryOwner() == c ? 1 : 0)
             .ThenBy(i => i.OwnInventory?.AllItems.Any(x => ItemQueries.MatchScore(x, query) > 0) == true ? 1 : 0)
+            .ThenByDescending(i => i.GetRootInventoryOwner() == c ? 1 : 0)
             .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)).FirstOrDefault();
         if (holder == null) return $"error: no available container '{into}' aboard or in your inventory";
         var ic = holder.GetComponent<ItemContainer>()!;
-        var item = ItemQueries.Find(c, query, i => i != holder && i.Container != holder && ic.CanBeContained(i)
-                    && (i.GetRootInventoryOwner() == c || i.Container == null || IsStorage(i.Container) || InMachineOutput(i)), claimed).FirstOrDefault();
+        // Loaded payloads are not spare supplies, even when the bot carries the other shell or tool.
+        // Claims are strict here: two loading tasks cannot reserve the same C4 block.
+        var item = ItemQueries.Find(c, query, i => i != holder && i.Container != holder && !claimed.Contains(i) && ic.CanBeContained(i)
+                    && (i.Container == null || IsStorage(i.Container) || InMachineOutput(i)), claimed).FirstOrDefault();
         var loaded = ic.Inventory.AllItems.FirstOrDefault(i => ItemQueries.MatchScore(i, query) > 0 && !ItemRules.IsSpent(i.MaxCondition > 0 ? i.Condition / i.MaxCondition : 1));
         if (loaded != null && (item == null || !ic.Inventory.CanBePut(item)
             && loaded.Condition / Math.Max(1, loaded.MaxCondition) >= item.Condition / Math.Max(1, item.MaxCondition)))
             return $"ok ({ItemQueries.InstanceLabel(holder)} already contains {query})";
         if (item == null)
         {
-            var fits = InventoryView.BestRefill(c, holder, ic, null, new HashSet<Item>());
+            var fits = InventoryView.BestRefill(c, holder, ic, null, claimed);
             return $"error: no '{query}' that fits into {holder.Name}" + (fits != null ? $"; it takes e.g. {fits.Name}" : "");
         }
         if (item.GetRootInventoryOwner() == c && holder.GetRootInventoryOwner() == c)

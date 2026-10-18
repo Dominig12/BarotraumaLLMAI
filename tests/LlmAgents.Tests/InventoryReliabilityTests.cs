@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Linq;
 using LlmAgents.Agents;
 using Xunit;
 
@@ -60,5 +62,62 @@ public class InventoryReliabilityTests
         Assert.Equal(412, query.EntityId);
         Assert.True(query.MatchesCondition(0, 100));
         Assert.False(query.MatchesCondition(100, 100));
+    }
+
+    [Fact]
+    public void ReplacementDoesNotReuseAnItemStillQueuedForThisBatch()
+    {
+        var excluded = InventoryTaskRules.ReplacementExclusions("lost A", new string[0], new[] { "queued B" }, new string[0]);
+        var replacement = InventoryTaskRules.SelectReplacement(new[] { "queued B", "free C" }, "lost A", excluded,
+            new HashSet<string>(), _ => true);
+        Assert.Equal("free C", replacement);
+        Assert.Null(InventoryTaskRules.SelectReplacement(new[] { "queued B" }, "lost A", excluded,
+            new HashSet<string>(), _ => true));
+    }
+
+    [Fact]
+    public void ReplacementAlsoExcludesAlreadyCollectedAndPreviouslyFailedItems()
+    {
+        var excluded = InventoryTaskRules.ReplacementExclusions("A", new[] { "failed B" }, new[] { "queued C" }, new[] { "collected D" });
+        Assert.Equal(4, excluded.Count);
+        Assert.Null(InventoryTaskRules.SelectReplacement(excluded, "A", excluded, new HashSet<string>(), _ => true));
+    }
+
+    [Fact]
+    public void ScopedReplacementChecksClaimsMadeAfterTheSourceWasInitiallyInspected()
+    {
+        var sourceSnapshot = new[] { "B", "C" };
+        var claims = new HashSet<string>();
+        Assert.Equal("B", InventoryTaskRules.SelectReplacement(sourceSnapshot, "lost A", new HashSet<string>(), claims, _ => true));
+        claims.Add("B");
+        Assert.Equal("C", InventoryTaskRules.SelectReplacement(sourceSnapshot, "lost A", new HashSet<string>(), claims, _ => true));
+        claims.Add("C");
+        Assert.Null(InventoryTaskRules.SelectReplacement(sourceSnapshot, "lost A", new HashSet<string>(), claims, _ => true));
+    }
+
+    [Fact]
+    public void MissingExactInstanceDoesNotFallBackToOtherMarkedItems()
+    {
+        var marked = new[] { 100, 200 };
+        var result = InventoryTaskRules.FilterMarked(marked, "#412", (id, text) => InventoryQuery.Parse(text).EntityId == id);
+        Assert.Empty(result);
+        Assert.Equal(new[] { 200 }, InventoryTaskRules.FilterMarked(marked, "#200", (id, text) => InventoryQuery.Parse(text).EntityId == id));
+    }
+
+    [Fact]
+    public void MissingEmptyAmmoDoesNotFallBackToFullMarkedBoxes()
+    {
+        var result = InventoryTaskRules.FilterMarked(new[] { 100f, 100f }, "empty ammo",
+            (charge, text) => InventoryQuery.Parse(text).MatchesCondition(charge, 100));
+        Assert.Empty(result);
+        Assert.Equal(new[] { 0f }, InventoryTaskRules.FilterMarked(new[] { 100f, 0f }, "empty ammo",
+            (charge, text) => InventoryQuery.Parse(text).MatchesCondition(charge, 100)));
+    }
+
+    [Fact]
+    public void PlainMarkedDescriptionStillAllowsTheExistingFallback()
+    {
+        var marked = new[] { "first marked item", "second marked item" };
+        Assert.Equal(marked, InventoryTaskRules.FilterMarked(marked, "crate", (_, _) => false));
     }
 }

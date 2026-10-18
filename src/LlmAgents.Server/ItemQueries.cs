@@ -144,8 +144,7 @@ internal static class ItemQueries
         if (mark != MarkQuery.None)
         {
             var list = Marked(c, mark).Where(i => IsAvailableTo(i, c) && (filter == null || filter(i))).ToList();
-            var rest = MarkWords.Rest(query);
-            if (rest.Length > 0 && list.Where(i => MatchScore(i, rest) > 0).ToList() is { Count: > 0 } narrowed) list = narrowed;
+            list = InventoryTaskRules.FilterMarked(list, MarkWords.Rest(query), (item, rest) => MatchScore(item, rest, kinds) > 0);
             return list.OrderBy(i => avoid != null && avoid.Contains(i) ? 1 : 0)
                 .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)).ToList();
         }
@@ -172,12 +171,9 @@ internal static class ItemQueries
 
     /// <summary>Another item of the same kind for a task whose item was taken by someone else or could not be reached.</summary>
     public static Item? Replacement(Character c, Item failed, ICollection<Item> tried, ICollection<Item>? avoid = null, string? query = null) =>
-        Available(c)
-            .Where(i => i.Prefab == failed.Prefab && i != failed && !tried.Contains(i) && i.GetRootInventoryOwner() != c)
-            .Where(i => (avoid == null || !avoid.Contains(i)) && (query == null || MatchScore(i, query) > 0))
-            .OrderBy(i => avoid != null && avoid.Contains(i) ? 1 : 0)
-            .ThenBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition))
-            .FirstOrDefault();
+        InventoryTaskRules.SelectReplacement(Available(c).OrderBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)),
+            failed, tried, avoid ?? Array.Empty<Item>(),
+            i => i.Prefab == failed.Prefab && i.GetRootInventoryOwner() != c && (query == null || MatchScore(i, query) > 0));
 
     public static string Where(Item i, Character c)
     {

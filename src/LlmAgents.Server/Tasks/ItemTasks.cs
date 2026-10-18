@@ -4,6 +4,7 @@ using System.Collections.Immutable;
 using System.Linq;
 using Barotrauma;
 using Barotrauma.Items.Components;
+using LlmAgents.Agents;
 using Microsoft.Xna.Framework;
 
 namespace LlmAgents;
@@ -67,7 +68,8 @@ internal sealed class TakeItemsTask : BotTask
 {
     readonly Queue<Item> queue;
     readonly FindReplacement? replace;
-    readonly List<Item> got = new(), tried = new();
+    readonly HashSet<Item> got = new();
+    readonly List<Item> tried = new();
     readonly string label;
     readonly int wanted;
     Item? current;
@@ -78,8 +80,9 @@ internal sealed class TakeItemsTask : BotTask
 
     public TakeItemsTask(Character bot, HumanAIController ai, List<Item> items, string label, FindReplacement? replace = null) : base(bot, ai)
     {
-        queue = new Queue<Item>(items);
-        wanted = items.Count;
+        var unique = items.Distinct().ToList();
+        queue = new Queue<Item>(unique);
+        wanted = unique.Count;
         this.label = label;
         this.replace = replace;
     }
@@ -102,7 +105,7 @@ internal sealed class TakeItemsTask : BotTask
                 ClearObjective();
                 tried.Add(current);
                 if (!lost && !HasRoom(current)) { full = true; return Report(); }
-                current = tried.Count <= wanted + 2 ? replace?.Invoke(current, tried) : null; // not every cabinet on the sub
+                current = tried.Count <= wanted + 2 ? Replace(current) : null; // not every cabinet on the sub
                 if (current != null) Run(Get(current), $"getting {current.Name} from {ItemQueries.Where(current, Bot)}");
                 return null;
             }
@@ -113,7 +116,8 @@ internal sealed class TakeItemsTask : BotTask
             Item? next = queue.Dequeue();
             if (next.Removed || (next.GetRootInventoryOwner() is Character other && other != Bot))
             {
-                next = replace?.Invoke(next, tried.Append(next).ToList());
+                tried.Add(next);
+                next = tried.Count <= wanted + 2 ? Replace(next) : null;
                 if (next == null) continue;
             }
             if (next.GetRootInventoryOwner() == Bot) { got.Add(next); continue; }
@@ -132,6 +136,8 @@ internal sealed class TakeItemsTask : BotTask
     }
 
     AIObjectiveGetItem Get(Item i) => new(Bot, i, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false };
+
+    Item? Replace(Item failed) => replace?.Invoke(failed, InventoryTaskRules.ReplacementExclusions(failed, tried, queue, got));
 
     bool HasRoom(Item i) =>
         Bot.Inventory.CanBePut(i, InvSlotType.Any) || Bot.Inventory.CanBePut(i, InvSlotType.RightHand) || Bot.Inventory.CanBePut(i, InvSlotType.LeftHand);

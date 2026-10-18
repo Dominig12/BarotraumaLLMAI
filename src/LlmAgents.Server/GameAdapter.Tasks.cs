@@ -191,7 +191,8 @@ public sealed partial class GameAdapter
         // with 'from' a replacement must come from the same place
         var inPlace = where != null ? found.ToHashSet() : null;
         FindReplacement replace = inPlace == null ? Replacer(c, query)
-            : (failed, tried) => inPlace.FirstOrDefault(i => i.Prefab == failed.Prefab && !tried.Contains(i) && i != failed && ItemQueries.IsAvailableTo(i, c) && i.GetRootInventoryOwner() != c && ItemQueries.MatchScore(i, query) > 0);
+            : (failed, tried) => InventoryTaskRules.SelectReplacement(inPlace, failed, tried, ClaimedByOthers(c),
+                i => i.Prefab == failed.Prefab && ItemQueries.IsAvailableTo(i, c) && i.GetRootInventoryOwner() != c && (all || ItemQueries.MatchScore(i, query) > 0));
         var r = StartTask(c, new TakeItemsTask(c, ai, pick, label, replace), evenOverPlayerOrders: true);
         return pick.Count < count && r.StartsWith("ok") && !all ? r + $"; only {pick.Count} found" : r;
     }
