@@ -23,6 +23,8 @@ public sealed class BotMemory
     public List<string> Facts { get; set; } = new();
     /// <summary>One short summary per round, newest last.</summary>
     public List<string> Journal { get; set; } = new();
+    /// <summary>The bot's latest notes (remember) of the previous round: shown in the next one, as possibly outdated.</summary>
+    public List<string> LastRoundNotes { get; set; } = new();
     /// <summary>How this bot feels about other people, by name.</summary>
     public Dictionary<string, Relationship> Relationships { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
@@ -57,7 +59,8 @@ public sealed class MemoryStore
 
     public const int MaxFactLength = 200;
     public const int MaxNoteLength = 160;
-    public const int MaxJournalLength = 300;
+    public const int MaxJournalLength = 450;
+    public const int MaxLastRoundNotes = 6;
 
     readonly object sync = new();
     readonly string? folder;
@@ -204,18 +207,30 @@ public sealed class MemoryStore
     static BotMemory Copy(BotMemory b) => new()
     {
         Name = b.Name, Job = b.Job, Rounds = b.Rounds, AiControl = b.AiControl, AiControlBy = b.AiControlBy,
-        Facts = b.Facts.ToList(), Journal = b.Journal.ToList(),
+        Facts = b.Facts.ToList(), Journal = b.Journal.ToList(), LastRoundNotes = b.LastRoundNotes.ToList(),
         Relationships = b.Relationships.ToDictionary(kv => kv.Key, kv => new Relationship { Feeling = kv.Value.Feeling, Note = kv.Value.Note, Round = kv.Value.Round }, StringComparer.OrdinalIgnoreCase),
     };
 
-    public void AddFact(string bot, string job, string fact, int max) => Change(d =>
+    public void AddFact(string bot, string job, string fact, int max, string? scope = null)
     {
-        var b = BotLocked(bot, job);
-        fact = Tools.Clip(fact.Trim(), MaxFactLength);
-        b.Facts.RemoveAll(f => f.Equals(fact, StringComparison.OrdinalIgnoreCase));
-        b.Facts.Add(fact);
-        while (b.Facts.Count > Math.Max(1, max)) b.Facts.RemoveAt(0);
-    });
+        Action<MemoryFile> f = d =>
+        {
+            var b = BotIn(d, bot, job);
+            var text = Tools.Clip(fact.Trim(), MaxFactLength);
+            b.Facts.RemoveAll(x => x.Equals(text, StringComparison.OrdinalIgnoreCase));
+            b.Facts.Add(text);
+            while (b.Facts.Count > Math.Max(1, max)) b.Facts.RemoveAt(0);
+        };
+        if (scope == null) Change(f); else ChangeIn(scope, f);
+    }
+
+    /// <summary>The notes a bot ends the round with (the latest few), for the next round.</summary>
+    public void SetLastRoundNotes(string bot, string job, IEnumerable<string> notes, string? scope = null)
+    {
+        var list = notes.Where(n => !string.IsNullOrWhiteSpace(n)).TakeLast(MaxLastRoundNotes).Select(n => Tools.Clip(n.Trim(), MaxNoteLength)).ToList();
+        Action<MemoryFile> f = d => BotIn(d, bot, job).LastRoundNotes = list;
+        if (scope == null) Change(f); else ChangeIn(scope, f);
+    }
 
     /// <summary>Removes facts containing the text. Returns how many were removed.</summary>
     public int ForgetFact(string bot, string text)
@@ -240,7 +255,7 @@ public sealed class MemoryStore
         if (countRound) b.Rounds++;
         if (!string.IsNullOrWhiteSpace(entry))
         {
-            b.Journal.Add(Tools.Clip(entry.Trim(), MaxJournalLength));
+            b.Journal.Add(ClipAtSentence(entry.Trim(), MaxJournalLength));
             while (b.Journal.Count > Math.Max(1, max)) b.Journal.RemoveAt(0);
         }
     }
@@ -275,6 +290,15 @@ public sealed class MemoryStore
         b.AiControl = on;
         b.AiControlBy = on ? by : null;
     });
+
+    /// <summary>Clipped at the last full sentence that fits, so a summary never ends in the middle of a word.</summary>
+    public static string ClipAtSentence(string s, int max)
+    {
+        if (s.Length <= max) return s;
+        var cut = s.Substring(0, max);
+        int end = cut.LastIndexOfAny(new[] { '.', '!', '?', ';' });
+        return end >= max / 2 ? cut.Substring(0, end + 1) : cut.TrimEnd() + "…";
+    }
 
     public static string SafeName(string s)
     {

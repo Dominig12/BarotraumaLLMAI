@@ -162,9 +162,12 @@ public sealed class MemoryView
     public List<string>? Relationships { get; set; }
     /// <summary>"Player: preference", for players aboard.</summary>
     public List<string>? PlayerPreferences { get; set; }
+    /// <summary>Notes the bot made at the end of the previous round (places and plans may have changed since).</summary>
+    public List<string>? LastRoundNotes { get; set; }
 
     [JsonIgnore]
-    public bool IsEmpty => (Facts?.Count ?? 0) + (PastRounds?.Count ?? 0) + (Relationships?.Count ?? 0) + (PlayerPreferences?.Count ?? 0) == 0;
+    public bool IsEmpty => (Facts?.Count ?? 0) + (PastRounds?.Count ?? 0) + (Relationships?.Count ?? 0) + (PlayerPreferences?.Count ?? 0)
+                           + (LastRoundNotes?.Count ?? 0) == 0;
 }
 
 public sealed record RoomInfo(string Id, int WaterPercent, int Fires);

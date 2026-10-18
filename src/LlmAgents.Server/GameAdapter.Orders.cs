@@ -197,7 +197,7 @@ public sealed partial class GameAdapter
                 IEnumerable<Item> pool = items;
                 if (target != null)
                 {
-                    var hull = target.Contains("[h") ? ResolveRoom(target) : null;
+                    var hull = IsRoomRef(target) ? ResolveRoom(target) : null;
                     var named = items.Where(i => hull != null ? i.CurrentHull == hull
                         : ItemQueries.MatchScore(i.Prefab, target) > 0 || (i.CurrentHull != null && RoomId(i.CurrentHull).Contains(target, StringComparison.OrdinalIgnoreCase))).ToList();
                     if (named.Count == 0) return $"error: no '{target}' to {prefab.Identifier}; targets aboard: {string.Join(", ", items.Take(6).Select(i => $"{i.Name}{(i.CurrentHull != null ? " in " + RoomId(i.CurrentHull) : "")}"))}";
@@ -304,11 +304,15 @@ public sealed partial class GameAdapter
         return c.CurrentOrders?.Where(o => o != null && IsPlayerOrder(c, o)).ToList() ?? new List<Order>();
     }
 
-    /// <summary>Error text if the bot must not start something that would push a player's order aside, else null.</summary>
+    /// <summary>Error text if the bot must not start something that would push a player's order aside, else null.
+    /// A task (replacement = null) only pauses the orders while it runs (a forced objective; the orders stay and go on
+    /// after it), so it is held back only by an order to be somewhere: follow, wait, go to. A background job a player
+    /// gave (weld, repair, deconstruct...) must not keep the bot from handing a crewmate an oxygen tank for the whole round.</summary>
     string? PlayerOrderBlock(Character c, Order? replacement)
     {
         if (HasAuthority(c)) return null;
         var player = PlayerOrders(c);
+        if (replacement == null) player = player.Where(p => p.Category == OrderCategory.Movement).ToList();
         if (player.Count == 0) return null;
         if (replacement != null && player.Any(p => Same(p, replacement))) return null;
         var p0 = player[0];
@@ -330,10 +334,13 @@ public sealed partial class GameAdapter
         {
             var player = PlayerOrders(c);
             if (player.Any(p => Same(p, order))) return "ok (already doing that, ordered by a player)";
+            // the same kind of order a player already gave (repairsystems for repair_systems, another fixleaks): it is
+            // being done; issuing it again would only replace the player's one
+            if (player.FirstOrDefault(p => p.Identifier == order.Identifier) is { } same)
+                return $"ok (already doing that: '{Name(same)}' ordered by player {same.OrderGiver.Name}; its priority stays as the player set it)";
             if (player.Count > 0)
             {
-                var clash = player.FirstOrDefault(p => p.Identifier == order.Identifier)
-                    ?? (order.Category == OrderCategory.Movement && order.AutoDismiss ? player.FirstOrDefault(p => p.Category == OrderCategory.Movement) : null);
+                var clash = order.Category == OrderCategory.Movement && order.AutoDismiss ? player.FirstOrDefault(p => p.Category == OrderCategory.Movement) : null;
                 if (clash != null)
                     return $"error: that would cancel '{Name(clash)}' ordered by player {clash.OrderGiver.Name}; keep doing it unless a player tells you otherwise";
                 int below = player.Min(p => p.ManualPriority) - 1;

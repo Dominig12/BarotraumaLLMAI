@@ -246,7 +246,7 @@ public static class Tools
             c => c.Need(c.Str("item"), "item", v => c.Game.Equip(c.Id, v))) with { MovesOn = true },
         T("take_item", "Pick items up into your inventory to carry: medicine, spare tools, ammo. A kind ('medical', 'tools', 'ammo') takes a mix.",
             Schema(Arg("item", "Name, [id] or a kind"), Arg("count", $"1-{MaxTakeCount}, default 1", required: false, type: "integer"),
-                   Arg("from", "Optional: a container, a room id or a crew member's name (their room)", required: false)),
+                   Arg("from", "Optional: a container, a room id, or a crew member's name (an AI crewmate hands over what they carry; otherwise their room)", required: false)),
             ToolKind.Task, ToolGroup.Core, c => c.Need(c.Str("item"), "item",
                 v => c.Game.TakeItem(c.Id, v, c.Int("count", 1, 1, MaxTakeCount, "amount"), c.Str("from")))) with { MovesOn = true },
         T("move_item", "Carry items into a container, to a room, or to a crew member; to='its place' = where they belong. "
@@ -373,6 +373,13 @@ public static class Tools
             .Where(t => groups == null || (groups.Value & t.Group) != 0 || (t.ControlOnly && aiControl))
             .Select(t => t.Spec)
             .ToList();
+
+    /// <summary>The tool has required arguments and the call gives none of them ({"name":"say"}).</summary>
+    public static bool MissingAllRequired(ToolCall c)
+    {
+        if (Def(c.Name)?.Schema["required"] is not JsonArray req || req.Count == 0) return false;
+        return req.All(r => r?.GetValue<string>() is { } name && string.IsNullOrWhiteSpace(Str(c.Arguments, name)));
+    }
 
     /// <summary>Reads the optional priority argument: 1..3, default 3.</summary>
     public static int Priority(JsonObject a, int fallback = TopPriority)

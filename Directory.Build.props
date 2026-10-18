@@ -8,7 +8,7 @@
     <Deterministic>true</Deterministic>
     <!-- The one place the mod version is set: the assemblies get it, ModInfo.Version reads it, and the package
          scripts write it into filelist.xml (a test checks Content/filelist.xml matches). -->
-    <Version>0.11.0</Version>
+    <Version>0.11.1</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 </Project>

@@ -112,7 +112,7 @@ public sealed partial class GameAdapter
         if (receiver != null) return StartTask(c, new MoveItemTask(c, ai, stack, null, null, receiver, receiver.Name, replace));
 
         // a room?
-        var hull = to.Contains("[h") ? ResolveRoom(to) : null;
+        var hull = IsRoomRef(to) ? ResolveRoom(to) : null;
         if (hull != null) return StartTask(c, new MoveItemTask(c, ai, stack, null, hull, null, RoomId(hull), replace));
 
         // a container on the sub that accepts the item
@@ -171,13 +171,15 @@ public sealed partial class GameAdapter
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
         Item? only = null;
+        string note = "";
         if (!string.IsNullOrWhiteSpace(query))
         {
             only = Carried(c).Where(i => i.GetComponent<ItemContainer>() != null && ItemQueries.MatchScore(i.Prefab, query!) > 0).FirstOrDefault();
-            if (only == null) return $"error: you do not carry '{query}'";
+            // models name the refill itself ("oxygen tank") or a suit by another word: refill whatever needs it
+            if (only == null) note = $" ('{query}' is not something you carry that takes a refill: refilling what needs one)";
         }
         var needs = InventoryView.NeedRefill(c, only);
-        if (needs.Count == 0) return only != null ? $"ok ({only.Name} does not need anything)" : "ok (nothing you carry needs refilling)";
+        if (needs.Count == 0) return only != null ? $"ok ({only.Name} does not need anything)" : "ok (nothing you carry needs refilling)" + note;
         var pairs = new List<(Item, ItemContainer)>();
         var used = new HashSet<Item>(ClaimedByOthers(c));
         var missing = new List<string>();
@@ -191,7 +193,7 @@ public sealed partial class GameAdapter
         if (pairs.Count == 0) return $"error: nothing aboard to refill {string.Join(", ", missing)}";
         var label = "refill " + string.Join(", ", pairs.Select(p => p.Item2.Item.Name).Distinct());
         var r = StartTask(c, new PutInTask(c, ai, pairs, label), evenOverPlayerOrders: true);
-        return r + $"; {string.Join(", ", pairs.Select(p => $"{p.Item1.Name} -> {p.Item2.Item.Name}"))}" + (missing.Count > 0 ? $"; nothing for {string.Join(", ", missing)}" : "");
+        return r + $"; {string.Join(", ", pairs.Select(p => $"{p.Item1.Name} -> {p.Item2.Item.Name}"))}" + (missing.Count > 0 ? $"; nothing for {string.Join(", ", missing)}" : "") + note;
     }
 
     /// <summary>Put away what the bot carries but does not wear or hold (except 'keep').</summary>

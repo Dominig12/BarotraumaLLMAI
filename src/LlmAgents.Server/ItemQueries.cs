@@ -192,9 +192,13 @@ internal static class ItemQueries
 
     // ----------------------------------------------------------------- health
 
+    /// <summary>Buffs, talents and genetic material (spliced genes: "Hunter genes 100") are not injuries.</summary>
+    static bool IsBenign(AfflictionPrefab p) =>
+        p.IsBuff || p.AfflictionType == "geneticmaterialbuff" || p.AfflictionType == "geneticmaterialdebuff" || p.AfflictionType == "talentbuff";
+
     public static IEnumerable<Affliction> TreatableAfflictions(Character target) =>
         target.CharacterHealth.GetAllAfflictions()
-            .Where(a => !a.Prefab.IsBuff && a.Strength > 0 && a.Strength >= a.Prefab.TreatmentThreshold)
+            .Where(a => !IsBenign(a.Prefab) && a.Strength > 0 && a.Strength >= a.Prefab.TreatmentThreshold)
             .OrderByDescending(a => a.Strength / Math.Max(1f, a.Prefab.MaxStrength));
 
     /// <summary>"burn 30 (left arm), bleeding 12": the worst few afflictions.</summary>

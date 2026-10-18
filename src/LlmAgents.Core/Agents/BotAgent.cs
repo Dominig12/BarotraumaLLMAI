@@ -226,7 +226,18 @@ public sealed class BotAgent
     {
         lock (sync)
         {
-            notes.Add((Tools.Clip(note, MaxNoteLength), at));
+            var text = Tools.Clip(note, MaxNoteLength);
+            // a new version of a recent note (the same status written again with new numbers) replaces it, so the notes
+            // keep what is different instead of filling up with one situation report
+            int same = -1;
+            for (int i = notes.Count - 1; i >= Math.Max(0, notes.Count - 3) && same < 0; i--)
+                if (Similar(notes[i].Text, text)) same = i;
+            if (same >= 0)
+            {
+                oldNotes.Add(notes[same]);
+                notes.RemoveAt(same);
+            }
+            notes.Add((text, at));
             while (notes.Count > Math.Max(1, max))
             {
                 // out of the prompt, not out of memory: recall still finds it
@@ -238,6 +249,18 @@ public sealed class BotAgent
     }
 
     readonly List<(string Text, double At)> oldNotes = new();
+
+    /// <summary>Two notes say mostly the same (most of their words, by stem, are shared).</summary>
+    public static bool Similar(string a, string b)
+    {
+        static HashSet<string> Words(string s) => s.ToLowerInvariant()
+            .Split(new[] { ' ', ',', '.', '!', '?', ':', ';', '"', '(', ')', '[', ']', '—', '-', '/' }, StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w.Length >= 4 && !w.Any(char.IsDigit)).Select(w => w.Length > 5 ? w[..5] : w).ToHashSet();
+        var x = Words(a); var y = Words(b);
+        if (x.Count < 3 || y.Count < 3) return false;
+        int shared = x.Count(y.Contains);
+        return shared >= 0.6 * Math.Min(x.Count, y.Count);
+    }
 
     public List<string> Notes() { lock (sync) return notes.Select(n => n.Text).ToList(); }
 

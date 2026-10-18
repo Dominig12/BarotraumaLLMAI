@@ -142,6 +142,40 @@ internal sealed class TakeItemsTask : BotTask
     }
 }
 
+/// <summary>An AI crewmate hands items over: walk up to them, then the items go from their pockets into the bot's.</summary>
+internal sealed class ReceiveItemsTask : BotTask
+{
+    readonly Character holder;
+    readonly List<Item> items;
+    readonly List<Item> got = new();
+    public override string Name => $"get {string.Join(", ", items.Select(i => i.Name).Distinct())} from {holder.Name}";
+    protected override double TimeoutSeconds => 120;
+    public override IEnumerable<Item> Claimed => items;
+
+    public ReceiveItemsTask(Character bot, HumanAIController ai, Character holder, List<Item> items) : base(bot, ai)
+    {
+        this.holder = holder;
+        this.items = items;
+    }
+
+    protected override string? Update()
+    {
+        if (holder.IsDead || holder.Removed) return $"failed: {holder.Name} is gone";
+        if (!IsNear(holder, 140f))
+        {
+            if (!Running) Run(GoTo(holder, 100f), $"going to {holder.Name}");
+            else if (Stalled(15)) return $"failed: could not get to {holder.Name}";
+            return null;
+        }
+        ClearObjective();
+        foreach (var i in items.Where(i => !i.Removed && i.GetRootInventoryOwner() == holder))
+            if (PickUp(i)) got.Add(i);
+        if (got.Count == 0) return $"failed: took nothing from {holder.Name} (no room, or they no longer carry it)";
+        var list = string.Join(", ", got.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"));
+        return $"ok: {holder.Name} handed over {list} (in your inventory now)";
+    }
+}
+
 /// <summary>
 /// Empties a crate (or any container) and puts every item where it belongs (<see cref="StoragePlanner"/>: onto stacks
 /// of the same items first, then next to similar items, then the usual places). A crate is carried along; from a fixed

@@ -21,10 +21,11 @@ namespace LlmAgents.Agents;
 /// </summary>
 public sealed partial class AgentManager
 {
-    /// <summary>A situation flag that disappeared for this long counts as new when it comes back.</summary>
-    const double FlagForgetSeconds = 20;
-    /// <summary>No danger for this long = "the danger is over".</summary>
-    const double CalmAfterSeconds = 10;
+    /// <summary>A situation flag that disappeared for this long counts as new when it comes back. Long enough that a
+    /// monster circling at the edge of the danger radius, or a walk through a wet room, is one event and not ten.</summary>
+    const double FlagForgetSeconds = 60;
+    /// <summary>No danger for this long, and a calm sub, = "the danger is over".</summary>
+    const double CalmAfterSeconds = 30;
 
     sealed record Candidate(BotAgent Agent, int Tier);
 
@@ -148,7 +149,8 @@ public sealed partial class AgentManager
         foreach (var f in flags) agent.FlagsSeen[f.Key] = now;
         if (fresh.Count > 0) agent.AddEvent(EventKind.Danger, string.Join("; ", fresh.Select(f => f.Text)), now);
 
-        if (flags.Any(f => f.Danger))
+        // the danger is not over while the sub itself is in trouble, even where this bot stands it is dry
+        if (flags.Any(f => f.Danger) || SubInDanger(obs))
         {
             agent.InDanger = true;
             agent.DangerGoneSince = double.NaN;
@@ -160,10 +162,14 @@ public sealed partial class AgentManager
             {
                 agent.InDanger = false;
                 agent.DangerGoneSince = double.NaN;
-                Notify(agent, EventKind.Calm, "the danger is over (no monsters, breaches, fire or flooding near you): back to normal duties; diving gear can come off", now);
+                Notify(agent, EventKind.Calm, "the danger is over (no monsters near the sub, no breaches, fire or flooding aboard): back to normal duties; diving gear can come off", now);
             }
         }
     }
+
+    /// <summary>Monsters near the sub, breaches, a flooded room or a fire anywhere aboard.</summary>
+    static bool SubInDanger(Observation o) =>
+        o.Threats.Count > 0 || o.Leaks.Count > 0 || o.RoomFires > 0 || o.Rooms.Any(r => r.Fires > 0 || r.WaterPercent >= 50);
 
     /// <summary>Whether the bot should ask now, and with what priority.</summary>
     Candidate? Due(BotAgent agent, double now)
@@ -336,6 +342,15 @@ public sealed partial class AgentManager
         agent.Stats.Answered++;
 
         var calls = r.Response.ToolCalls.Take(g.MaxActionsPerDecision).ToList();
+        // a call without any of its required arguments ({"name":"say"}) is a broken reply, not an action: left out, and
+        // the bot is told, instead of failing the plan on it
+        var empty = calls.Where(c => Tools.MissingAllRequired(c)).ToList();
+        if (empty.Count > 0)
+        {
+            calls.RemoveAll(empty.Contains);
+            agent.RecordResult($"ignored {string.Join(", ", empty.Select(c => c.Name + "()"))}: called without the required arguments");
+            Log.Info($"[{agent.Name}] ignored calls without arguments: {string.Join(", ", empty.Select(c => c.Name))}");
+        }
         if (r.Response.Truncated)
         {
             agent.RecordResult("warning: your last reply was too long and got cut off, so part of it was lost. Use fewer and shorter calls (short say texts).");

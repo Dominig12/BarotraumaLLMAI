@@ -94,11 +94,30 @@ public class EventSchedulingTests
         await Run(mgr, 5);
         Assert.Equal(1, Count("Ann"));
         game.Observations[1].Threats.Clear();
-        await Run(mgr, 8);
+        game.Observations[1].Rooms[1] = new RoomInfo("Command Room [h11]", 70, 0);
+        await Run(mgr, 45);
+        Assert.Equal(1, Count("Ann"));      // a flooded room aboard: the danger is not over, even where she stands it is dry
+        game.Observations[1].Rooms[1] = new RoomInfo("Command Room [h11]", 0, 0);
+        await Run(mgr, 20);
         Assert.Equal(1, Count("Ann"));      // not at once: the crawler may come back
-        await Run(mgr, 10);
+        await Run(mgr, 20);
         Assert.Equal(2, Count("Ann"));
         Assert.StartsWith("[calm] the danger is over", WhyOf(1)[0]);
+    }
+
+    [Fact]
+    public async Task AMonsterAtTheEdgeOfTheRadiusIsOneEvent()
+    {
+        game.AddBot(1, "Ann", "assistant", o => o.Threats.Add(new ThreatInfo("Crawler", 78, null)));
+        var mgr = Create(s => s.Bots.ThinkAtRoundStart = false);
+        for (int i = 0; i < 6; i++)
+        {
+            await Run(mgr, 5);
+            game.Observations[1].Threats.Clear();      // it drifts out of the radius...
+            await Run(mgr, 5);
+            game.Observations[1].Threats.Add(new ThreatInfo("Crawler", 79, null));   // ...and back
+        }
+        Assert.Equal(1, Count("Ann"));
     }
 
     [Fact]

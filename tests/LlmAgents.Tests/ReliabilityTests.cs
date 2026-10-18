@@ -132,3 +132,66 @@ public class ReliabilityTests
         Assert.Equal(0, ann.Decisions);
     }
 }
+
+public class Log5MemoryTests
+{
+    [Fact]
+    public void A_status_note_written_again_replaces_the_old_one()
+    {
+        var a = new BotAgent(new BotHandle(1, "Doris", "medicaldoctor"));
+        a.AddNote("Лариса идёт на заправку баллона. У меня кислородные баллоны в инвентаре, Даррин в трюме", 12);
+        a.AddNote("Капитан просил докладывать о каждом раненом", 12);
+        a.AddNote("Лариса идёт за баллоном на заправку. У меня кислородные баллоны в инвентаре, Даррин уже в трюме", 12);
+        Assert.Equal(2, a.Notes().Count);
+        Assert.Contains("Капитан просил докладывать о каждом раненом", a.Notes());
+        Assert.Equal(3, a.AllNotes().Count);   // the old one is still found by recall
+    }
+
+    [Fact]
+    public void The_round_summary_keeps_lasting_facts_apart()
+    {
+        var (summary, lessons) = AgentManager.ParseSummary(
+            "Я варила пробоины по приказу Рандеву и лечила Ларису.\n- Запасные кислородные баллоны лежат в шкафу инженерного отсека\n- Макс любит короткие доклады\n- ok");
+        Assert.Equal("Я варила пробоины по приказу Рандеву и лечила Ларису.", summary);
+        Assert.Equal(2, lessons.Count);
+        Assert.StartsWith("Запасные кислородные баллоны", lessons[0]);
+    }
+
+    [Fact]
+    public void A_long_summary_is_cut_after_a_sentence()
+    {
+        var text = string.Concat(Enumerable.Repeat("Я заварила пробоину в балласте. ", 30));
+        var clipped = LlmAgents.Memory.MemoryStore.ClipAtSentence(text, LlmAgents.Memory.MemoryStore.MaxJournalLength);
+        Assert.EndsWith(".", clipped);
+        Assert.True(clipped.Length <= LlmAgents.Memory.MemoryStore.MaxJournalLength);
+    }
+
+    [Fact]
+    public async Task Notes_of_a_round_reach_the_next_one()
+    {
+        var clock = new FakeClock();
+        var game = new FakeGame().AddBot(1, "Doris", "medicaldoctor");
+        var settings = Fixtures.Settings(extraRoot: "\"memory\": { \"roundSummary\": false },");
+        var memory = new LlmAgents.Memory.MemoryStore(null);
+        var handler = new FakeHandler(_ => (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("remember", "{\"note\":\"Запасные баллоны в шкафу у реактора\"}"))));
+        var mgr = new AgentManager(settings, game, new LlmRouter(settings, handler, clock.Utc), clock.Get, memory);
+        mgr.BeginRound("test");
+        for (int i = 0; i < 4; i++) { mgr.Update(); await mgr.WhenIdle(); clock.Advance(0.5); }
+        mgr.EndRound();
+        mgr.Reset();
+
+        Assert.Contains("Запасные баллоны в шкафу у реактора", memory.Bot("Doris")!.LastRoundNotes);
+        string? seen = null;
+        var handler2 = new FakeHandler(body =>
+        {
+            seen = body["messages"]!.AsArray()[^1]!["content"]!.GetValue<string>();
+            return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("carry_on", "{}")));
+        });
+        var next = new AgentManager(settings, game, new LlmRouter(settings, handler2, clock.Utc), clock.Get, memory);
+        next.BeginRound("test");
+        for (int i = 0; i < 4; i++) { next.Update(); await next.WhenIdle(); clock.Advance(0.5); }
+        Assert.Contains("lastRoundNotes", seen);
+        Assert.Contains("Запасные баллоны в шкафу у реактора", seen);
+        Assert.Contains("шкафу у реактора", next.Recall(next.GetAgent(1)!, "баллоны"));
+    }
+}

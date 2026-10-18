@@ -16,6 +16,8 @@ public static class OrderHints
         (R(@"за\s*мной|follow\s*me|on\s*me\b"), (who, _) => $"follow(target=\"{who}\")"),
         // "сюда", not "отсюда" (= "from here")
         (R(@"ко\s*мне|\bсюда\b|come\s*(here|to\s*me)"), (who, _) => $"come_to(target=\"{who}\")"),
+        (R(@"принес|отнес|передай|передать|отдай|отдать|\bдай\s+(ему|ей|им)\b|положи\w*\s+(ему|ей|им)\b|\bgive\b.+\bto\b|\bhand\s+(it|them|over)|\bbring\b.+\bto\b"),
+            (_, _) => "move_item(item=<what>, to=<the person's name>) (walks there and hands it over; come_to hands nothing)"),
         (R(@"\b(возьм|бер[иеё]|хватай|захват|прихват|взять|забер|take\b|grab|pick\s*up|bring)|подготов\w*\s+(медикамент|лекарств|аптечк|инструмент|патрон|боеприпас)"), (who, room) => TakeHint(who, room)),
         (R(@"\bстой|\bстоп|\bжди(те)?\b|\bstop\b|\bhold\s*position|\bstay\b"), (_, _) => "wait()"),
         (R(@"\bвольно\b|\bотбой\b|\bas\s*you\s*were|\bdismiss"), (_, _) => "return_to_default()"),

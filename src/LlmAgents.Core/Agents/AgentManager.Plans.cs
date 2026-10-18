@@ -153,7 +153,8 @@ public sealed partial class AgentManager
             plan.WaitFor(PlanWait.Task, now);
             agent.TaskTool = call.Name;
         }
-        else if (!IsError(result) && call.Name == "go_to_room" && !result.Contains("already"))
+        // (a walk kept below a player's orders waits for them: the bot gets there later, not now, so it is not awaited)
+        else if (!IsError(result) && call.Name == "go_to_room" && !result.Contains("already") && !result.Contains("priority lowered"))
             plan.WaitFor(PlanWait.Arrival, now, ArrivalRoom(result) ?? Tools.Str(call.Arguments, "room"));
         else plan.Tree.Report(true, result);   // done at once (an order, a word: a failed word does not stop the work)
         return true;

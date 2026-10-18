@@ -32,6 +32,7 @@ public sealed partial class AgentManager
                     .Select(kv => $"{kv.Key}: {kv.Value.Feeling}" + (kv.Value.Note.Length > 0 ? " - " + kv.Value.Note : "")).ToList()
                 : null,
             PlayerPreferences = prefs.Count > 0 ? prefs : null,
+            LastRoundNotes = bot?.LastRoundNotes.Count > 0 ? bot.LastRoundNotes.ToList() : null,
         };
         if (view.PastRounds?.Count == 0) view.PastRounds = null;
         return view.IsEmpty ? null : view;
@@ -52,6 +53,7 @@ public sealed partial class AgentManager
         {
             foreach (var f in m.Facts) items.Add(("fact", f, 2e6));
             foreach (var j in m.Journal) items.Add(("past round", j, 3e6));
+            foreach (var n in m.LastRoundNotes) items.Add(("note, last round", n, 2.5e6));
             foreach (var (person, rel) in m.Relationships) items.Add(("relationship", $"{person}: {rel.Feeling}" + (rel.Note.Length > 0 ? " - " + rel.Note : ""), 2e6));
         }
         if (MemoryOn)
@@ -127,6 +129,8 @@ public sealed partial class AgentManager
         {
             var log = agent.RoundLog();
             var notes = agent.Notes();
+            // what the bot wrote down goes along into the next round as it is: nothing it chose to remember is lost
+            if (notes.Count > 0) memory.SetLastRoundNotes(agent.Name, agent.Job, notes);
             if (log.Count == 0 && notes.Count == 0)
             {
                 memory.AddJournal(agent.Name, agent.Job, "", m.MaxJournal, countRound: true);
@@ -141,14 +145,12 @@ public sealed partial class AgentManager
             }
             var user = "Events of the round:\n- " + string.Join("\n- ", log) +
                        (notes.Count > 0 ? "\nYour notes:\n- " + string.Join("\n- ", notes) : "");
-            var system = $"You are {agent.Name}, {agent.Job} on a submarine in Barotrauma. The round just ended. " +
-                         $"Write ONE or two sentences (max {MemoryStore.MaxJournalLength} characters) for your long-term memory: what happened, " +
-                         "who did what, what you learned. First person, past tense, in the language the crew speaks. Plain text only, no tool calls.";
             string name = agent.Name, job = agent.Job, scope = memory.Scope;   // the campaign this round belonged to
-            int max = m.MaxJournal;
+            int maxJournal = m.MaxJournal, maxFacts = m.MaxFacts;
             Track(Task.Run(async () =>
             {
                 string entry = fallback;
+                var lessons = new List<string>();
                 try
                 {
                     // Slots may be busy (local models often allow one request at a time): wait for one, but not forever.
@@ -160,19 +162,51 @@ public sealed partial class AgentManager
                         await Task.Delay(500, cts.Token).ConfigureAwait(false);
                     }
                     CountRequest();
-                    var r = await router.CompleteAsync(reservation!, system, new[] { new LlmTurn("user", user) }, Array.Empty<ToolSpec>(), cts.Token).ConfigureAwait(false);
-                    var text = r.Status == RouteStatus.Ok ? JsonUtil.OneLine(r.Response?.Text ?? "").Trim().Trim('"') : "";
-                    if (text.Length >= 10) entry = text;
+                    var r = await router.CompleteAsync(reservation!, SummaryPrompt(name, job), new[] { new LlmTurn("user", user) },
+                        Array.Empty<ToolSpec>(), cts.Token).ConfigureAwait(false);
+                    var (summary, keep) = ParseSummary(r.Status == RouteStatus.Ok ? r.Response?.Text : null);
+                    if (summary.Length >= 10) entry = summary;
                     else Log.Warn($"[{name}] round summary failed ({r.Status}): {r.Detail}; using the plain one");
+                    lessons = keep;
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception e) { Log.Warn($"[{name}] round summary failed: {e.Message}; using the plain one"); }
-                memory.AddJournal(name, job, entry, max, countRound: true, scope);
+                memory.AddJournal(name, job, entry, maxJournal, countRound: true, scope);
+                foreach (var fact in lessons) memory.AddFact(name, job, fact, maxFacts, scope);
                 memory.Flush();
-                Log.Info($"[{name}] journal: {entry}");
+                Log.Info($"[{name}] journal: {entry}" + (lessons.Count > 0 ? $" | kept: {string.Join(" | ", lessons)}" : ""));
             }));
         }
         memory.Flush();
+    }
+
+    public const int MaxLessonsPerRound = 3;
+
+    static string SummaryPrompt(string name, string job) =>
+        $"You are {name}, {job} on a submarine in Barotrauma. The round just ended. Write for your long-term memory, " +
+        "in the language the crew speaks, plain text, no tool calls:\n" +
+        $"First line: one or two sentences (max {MemoryStore.MaxJournalLength - 100} characters), first person, past tense: what happened, who did what.\n" +
+        $"Then up to {MaxLessonsPerRound} lines starting with \"- \": lasting facts worth knowing in later rounds on this sub " +
+        "(where spare tanks, suits or tools are kept, what worked or failed, what a person is good at or wants). " +
+        "Not how this round went, not positions or water levels. No lines if there is nothing lasting.";
+
+    /// <summary>The summary's first line(s) and its "- " lines (lasting facts).</summary>
+    public static (string Summary, List<string> Lessons) ParseSummary(string? text)
+    {
+        var lessons = new List<string>();
+        var summary = new List<string>();
+        foreach (var raw in (text ?? "").Replace("\r", "").Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0) continue;
+            if (line.StartsWith("- ") || line.StartsWith("* ") || line.StartsWith("• "))
+            {
+                var fact = line.Substring(2).Trim().Trim('"');
+                if (fact.Length >= 8 && lessons.Count < MaxLessonsPerRound) lessons.Add(fact);
+            }
+            else if (lessons.Count == 0) summary.Add(line);
+        }
+        return (string.Join(" ", summary).Trim().Trim('"'), lessons);
     }
 
     static string PlainSummary(List<string> log)

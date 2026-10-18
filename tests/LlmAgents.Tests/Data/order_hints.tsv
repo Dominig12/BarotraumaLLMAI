@@ -31,3 +31,6 @@ follow me	follow(
 как дела?	-
 Иди в Электрику	!repairelectrical
 Все по местам!	!unpack
+Тетя дорис, принеси гиперцин из аптечки Максу, не вкалывай, положи ему в карманы	move_item(item=<what>, to=<the person's name>)
+Передай ему предмет	move_item(
+bring the bandages to Max	move_item(

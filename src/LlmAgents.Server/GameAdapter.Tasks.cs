@@ -139,6 +139,8 @@ public sealed partial class GameAdapter
         bool all = IsAll(query);
         List<Item> found;
         string? where = null;
+        if (from != null && FindCrew(from.Trim(), c, includeSelf: false) is { } holder && HandOver(c, ai, holder, query, count, all) is { } handed)
+            return handed;
         if (from != null)
         {
             var place = ItemsAt(c, from);
@@ -198,7 +200,7 @@ public sealed partial class GameAdapter
     {
         var f = from.Trim();
         Hull? hull = null;
-        if (f.Contains("[h")) hull = ResolveRoom(f);
+        if (IsRoomRef(f)) hull = ResolveRoom(f);
         if (f.ToLowerInvariant() is "here" or "this room" or "здесь" or "тут" or "отсюда" or "сюда" or "эта комната" or "этот отсек")
             hull = c.CurrentHull;
         var person = hull == null && f.Length >= 3 ? FindCrew(f, c, includeSelf: true) : null;
@@ -432,7 +434,7 @@ public sealed partial class GameAdapter
                         && t.item.GetComponent<Reactor>() == null && t.item.GetComponent<Turret>() == null))
             .ToList();
 
-        var hull = from.Contains("[h") ? ResolveRoom(from) : ResolveRoom(from.Trim());
+        var hull = IsRoomRef(from) ? ResolveRoom(from) : ResolveRoom(from.Trim());
         // "<container> in/в <room>"
         var named = storages.Where(t => ItemQueries.MatchScore(t.item.Prefab, from) > 0).ToList();
         if (hull == null)
@@ -453,6 +455,22 @@ public sealed partial class GameAdapter
         var nearest = named.OrderBy(t => Vector2.DistanceSquared(t.item.WorldPosition, c.WorldPosition)).Take(1).ToList();
         return (nearest.Select(t => t.ic!).ToList(),
                 nearest.Count > 0 ? $"{nearest[0].item.Name} in {(nearest[0].item.CurrentHull != null ? RoomId(nearest[0].item.CurrentHull) : "?")}" : from);
+    }
+
+    /// <summary>take_item(from=a crew member) when that person carries it: an AI crewmate hands it over (the taker walks
+    /// to them); a human player is asked instead (nobody takes things out of a player's pockets). null = they carry
+    /// nothing like it: then 'from' means the place where they are.</summary>
+    string? HandOver(Character c, HumanAIController ai, Character holder, string query, int count, bool all)
+    {
+        var items = (holder.Inventory?.AllItems ?? Enumerable.Empty<Item>())
+            .Where(i => !holder.HasEquippedItem(i) && (all || ItemQueries.MatchScore(i.Prefab, query) > 0))
+            .Distinct().ToList();
+        if (items.Count == 0) return null;
+        if (!holder.IsBot && !holder.IsIncapacitated)
+            return $"error: {holder.Name} carries {items[0].Name}, but only they can hand it over: ask them (say) to give it to you or drop it";
+        var best = all ? null : items.OrderByDescending(i => ItemQueries.MatchScore(i.Prefab, query)).First().Prefab;
+        var pick = items.Where(i => best == null || i.Prefab == best).Take(count).ToList();
+        return StartTask(c, new ReceiveItemsTask(c, ai, holder, pick), evenOverPlayerOrders: true);
     }
 
     public string Treat(int botId, string target, string? itemQuery)

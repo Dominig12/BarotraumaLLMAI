@@ -232,8 +232,17 @@ public sealed partial class GameAdapter
         return $"{name} [h{h.ID}]";
     }
 
+    /// <summary>"h474" or "[h474]": the room id without its name (models shorten it).</summary>
+    static readonly System.Text.RegularExpressions.Regex ShortRoomId =
+        new(@"^\s*\[?h(\d+)\]?\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>The text names a room by its id ("Engine Room [h57]", "[h57]", "h57").</summary>
+    static bool IsRoomRef(string s) => s.Contains("[h", StringComparison.OrdinalIgnoreCase) || ShortRoomId.IsMatch(s);
+
     static Hull? ResolveRoom(string roomId)
     {
+        if (ShortRoomId.Match(roomId) is { Success: true } m && ushort.TryParse(m.Groups[1].Value, out var shortId))
+            return Entity.FindEntityByID(shortId) as Hull;
         int open = roomId.LastIndexOf("[h", StringComparison.OrdinalIgnoreCase);
         if (open >= 0 && ushort.TryParse(roomId.Substring(open + 2).TrimEnd(']', ' '), out var id))
             return Entity.FindEntityByID(id) as Hull;

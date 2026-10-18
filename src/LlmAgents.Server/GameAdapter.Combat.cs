@@ -58,7 +58,7 @@ public sealed partial class GameAdapter
         if (flora)
         {
             if (floraLeft == 0) return "ok (no ballast flora aboard)";
-            var hull = target.Contains("[h") ? ResolveRoom(target) : null;
+            var hull = IsRoomRef(target) ? ResolveRoom(target) : null;
             if (hull != null && !AIObjectiveBurnFlora.LiveBranches(c.Submarine, hull).Any()) return $"error: no ballast flora in {RoomId(hull)}";
             var tools = FireTools(c, weapon);
             if (tools.Count == 0)
