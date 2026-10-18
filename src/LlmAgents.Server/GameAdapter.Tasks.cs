@@ -50,6 +50,7 @@ public sealed partial class GameAdapter
 
     public void Reset()
     {
+        ResetObjectCatalog();
         GearLock.Reset();
         foreach (var t in tasks.Values) t.Cancel();
         tasks.Clear();

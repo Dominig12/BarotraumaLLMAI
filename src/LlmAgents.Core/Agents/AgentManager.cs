@@ -125,6 +125,7 @@ public sealed partial class AgentManager : IDisposable
         EndRound(summarize: false);
         Interlocked.Increment(ref generation);
         agents.Clear();
+        objectTools.Clear();
         ResetMemoryRound();
         pendingChats.Clear();
         while (gameThread.TryDequeue(out _)) { }
@@ -267,6 +268,7 @@ public sealed partial class AgentManager : IDisposable
             Log.Info($"agent removed: {agents[id].Name}");
             ArchiveMemory(agents[id]);
             agents.Remove(id);
+            objectTools.Remove(id);
         }
     }
 

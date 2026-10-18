@@ -258,7 +258,7 @@ public sealed partial class AgentManager
         obs.Plan = agent.PlanText();
 
         // Every permitted tool is described. The model decides which capability fits an order, in any language.
-        var tools = Tools.For(Settings.Bots.AllowedTools, agent.AiControl, MemoryOn);
+        var tools = ToolsFor(agent);
         string user = UserMessage(obs, obs.ToCompactJson());
         Settings.Bots.ExtraPromptByJob.TryGetValue(agent.Job, out var extra);
         string system = Prompts.System(agent, g.MaxActionsPerDecision, extra, agent.AiControl, MemoryOn,
@@ -341,7 +341,7 @@ public sealed partial class AgentManager
         var calls = r.Response.ToolCalls.Take(g.MaxActionsPerDecision).ToList();
         // a call without any of its required arguments ({"name":"say"}) is a broken reply, not an action: left out, and
         // the bot is told, instead of failing the plan on it
-        var empty = calls.Where(c => !IsPlanControl(c) && Tools.MissingAllRequired(c)).ToList();
+        var empty = calls.Where(c => !IsPlanControl(c) && MissingAllRequired(agent, c)).ToList();
         if (empty.Count > 0)
         {
             calls.RemoveAll(empty.Contains);
@@ -397,7 +397,7 @@ public sealed partial class AgentManager
         // game adapter allows that anyway, but a locked diving suit still needs a human's word).
         bool authority = req.Orders.Any(o => o.Authority);
         agent.ActedSinceDecision = false;
-        Guarded(agent, "plan", () => ApplyPlan(agent, calls, authority, AutoGoal(req.Orders, calls), now));
+        Guarded(agent, "plan", () => ApplyPlan(agent, calls, authority, AutoGoal(req.Orders, calls, agent), now));
         // heartbeats that change nothing come less and less often; anything else resets the pace
         agent.IdleStreak = req.HeartbeatOnly && !agent.ActedSinceDecision ? agent.IdleStreak + 1 : 0;
     }
@@ -439,11 +439,11 @@ public sealed partial class AgentManager
 
     /// <summary>A player's order becomes the bot's goal, so it is not forgotten after a few small steps.</summary>
     /// <returns>null = leave the goal; "" = clear it; text = the new goal.</returns>
-    static AgentGoal? AutoGoal(List<PendingOrder> orders, List<ToolCall> calls)
+    AgentGoal? AutoGoal(List<PendingOrder> orders, List<ToolCall> calls, BotAgent agent)
     {
         if (orders.Count == 0 || calls.Any(c => c.Name == "set_goal")) return null;
         if (calls.Any(c => c.Name == "return_to_default")) return new AgentGoal("", "", 0);   // "dismissed"
-        if (calls.All(c => TalkTools.Contains(c.Name))) return null;                        // a greeting or a question, not a job
+        if (calls.All(c => PassiveTool(agent, c.Name))) return null;                        // a greeting or a question, not a job
         var last = orders[^1];
         var source = last.From != null ? (last.Authority ? "player " + last.From : last.From + " (in command)") : "an order";
         return new AgentGoal(string.Join(" | ", orders.Select(o => GoalText(o.Text))), source, 0, last.Authority ? last.From : null);

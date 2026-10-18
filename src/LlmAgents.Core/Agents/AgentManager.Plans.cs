@@ -22,9 +22,6 @@ public sealed partial class AgentManager
     /// <summary>Calls that are about the plan itself, not steps of it.</summary>
     static bool IsPlanControl(ToolCall c) => c.Name is "plan" or "update_plan" or "keep_plan";
 
-    /// <summary>Tools a plan tree may contain.</summary>
-    static readonly IReadOnlyCollection<string> PlanToolNames = Tools.All.Select(t => t.Name).ToHashSet();
-
     // ---------------------------------------------------------------- a reply
 
     void ApplyPlan(BotAgent agent, List<ToolCall> calls, bool authority, AgentGoal? autoGoal, double now)
@@ -39,7 +36,7 @@ public sealed partial class AgentManager
                 return;
             }
         if (autoGoal is { } goal) agent.SetGoal(goal.Text, now, goal.Source, goal.Player);
-        bool lookup = calls.Any(c => Tools.Def(c.Name)?.Kind == ToolKind.Lookup);
+        bool lookup = calls.Any(c => ResolveTool(agent, c.Name)?.Kind == ToolKind.Lookup);
         bool rewrite = calls.Any(c => c.Name == "plan");
 
         // the running plan goes on: changed in one place (update_plan) or kept (keep_plan), this reply's other calls in between
@@ -52,7 +49,7 @@ public sealed partial class AgentManager
         PlanTree tree;
         try
         {
-            tree = rewrite ? PlanTree.Build(TreeSteps(calls), PlanToolNames)
+            tree = rewrite ? PlanTree.Build(TreeSteps(calls), PlanToolNames(agent))
                            : PlanTree.FromCalls(calls.Where(c => c.Name != "keep_plan"));
         }
         catch (FormatException e)
@@ -104,7 +101,7 @@ public sealed partial class AgentManager
         foreach (var u in calls.Where(c => c.Name == "update_plan"))
         {
             var node = Tools.Str(u.Arguments, "node") ?? "";
-            var err = plan.Tree.Replace(node, u.Arguments["steps"], PlanToolNames);
+            var err = plan.Tree.Replace(node, u.Arguments["steps"], PlanToolNames(agent));
             var line = $"update_plan(node={node}) -> {(err == null ? "ok, plan now: " + plan.Tree.Describe(300) : "error: " + err)}";
             agent.RecordResult(line);
             Log.Info($"[{agent.Name}] {line}");
@@ -148,27 +145,29 @@ public sealed partial class AgentManager
     bool RunStep(BotAgent agent, ActivePlan plan, PlanTree.ActAction act, double now)
     {
         var call = act.Call;
+        var definition = ResolveTool(agent, call.Name);
+        var canonical = CanonicalCall(agent, call);
         // the room reached before was only on the way: its "stay there" order would pull the bot back after the job
-        if (plan.TravelPending && Tools.MovesOn(call.Name))
+        if (plan.TravelPending && definition?.MovesOn == true)
         {
             game.EndTravel(agent.Id);
             plan.TravelPending = false;
         }
         var result = Run(agent, call, plan.Authority);
-        if (IsError(result) && !SoftError(call.Name))
+        if (IsError(result) && !SoftError(agent, call.Name))
         {
             if (plan.Tree.Report(false, result) is not { } why) return true;   // a "try" caught it
             StopPlan(agent, $"step {act.NodeId} {call.Name} failed: {Tools.Clip(why, 120)}", now);
             return false;
         }
-        if (!IsError(result) && TaskTools.Contains(call.Name) && result.StartsWith("ok, started"))
+        if (!IsError(result) && definition?.Kind == ToolKind.Task && result.StartsWith("ok, started"))
         {
             plan.WaitFor(PlanWait.Task, now);
-            agent.TaskTool = call.Name;
+            agent.TaskTool = canonical.Name;
         }
         // (a walk kept below a player's orders waits for them: the bot gets there later, not now, so it is not awaited)
-        else if (!IsError(result) && call.Name == "go_to_room" && !result.Contains("already") && !result.Contains("priority lowered"))
-            plan.WaitFor(PlanWait.Arrival, now, ArrivalRoom(result) ?? Tools.Str(call.Arguments, "room"));
+        else if (!IsError(result) && canonical.Name == "go_to_room" && !result.Contains("already") && !result.Contains("priority lowered"))
+            plan.WaitFor(PlanWait.Arrival, now, ArrivalRoom(result) ?? Tools.Str(canonical.Arguments, "room"));
         else plan.Tree.Report(true, result);   // done at once (an order, a word: a failed word does not stop the work)
         return true;
     }
@@ -177,7 +176,7 @@ public sealed partial class AgentManager
 
     /// <summary>A failed word, note or lookup (order_crew without an order, an empty say) does not stop the work around it:
     /// the error is in the results for the next turn, the plan goes on.</summary>
-    static bool SoftError(string tool) => Tools.Def(tool)?.Kind is ToolKind.Talk or ToolKind.Memory or ToolKind.Lookup
+    bool SoftError(BotAgent agent, string tool) => ResolveTool(agent, tool)?.Kind is ToolKind.Talk or ToolKind.Memory or ToolKind.Lookup
         || tool is "order_crew" or "set_order_priority";
 
     void Continue(BotAgent agent, ActivePlan plan, string last, double now) =>
@@ -378,7 +377,7 @@ public sealed partial class AgentManager
             agent.RecordResult(line);
             agent.AddActivity(error ? "error" : "do", line, clock());
         }
-        if (!TalkTools.Contains(call.Name) && result.StartsWith("ok") && !result.Contains("already")) agent.ActedSinceDecision = true;
+        if (!PassiveTool(agent, call.Name) && result.StartsWith("ok") && !result.Contains("already")) agent.ActedSinceDecision = true;
         if (error) agent.AddError(line);
         if (!NotLogged.Contains(call.Name) && !result.Contains("already")) agent.LogEvent(line);
         Log.Info($"[{agent.Name}] {line}");

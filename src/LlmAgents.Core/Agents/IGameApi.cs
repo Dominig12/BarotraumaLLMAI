@@ -85,6 +85,23 @@ public interface IGameApi
     string Treat(int botId, string target, string? item);
 
     // ---- inventory
+    /// <summary>Inspect all compartments, slots and nested contents of self, an exact #item, or [cID].
+    /// Indices are zero-based. Does not open locked containers or grant permission to take their contents.</summary>
+    string InspectInventory(int botId, string? target = null, int depth = 4) => "error: not supported in this game backend";
+    /// <summary>Transfer individual items to an exact inventory owner, optionally selecting a zero-based
+    /// ItemContainer component and inventory slot. Never replaces existing contents implicitly; reports completion later.</summary>
+    string TransferItem(int botId, string item, string target, int count = 1, int? containerIndex = null, int? slot = null) => "error: not supported in this game backend";
+    /// <summary>Walk into ordinary interaction range without mutating the target or bypassing its access rules.</summary>
+    string ApproachObject(int botId, string target) => "error: not supported in this game backend";
+    /// <summary>One native select/use interaction-key press on an exact item, after approaching and checking access.
+    /// This is not held-item firing and acceptance does not imply a machine completed work.</summary>
+    string InteractObject(int botId, string target, string key = "select") => "error: not supported in this game backend";
+
+    /// <summary>Current loaded world instances, including modded and dynamically spawned objects. Game thread only.</summary>
+    IReadOnlyList<GameObjectInfo> GetObjects(int botId) => System.Array.Empty<GameObjectInfo>();
+    /// <summary>Inspect the real components, state and supported interactions of an exact observed object.</summary>
+    string InspectObject(int botId, string target) => "error: not supported in this game backend";
+
     /// <summary>Move a worn/held item into the bot's own inventory.</summary>
     string Unequip(int botId, string item, ItemFilter? filter = null);
     string Drop(int botId, string item, ItemFilter? filter = null);

@@ -42,30 +42,29 @@ internal static class StoragePlanner
             if (i.Removed || i == item || exclude.Contains(i) || i.Submarine != c.Submarine) continue;
             if (i.GetRootInventoryOwner() is Character || ItemQueries.IsIgnored(i) || !GameAdapter.IsStorage(i)) continue;
             if (IsInside(i, item)) continue;                       // not into itself or its own contents
-            var ic = i.GetComponent<ItemContainer>();
-            if (ic == null || !ic.Inventory.CanBePut(item)) continue;
+            foreach (var ic in i.GetComponents<ItemContainer>())
+            {
+                if (!ic.Inventory.CanBePut(item) || GameAdapter.InventoryAccessProblem(c, ic.Inventory, requireRange: false) != null) continue;
+                var held = ic.Inventory.AllItems.ToList();
+                bool same = held.Any(x => x.Prefab == item.Prefab);
+                bool similar = !same && groups.Count > 0 && held.Any(x => GroupsOf(x.Prefab).Overlaps(groups));
+                bool preferred = false, secondary = false;
+                if (!same && !similar) preferred = item.Prefab.IsContainerPreferred(item, ic, out _, out secondary);
+                if (ItemRules.StorageScore(same, similar, preferred, secondary, i.GetComponent<Pickable>() != null) is not { } s) continue;
 
-            var held = ic.Inventory.AllItems.ToList();
-            bool same = held.Any(x => x.Prefab == item.Prefab);
-            bool similar = !same && groups.Count > 0 && held.Any(x => GroupsOf(x.Prefab).Overlaps(groups));
-            bool preferred = false, secondary = false;
-            if (!same && !similar) preferred = item.Prefab.IsContainerPreferred(item, ic, out _, out secondary);
-            if (ItemRules.StorageScore(same, similar, preferred, secondary, i.GetComponent<Pickable>() != null) is not { } s) continue;
-
-            float meters = Vector2.Distance(i.WorldPosition, from) / UnitsPerMeter;
-            float value = ItemRules.StorageValue(s.Score, meters);
-            if (value > bestValue) { bestValue = value; best = new Choice(ic, s.Score, s.Why); }
+                float meters = Vector2.Distance(i.WorldPosition, from) / UnitsPerMeter;
+                float value = ItemRules.StorageValue(s.Score, meters);
+                if (value > bestValue) { bestValue = value; best = new Choice(ic, s.Score, s.Why); }
+            }
         }
         return best;
     }
 
     static bool IsInside(Item container, Item item)
     {
-        for (var x = container; x != null; x = x.Container)
-            if (x == item) return true;
-        return false;
+        return InventoryTransferRules.WouldCreateCycle(item, container, x => x.Container);
     }
 
     public static string Describe(ItemContainer ic) =>
-        $"{ic.Item.Name} in {(ic.Item.CurrentHull != null ? GameAdapter.RoomId(ic.Item.CurrentHull) : "?")}";
+        $"{ItemQueries.InstanceLabel(ic.Item)} compartment {ic.Item.GetComponents<ItemContainer>().ToList().IndexOf(ic)} in {(ic.Item.CurrentHull != null ? GameAdapter.RoomId(ic.Item.CurrentHull) : "?")}";
 }

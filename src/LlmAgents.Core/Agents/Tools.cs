@@ -170,6 +170,9 @@ public static class Tools
         Bound("count", 1, name == "take_item" ? MaxTakeCount : name == "deconstruct" ? MaxDeconstructCount : MaxMoveCount);
         Bound("min_condition_percent", 0, 100);
         Bound("max_condition_percent", 0, 100);
+        Bound("depth", 0, 8);
+        if (props["container_index"] is JsonObject compartment) compartment["minimum"] = 0;
+        if (props["slot"] is JsonObject slot) slot["minimum"] = 0;
         return new(name, desc, schema, kind, group, run);
     }
 
@@ -331,6 +334,41 @@ public static class Tools
                 return to == null && destination is not ("storage" or "self") ? "error: missing 'to' for destination '" + destination + "'"
                     : c.Game.MoveItem(c.Id, item, to ?? "", c.Int("count", 0), destination, filter);
             })) with { MovesOn = true },
+        T("inspect_inventory", "Inspect an inventory's real compartments and zero-based slots, stack members with exact #IDs, condition, capacity, allowed slot types and containment rules, and nested contents. "
+            + "This is a lookup: it does not walk, unlock, take, equip or transfer anything. Remote or forbidden contents are withheld; use approach_object first when out of reach. "
+            + "Use the returned container_index and slot with transfer_item. A slot may hold several individual item instances; slot and item count are different. Never infer compatibility from a name.",
+            Schema(Arg("target", "Inventory owner: 'self' (default), exact item #ID, or character [cID]. No prefab/name matching; copy the actual owner reference.", false),
+                   Arg("depth", "Nested inventory depth, 0-8, default 4. Depth 0 shows this owner's compartments and slots; increase depth or inspect a nested #ID separately to reveal deeper contents.", false, "integer")),
+            ToolKind.Lookup, ToolGroup.Inventory, c => c.Game.InspectInventory(c.Id, c.Str("target"), c.Int("depth", 4))),
+        T("transfer_item", "Move individual items into a specific inventory, compartment and optional slot using normal travel, access and capacity checks. "
+            + "Fetches the source and approaches the destination automatically. Supports nested containers and character equipment slots. Never swaps, combines, destroys or drops existing contents to make space. "
+            + "Inspect the destination first for compatible compartments and slot types. An exact #ID selects one instance and requires count=1. "
+            + "To unload fuel/C4/ammo, select its inner #ID as item and use target='self' or another container. To split a stack, select a prefab identifier and an explicit count; each #ID remains one instance. "
+            + "Started means in progress; only the completion report confirms moved counts. On partial failure, earlier successful transfers remain and the report states the actual count.",
+            Schema(Arg("item", "Exact source item #ID, prefab identifier or copied exact item name. No '*', category phrases or quantities. Prefer #ID to transfer exactly one stack member or nested payload."),
+                   Arg("target", "Exact destination inventory owner: 'self', #item or [cID]. For a shell/tool use its #ID; for equipment use self plus the inspected character slot."),
+                   Arg("count", $"Individual item instances, 1-{MaxMoveCount}, default 1. An exact source #ID requires 1.", false, "integer"),
+                   Arg("container_index", "Zero-based ItemContainer component index shown by inspect_inventory. Required when more than one compartment fits. Omit for character inventories, which have no ItemContainer component index.", false, "integer"),
+                   Arg("slot", "Zero-based destination inventory slot shown by inspect_inventory. Omit for a compatible free slot/stack. Must accept the item and have space; occupied incompatible slots are rejected.", false, "integer")),
+            ToolKind.Task, ToolGroup.Inventory, c =>
+            {
+                var item = c.Str("item"); var target = c.Str("target");
+                if (item == null || target == null) return "error: 'item' and 'target' must be nonempty references";
+                if (InventoryTransferRules.ValidateCount(item, c.Int("count", 1), MaxMoveCount) is { } error) return "error: " + error;
+                return c.Game.TransferItem(c.Id, item, target, c.Int("count", 1),
+                    c.A["container_index"] == null ? null : c.Int("container_index", 0), c.A["slot"] == null ? null : c.Int("slot", 0));
+            }) with { MovesOn = true },
+        T("approach_object", "Walk into interaction range of one exact object or character without picking up, opening, operating or transferring anything. "
+            + "Use before inspecting remote inventories. Walking does not unlock an inventory or grant access; inspect again after completion.",
+            Schema(Arg("target", "Exact observed object reference: #item, [cID], [hID], [eID] or [sID]. Copy from object_tools or inspect_object.")),
+            ToolKind.Task, ToolGroup.Inventory, c => c.Need(c.Str("target"), "target", target => c.Game.ApproachObject(c.Id, target))) with { MovesOn = true },
+        T("interact_object", "Approach an exact item and perform ONE native interaction-key press, respecting the loaded component's PickKey/SelectKey and requirements. "
+            + "Use inspect_object first to read which keys its components accept. The native interaction may select/open an interface, pick up, press a button or toggle a door, according to the actual components. "
+            + "This does not call a held weapon's firing trigger or continuously operate a machine. Completion confirms native acceptance and reports observed state; it does not prove a machine produced an item or a downstream circuit finished. "
+            + "Inspect the resulting state before deciding whether to press again: repeated toggles can undo the first action.",
+            Schema(Arg("target", "Exact item #ID from the current object catalog; room/character references are not item interaction targets."),
+                   Arg("key", "Native interaction key, select (default) or use. Copy an available interaction from inspect_object/object_tools. This is an interaction key, not Item.Use weapon firing.", false, en: new[] { "select", "use" })),
+            ToolKind.Task, ToolGroup.Items, c => c.Need(c.Str("target"), "target", target => c.Game.InteractObject(c.Id, target, c.Str("key") ?? "select"))) with { MovesOn = true },
         T("unequip", "Take off one matching worn or held item into your inventory; needs a free inventory slot.", ItemArgs(Arg("item", ItemReference, false)), ToolKind.Order, ToolGroup.Inventory,
             c => WithItem(c, "item", (v, f) => c.Game.Unequip(c.Id, v, f))),
         T("drop", "Drop one matching item here. If it is a product in a machine output, walk to the machine and remove it onto the floor beside that machine. Use exact product #ID to clear a heavy railgun shell from a fabricator.", ItemArgs(Arg("item", ItemReference, false)), ToolKind.Task, ToolGroup.Inventory,
@@ -406,6 +444,14 @@ public static class Tools
             + "('there', 'like I said', 'the thing from before') or before you say you do not know.",
             Schema(Arg("query", "Words to look for (a name, an item, a room, a topic); empty = the latest of everything", required: false)),
             ToolKind.Lookup, ToolGroup.Core, c => c.Mgr.Recall(c.Agent, c.Str("query"))),
+        T("object_tools", "Discover generated tools for EVERY live game object, including modded and newly spawned objects. Each returned tool is bound to one exact object instance; its full argument schema is offered on your NEXT turn. Call this last and wait. Omit target for the complete paged catalog, or copy an exact #item/[cCharacter]/[hRoom] reference, prefab identifier or exact object name. Pages count tools, not objects. Use offset and limit to continue. Removed/replaced objects invalidate their handles; discover again. This does not execute the discovered actions.",
+            Schema(Arg("target", "Exact object reference, prefab identifier or copied exact name; omitted = all live objects.", false),
+                Arg("offset", "Zero-based tool offset; default 0.", false, "integer"),
+                Arg("limit", "Number of tools to return and bind, 1-20; default 12.", false, "integer")),
+            ToolKind.Lookup, ToolGroup.Core, c => c.Mgr.DiscoverObjectTools(c.Agent, c.Str("target"), c.Int("offset", 0), c.Int("limit", 12))),
+        T("inspect_object", "Read one exact live game object, including modded objects: components, available interactions, condition, location, inventory and machine relationships where applicable. Copy #item/[cCharacter]/[hRoom] reference from observations or object_tools. Lookup result arrives next turn; call last and wait. Does not activate or modify the object.",
+            Schema(Arg("target", "Exact #item/[cCharacter]/[hRoom] object reference.")),
+            ToolKind.Lookup, ToolGroup.Core, c => c.Game.InspectObject(c.Id, c.Str("target")!)),
         T("inspect", "Read current authoritative information; the answer arrives in your next turn, so place this last and wait before using its results. "
             + "items: exact item references/locations/remaining condition, optional exact query plus structured filters; machines: machine #IDs, status/power and explicitly linked supplies (query optional); "
             + "recipes: available recipes (optional exact-name/identifier filter); recipe: ingredients, batch output and requirements of one recipe (query required); "
@@ -421,7 +467,7 @@ public static class Tools
                 if (kind == null || !InspectKinds.Contains(kind)) return $"error: kind must be one of {string.Join(", ", InspectKinds)}";
                 if (string.IsNullOrEmpty(query) && kind == "recipe") return "error: missing 'query' (exact recipe to look up)";
                 return WithFilter(c, f => kind != "items" && f?.HasCriteria == true ? "error: selection filters and 'from' apply only to inspect kind='items'; use 'query' for other kinds"
-                    : kind == "tools" ? ToolHelp(query) : Clip(c.Game.Inspect(c.Id, kind, query ?? "", f), MaxInspectLength));
+                    : kind == "tools" ? c.Mgr.ToolHelp(c.Agent, query) : Clip(c.Game.Inspect(c.Id, kind, query ?? "", f), MaxInspectLength));
             }),
     };
 
@@ -564,11 +610,12 @@ public static class Tools
     {
         try
         {
-            var def = Def(call.Name);
+            var def = mgr.ResolveTool(agent, call.Name);
             if (def == null) return $"error: unknown tool '{call.Name}'";
-            if (mgr.Settings.Bots.AllowedTools.Count > 0 && !mgr.Settings.Bots.AllowedTools.Contains(call.Name, StringComparer.OrdinalIgnoreCase))
+            if (!mgr.IsToolAllowed(agent, call.Name))
                 return $"error: tool '{call.Name}' is not in allowedTools";
-            if (ValidateArguments(call) is { } error) return "error: " + error;
+            if (def.ControlOnly && !agent.AiControl) return $"error: {call.Name} is only available under full AI control";
+            if (ValidateAgainstSchema(call.Arguments, def.Schema) is { } error) return "error: " + error;
             return def.Run(new ToolContext(call, agent, game, mgr));
         }
         catch (Exception e)

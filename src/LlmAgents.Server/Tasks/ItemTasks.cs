@@ -148,7 +148,7 @@ internal sealed class TakeItemsTask : BotTask
         var why = full ? "your inventory is full" : "could not get them (taken or out of reach)";
         if (got.Count == 0) return $"failed: took nothing: {why}";
         var list = string.Join(", ", got.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"));
-        return $"ok: took {list} (in your inventory now)" + (left > 0 ? $"; {left} more not taken: {why}" : "");
+        return (left > 0 ? "failed: partially took " : "ok: took ") + $"{list} (in your inventory now)" + (left > 0 ? $"; {left} more not taken: {why}" : "");
     }
 }
 
@@ -168,13 +168,14 @@ internal sealed class DropOutputTask : BotTask
         if (!GameAdapter.InMachineOutput(item) && item.GetRootInventoryOwner() != Bot)
             return item.ParentInventory == null ? $"ok: {item.Name} is already on the floor" : "failed: product was moved out of the machine";
         var target = item.Container ?? item;
-        if (!IsNear(target, 180f) && !Bot.CanInteractWith(target))
+        if (!Bot.CanInteractWith(target))
         {
             if (ObjectiveFailed || ObjectiveDone || Stalled(20)) return $"failed: cannot reach {target.Name}";
             if (!HasObjective) Run(GoTo(target, 80f), $"going to the output of {target.Name}");
             return null;
         }
         ClearObjective();
+        if (item.ParentInventory != null && GameAdapter.InventoryAccessProblem(Bot, item.ParentInventory) is { } accessError) return "failed: " + accessError;
         item.Drop(Bot);
         return item.ParentInventory == null ? $"ok: dropped {ItemQueries.InstanceLabel(item)} beside the machine" : $"failed: could not remove {item.Name} from the machine";
     }
@@ -199,7 +200,7 @@ internal sealed class ReceiveItemsTask : BotTask
     protected override string? Update()
     {
         if (holder.IsDead || holder.Removed) return $"failed: {holder.Name} is gone";
-        if (!IsNear(holder, 140f))
+        if (!Bot.CanInteractWith(holder))
         {
             if (!Running) Run(GoTo(holder, 100f), $"going to {holder.Name}");
             else if (Stalled(15)) return $"failed: could not get to {holder.Name}";
@@ -210,7 +211,7 @@ internal sealed class ReceiveItemsTask : BotTask
             if (PickUp(i)) got.Add(i);
         if (got.Count == 0) return $"failed: took nothing from {holder.Name} (no room, or they no longer carry it)";
         var list = string.Join(", ", got.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"));
-        return $"ok: {holder.Name} handed over {list} (in your inventory now)";
+        return (got.Count == items.Count ? "ok: " : "failed: partially received; ") + $"{holder.Name} handed over {list} (in your inventory now)";
     }
 }
 
@@ -293,7 +294,7 @@ internal sealed class UnpackTask : BotTask
                     if (!IsNear(box, 140f)) { if (!HasObjective || ObjectiveDone) Run(GoTo(box, 80f), $"going to {box.Name}"); else if (ObjectiveFailed) return Report($"cannot reach {box.Name}"); return null; }
                     ClearObjective();
                     foreach (var i in Contents().Where(i => StoragePlanner.Choose(Bot, i, exclude, origin)?.Container == target).Take(40))
-                        if (Bot.Inventory.TryPutItem(i, Bot, new List<InvSlotType> { InvSlotType.Any })) load.Add(i);
+                        if (InventoryView.TryStore(Bot, i, Bot.Inventory)) load.Add(i);
                     if (load.Count == 0) { left.Add(next); return null; }   // no room in the inventory for it
                 }
                 trips++;
@@ -345,7 +346,7 @@ internal sealed class UnpackTask : BotTask
         foreach (var i in source)
         {
             if (StoragePlanner.Choose(Bot, i, exclude, origin)?.Container != to) continue;
-            if (!to.Inventory.TryPutItem(i, Bot)) continue;
+            if (!InventoryView.TryStore(Bot, i, to.Inventory)) continue;
             load.Remove(i);
             done.Add((i.Prefab.Name.Value, StoragePlanner.Describe(to), targetWhy));
             n++;
@@ -355,7 +356,8 @@ internal sealed class UnpackTask : BotTask
 
     void PutBack(Item i)
     {
-        if (!boxContainer.Inventory.TryPutItem(i, Bot)) i.Drop(Bot);
+        // If access or capacity changed, keep the item rather than silently throwing it away.
+        InventoryView.TryStore(Bot, i, boxContainer.Inventory);
     }
 
     protected override void OnFinish() => PlaceBox();
@@ -365,7 +367,7 @@ internal sealed class UnpackTask : BotTask
     {
         if (box.Removed || box.GetRootInventoryOwner() != Bot) return;
         var shelf = StoragePlanner.Choose(Bot, box, new HashSet<Item> { box });
-        if (shelf != null && IsNear(shelf.Container.Item, 600f) && shelf.Container.Inventory.TryPutItem(box, Bot))
+        if (shelf != null && InventoryView.TryStore(Bot, box, shelf.Container.Inventory))
             boxPlace = StoragePlanner.Describe(shelf.Container);
         else
         {
@@ -380,7 +382,7 @@ internal sealed class UnpackTask : BotTask
     {
         var parts = done.GroupBy(d => (d.What, d.Where)).Select(g => $"{g.Key.What} x{g.Count()} -> {g.Key.Where}").ToList();
         var stayed = boxContainer.Inventory.AllItems.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}").ToList();
-        var s = parts.Count == 0 ? $"failed: put nothing away from {box.Name}" : $"ok: put away from {box.Name}: {string.Join("; ", parts.Take(10))}";
+        var s = parts.Count == 0 ? $"failed: put nothing away from {box.Name}" : (problem == null && stayed.Count == 0 && load.All(i => i.GetRootInventoryOwner() != Bot) ? "ok: " : "failed: partially completed; ") + $"put away from {box.Name}: {string.Join("; ", parts.Take(10))}";
         if (problem != null) s += $" ({problem})";
         if (stayed.Count > 0) s += $"; still in it (no fitting place or no time): {string.Join(", ", stayed.Take(8))}";
         if (boxPlace != null) s += $"; {box.Name} left in {boxPlace}";
@@ -487,7 +489,7 @@ internal sealed class MoveItemTask : BotTask
             var arrived = Arrive(container.Item, 160f, $"carrying {label} to {destination}");
             if (arrived != null) return arrived.Length == 0 ? null : arrived;
             foreach (var i in load)
-                if (container.Inventory.TryPutItem(i, Bot)) delivered.Add(i); else failed.Add(i);
+                if (InventoryView.TryStore(Bot, i, container.Inventory)) delivered.Add(i); else failed.Add(i);
             full = false;
             walkTries = 0;
             return null; // bulky products need more than one trip; fetch the rest after unloading
@@ -496,7 +498,7 @@ internal sealed class MoveItemTask : BotTask
         if (receiver != null)
         {
             if (receiver.Removed || receiver.IsDead) return $"failed: {receiver.Name} is dead";
-            if (!IsNear(receiver, 120f))
+            if (!Bot.CanInteractWith(receiver))
             {
                 if (!HasObjective) Run(GoTo(receiver, 60f), $"bringing {label} to {receiver.Name}");
                 else if (ObjectiveFailed) return $"failed: cannot reach {receiver.Name}";
@@ -505,8 +507,8 @@ internal sealed class MoveItemTask : BotTask
             ClearObjective();
             foreach (var i in load)
             {
-                if (!receiver.Inventory.TryPutItem(i, Bot, new List<InvSlotType> { InvSlotType.Any })) i.Drop(Bot);
-                delivered.Add(i);
+                if (InventoryView.TryStore(Bot, i, receiver.Inventory, allowGive: true)) delivered.Add(i);
+                else failed.Add(i);
             }
             full = false;
             return null;
@@ -553,7 +555,8 @@ internal sealed class MoveItemTask : BotTask
         if (inPlace.Count == 0)
             return $"failed: could not move {label} ({(full ? "your inventory is full" : failed.Count > 0 ? "could not get it or it did not fit" : "nothing to move")})";
         var notDone = items.Where(i => !inPlace.Contains(i)).ToList();
-        var r = receiver != null ? $"ok: gave {Count(inPlace)} to {receiver.Name}" : $"ok: {Count(inPlace)} {where}";
+        var prefix = notDone.Count == 0 ? "ok: " : "failed: partially moved; ";
+        var r = receiver != null ? $"{prefix}gave {Count(inPlace)} to {receiver.Name}" : $"{prefix}{Count(inPlace)} {where}";
         if (notDone.Count > 0)
             r += $"; {notDone.Count} not moved ({(full ? "inventory full" : "out of reach or did not fit")}){(notDone.Any(Mine) ? ", still in your inventory" : "")}";
         return r;

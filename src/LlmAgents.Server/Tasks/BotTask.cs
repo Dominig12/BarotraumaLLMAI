@@ -126,6 +126,11 @@ internal abstract class BotTask
     {
         if (item.Removed || Bot.Inventory == null) return false;
         if (item.GetRootInventoryOwner() == Bot) return true;
+        if (item.ParentInventory != null)
+        {
+            if (GameAdapter.InventoryAccessProblem(Bot, item.ParentInventory) != null) return false;
+        }
+        else if (!Bot.CanInteractWith(item)) return false;
         if (Pocket(item)) return true;
         var hands = new List<InvSlotType> { InvSlotType.RightHand, InvSlotType.LeftHand };
         foreach (var held in hands.Select(slot => Bot.Inventory.GetItemInLimbSlot(slot)).Where(held => held != null && held != item).Distinct())

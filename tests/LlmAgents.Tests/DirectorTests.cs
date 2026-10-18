@@ -192,6 +192,95 @@ public class DirectorTests
         Assert.Contains("Arguments JSON Schema:", Director.SystemPrompt("Russian"));
     }
 
+    [Fact]
+    public async Task DirectorDiscoversPerBotObjectSchemasAndAssignsGeneratedTaskThatWaitsForItsReport()
+    {
+        game.AddBot(1, "Ann", "mechanic", observation => observation.Leaks.Add("Engine Room [h10]"));
+        game.Objects.Add(new GameObjectInfo("#42", "round1_item42", "Modded salvage", "mod.salvage", "item", new[] { "ModComponent" },
+            new[] { new ObjectToolBinding("take_item", new JsonObject { ["item"] = "#42" }) }));
+        var requests = 0;
+        director = prompt =>
+        {
+            requests++;
+            if (requests == 1) return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("object_tools", "{\"bot\":\"Ann\",\"target\":\"#42\"}")));
+            if (requests > 2) return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("carry_on", "{}")));
+            Assert.Contains("Arguments JSON Schema:", prompt);
+            Assert.Contains("Bound object: #42", prompt);
+            Assert.Contains("Modded salvage", prompt);
+            Assert.Contains("\"maximum\":8", prompt); // full schema survives summary, rather than a 200-character result excerpt
+            var match = System.Text.RegularExpressions.Regex.Match(prompt, @"obj_[A-Za-z0-9_]+_take_item_[a-f0-9]+\b");
+            Assert.True(match.Success);
+            var steps = new JsonArray
+            {
+                new JsonObject { ["do"] = match.Value, ["args"] = new JsonObject { ["count"] = 1 } },
+                new JsonObject { ["do"] = "say", ["args"] = new JsonObject { ["text"] = "salvage secured" } },
+            };
+            return (HttpStatusCode.OK, Assign("Ann", "collect modded salvage", steps.ToJsonString()));
+        };
+        using var manager = Create();
+        await Run(manager, 10);
+        Assert.Equal(2, requests);
+        Assert.Empty(botRequests);
+        Assert.Contains("1:take #42 x1", game.Actions);
+        Assert.DoesNotContain("1:say salvage secured", game.Actions);
+        Assert.Equal(PlanWait.Task, manager.GetAgent(1)!.Plan!.Waiting);
+        Assert.Equal("director", manager.GetAgent(1)!.CurrentGoal!.Source);
+        game.PendingReports.Add(new GameReport(1, "task 'take Modded salvage' ok: taken #42"));
+        await Run(manager, 5);
+        Assert.Contains("1:say salvage secured", game.Actions);
+        Assert.Null(manager.GetAgent(1)!.Plan);
+        Assert.Null(manager.GetAgent(1)!.CurrentGoal);
+        Assert.True(requests >= 3);
+    }
+
+    [Fact]
+    public void DirectorKeepsFullDiscoverySchemasButClipsRoutineResults()
+    {
+        var schemaResult = "object_tools(bot=\"Ann\") -> " + new string('x', 500) + "Arguments JSON Schema: {\"type\":\"object\"}";
+        var text = Director.Summary(Array.Empty<DirectorEvent>(), Array.Empty<DirectedBot>(), Array.Empty<string>(),
+            new[] { schemaResult, "assign(bot=\"Ann\") -> " + new string('z', 500) }, 0);
+        Assert.Contains(schemaResult, text);
+        Assert.DoesNotContain(new string('z', 500), text);
+        var spec = Assert.Single(Director.ToolSpecs, tool => tool.Name == "object_tools");
+        Assert.Contains("bot", spec.Parameters["required"]!.AsArray().Select(node => node!.GetValue<string>()));
+        Assert.NotNull(Tools.ValidateAgainstSchema(new JsonObject { ["bot"] = "Ann", ["limit"] = 21 }, spec.Parameters));
+        Assert.NotNull(Tools.ValidateAgainstSchema(new JsonObject { ["bot"] = "Ann", ["offset"] = -1 }, spec.Parameters));
+    }
+
+    [Fact]
+    public async Task DirectorDiscoverySchemasSurviveATransientRequestFailure()
+    {
+        game.AddBot(1, "Ann", "mechanic", observation => observation.Leaks.Add("Engine Room [h10]"));
+        game.Objects.Add(new GameObjectInfo("#42", "round1_item42", "Modded salvage", "mod.salvage", "item", Array.Empty<string>(),
+            new[] { new ObjectToolBinding("take_item", new JsonObject { ["item"] = "#42" }) }));
+        var discovered = false;
+        var recover = false;
+        var failures = 0;
+        director = prompt =>
+        {
+            if (!discovered)
+            {
+                discovered = true;
+                return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("object_tools", "{\"bot\":\"Ann\",\"target\":\"#42\"}")));
+            }
+            if (!recover) { failures++; return (HttpStatusCode.InternalServerError, "{\"error\":\"temporary outage\"}"); }
+            var match = System.Text.RegularExpressions.Regex.Match(prompt, @"obj_[A-Za-z0-9_]+_take_item_[a-f0-9]+\b");
+            if (!match.Success || !prompt.Contains("Arguments JSON Schema:", StringComparison.Ordinal))
+                return (HttpStatusCode.OK, Fixtures.OpenAiToolResponse(("carry_on", "{}")));
+            return (HttpStatusCode.OK, Assign("Ann", "collect salvage", new JsonArray
+                { new JsonObject { ["do"] = match.Value, ["args"] = new JsonObject { ["count"] = 1 } } }.ToJsonString()));
+        };
+        using var manager = Create();
+        await Run(manager, 6);
+        Assert.True(failures >= 1);
+        Assert.DoesNotContain("1:take #42 x1", game.Actions);
+        recover = true;
+        await Run(manager, 12);
+        Assert.Contains("1:take #42 x1", game.Actions);
+        Assert.True(manager.DirectorActive);
+        Assert.Empty(botRequests);
+    }
+
     [Theory]
     [InlineData("Ann", null)]
     [InlineData("ann lee", "Ann Lee")]

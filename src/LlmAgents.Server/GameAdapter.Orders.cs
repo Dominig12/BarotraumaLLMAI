@@ -172,7 +172,7 @@ public sealed partial class GameAdapter
                 return target != null ? GoToRoom(botId, target, priority) : SimpleOrder(botId, "wait", priority);
             case "follow":
                 return target != null ? Follow(botId, target, priority) : "error: follow needs a target (a crew member)";
-            case "operatereactor": return Operate(botId, "reactor", option, priority);
+            case "operatereactor" when target == null: return Operate(botId, "reactor", option, priority);
             case "steer" when target == null: return Operate(botId, "navigation", option, priority);
             case "operateweapons" when target == null && option == null: return Operate(botId, "weapons", option, priority);
         }
@@ -191,6 +191,9 @@ public sealed partial class GameAdapter
         if (NeedsTarget(prefab))
         {
             var items = c.Submarine == null ? new List<Item>() : prefab.GetMatchingItems(c.Submarine, true, c.TeamID, c, opt);
+            // An object-bound call may never fall back to an untargeted order when the instance
+            // stops matching (or is now inaccessible), even if the native target is optional.
+            if (items.Count == 0 && target != null) return $"error: '{target}' is not an available target for {prefab.Identifier}; no order issued";
             if (items.Count == 0 && prefab.MustSetTarget) return $"error: nothing aboard to {prefab.Identifier} ({prefab.Name.Value})";
             if (items.Count > 0)
             {
@@ -213,11 +216,16 @@ public sealed partial class GameAdapter
                 name += $" ({item.Name}{(item.CurrentHull != null ? " in " + RoomId(item.CurrentHull) : "")})";
             }
         }
+        else if (target != null)
+        {
+            if (prefab.TargetAllCharacters && ResolveRoom(target) is { } reportRoom) targetEntity = reportRoom;
+            else return $"error: {prefab.Identifier} does not support that explicit target; no order issued";
+        }
 
         if (prefab.TargetAllCharacters)
         {
             // a report ("fire here", "breach here"): to the whole crew, for the room the bot is in
-            var hull = (targetEntity as Item)?.CurrentHull ?? c.CurrentHull;
+            var hull = targetEntity as Hull ?? (targetEntity as Item)?.CurrentHull ?? c.CurrentHull;
             if (hull == null && targetEntity == null) return "error: you are not inside the sub";
             var report = new Order(prefab, opt, targetEntity ?? hull, null, orderGiver: c);
             GameMain.GameSession?.CrewManager?.AddOrder(report, prefab.FadeOutTime);

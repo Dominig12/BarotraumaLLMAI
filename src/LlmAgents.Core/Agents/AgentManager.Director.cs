@@ -230,7 +230,7 @@ public sealed partial class AgentManager
 
         if (calls.Count == 0)
         {
-            directorResults.Add("your last reply had no tool call, so nothing changed: reply with assign / note / carry_on calls");
+            directorResults.Add("your last reply had no tool call, so nothing changed: reply with assign / object_tools / note / carry_on calls");
             if (events.Any(e => EventPolicy.Tier(e.Kind) <= 1)) foreach (var e in events) AddDirectorEvent(e.Kind, e.Bot, e.Text, now);
             return;
         }
@@ -240,6 +240,8 @@ public sealed partial class AgentManager
             try { result = RunDirectorCall(call, now); }
             catch (Exception e) { result = "error: " + e.Message; Log.Error("[director] " + call.Name + " failed: " + e); }
             if (result.Length > 0) directorResults.Add($"{call.Name}({Tools.Clip(Tools.ArgsToString(call), 120)}) -> {result}");
+            if (call.Name == "object_tools")
+                AddDirectorEvent(EventKind.Lookup, Tools.Str(call.Arguments, "bot") ?? "", "object_tools results are ready: read the returned schemas or error before assigning a plan", now);
         }
     }
 
@@ -261,6 +263,17 @@ public sealed partial class AgentManager
             }
             case "assign":
                 return Assign(call, now);
+            case "object_tools":
+            {
+                var name = Tools.Str(call.Arguments, "bot");
+                var bot = Director.FindBot(agents.Values.Where(agent => game.IsAlive(agent.Id)), name);
+                if (bot == null) return $"error: no AI bot named '{name}' (bots: {string.Join(", ", agents.Values.Select(agent => agent.Name))})";
+                if (!IsToolAllowed(bot, "object_tools")) return "error: tool 'object_tools' is not in allowedTools";
+                static int Integer(JsonObject args, string key, int fallback) => args[key] is JsonValue value && value.TryGetValue<int>(out var number) ? number : fallback;
+                var result = DiscoverObjectTools(bot, Tools.Str(call.Arguments, "target"), Integer(call.Arguments, "offset", 0),
+                    Integer(call.Arguments, "limit", 12), includeSchemas: true);
+                return result;
+            }
             default:
                 return Tools.Def(call.Name) != null
                     ? $"error: '{call.Name}' is a bot tool: give it to a bot with assign(bot, goal, steps=[{{\"do\":\"{call.Name}\",\"args\":{{...}}}}])"
@@ -281,7 +294,7 @@ public sealed partial class AgentManager
         if (stepsNode is not JsonArray steps) return "error: 'steps' must be an array";
         var plan = new ToolCall("plan", new JsonObject { ["steps"] = steps.DeepClone() });
         if (Tools.ValidateArguments(plan) is { } invalid) return "error: " + invalid;
-        try { PlanTree.Build(steps.DeepClone(), PlanToolNames); }
+        try { PlanTree.Build(steps.DeepClone(), PlanToolNames(bot)); }
         catch (FormatException e) { return "error: the plan could not be read: " + Tools.Clip(e.Message, 200) + ". Send it again, fixed"; }
 
         bot.LogEvent("director: " + goal);

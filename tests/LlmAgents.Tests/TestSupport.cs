@@ -20,6 +20,19 @@ public sealed class FakeGame : IGameApi
     public readonly ConcurrentQueue<string> Actions = new();
     public readonly HashSet<int> Dead = new();
     public int ObserveCalls;
+    public readonly List<GameObjectInfo> Objects = new();
+    public IReadOnlyList<GameObjectInfo> GetObjects(int botId) => Objects.ToArray();
+    public string InspectObject(int botId, string target) => Objects.Any(obj => obj.Reference == target)
+        ? $"object {target}" : $"error: object {target} is unavailable";
+    public (string Item, string Target, int Count, int? ContainerIndex, int? Slot)? LastTransfer;
+    public string InspectInventory(int botId, string? target = null, int depth = 4) => $"inventory {target ?? "self"} depth={depth}";
+    public string TransferItem(int botId, string item, string target, int count = 1, int? containerIndex = null, int? slot = null)
+    {
+        LastTransfer = (item, target, count, containerIndex, slot);
+        return Act(botId, $"transfer {item} -> {target} x{count}", "ok, started: transfer item");
+    }
+    public string ApproachObject(int botId, string target) => Act(botId, $"approach {target}", "ok, started: approach object");
+    public string InteractObject(int botId, string target, string key = "select") => Act(botId, $"interact {target} key={key}", "ok, started: interact object");
 
     public FakeGame AddBot(int id, string name, string job, Action<Observation>? setup = null)
     {
