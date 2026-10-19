@@ -155,6 +155,8 @@ public sealed partial class GameAdapter
                     ["condition_percent"] = item.MaxCondition > 0 ? Math.Round(item.Condition / item.MaxCondition * 100, 2) : (double?)null,
                     ["max_stack_in_this_inventory"] = item.Prefab.GetMaxStackSize(inventory),
                     ["equipped"] = inventory.Owner is Character owner && owner.HasEquippedItem(item),
+                    ["equipped_as_intended"] = inventory.Owner is Character wearer && InventoryView.EquippedAsIntended(wearer, item),
+                    ["allowed_slot_combinations"] = new JsonArray(item.AllowedSlots.Select(allowed => (JsonNode?)JsonValue.Create(allowed.ToString())).ToArray()),
                     ["parent"] = InventoryOwnerRef(inventory.Owner), ["parent_container_index"] = componentIndex,
                 };
                 itemNodes.Add(itemNode);

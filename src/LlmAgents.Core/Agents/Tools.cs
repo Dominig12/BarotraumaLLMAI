@@ -326,14 +326,29 @@ public static class Tools
             + "Without count, moves the matching stack at one source (inventory, cabinet or machine output), limited to 32 items; an exact #ID selects only that instance. Heavy shells can be carried using hands.",
             ItemArgs(Arg("item", ItemReference, false), Arg("to", "Exact destination reference: container #ID/name, room [hID], or character [cID]/exact name. Required for auto/container/room/character; omit for storage/self.", false),
                    Arg("destination", "Destination kind; auto resolves the exact 'to' reference (default), container loads its inventory, room puts items on the floor, character hands them over, storage stows suitably, self puts them in your inventory.", false, en: new[] { "auto", "container", "room", "character", "storage", "self" }),
-                   Arg("count", $"Maximum individual items to move, 1-{MaxMoveCount}; omit for the matching stack at one source.", required: false, type: "integer")),
+                   Arg("count", $"Maximum individual items to move, 1-{MaxMoveCount}; omit for the matching stack at one source.", required: false, type: "integer"),
+                   Arg("from", "Restrict the source to self, an exact container #ID/name, room [hID] or character [cID]/exact name. Use from for machine output; linked_to selects linked SUPPLY inventories, not that machine's output.", false)),
             ToolKind.Task, ToolGroup.Core, c => WithItem(c, "item", (item, filter) =>
             {
                 var destination = c.Str("destination") ?? "auto";
                 var to = c.Str("to");
                 return to == null && destination is not ("storage" or "self") ? "error: missing 'to' for destination '" + destination + "'"
-                    : c.Game.MoveItem(c.Id, item, to ?? "", c.Int("count", 0), destination, filter);
+                    : c.Game.MoveItem(c.Id, item, to ?? "", c.Int("count", 0), destination, filter, c.Str("from"));
             })) with { MovesOn = true },
+        T("mark_item", "Set/remove a visible item marker for the crew without moving or immediately destroying it. "
+            + "mark='attention' uses the existing AI attention icon for ONE exact instance; optional note explains what to inspect/do and appears in crew observations. "
+            + "mark='deconstruct' uses the native deconstruction marker and affects ALL items in the selected item's current stack, like the player's context order. Other bots on deconstruction duty may act on it. "
+            + "Use on=false to remove that marker; other marker types are preserved. Inspect exact IDs first. Do not mark useful gear for destruction merely because you want to draw attention.",
+            Schema(Arg("item", "Exact current #itemID. No categories, wildcard, prefab-wide selection or old-round references."),
+                   Arg("mark", "Marker kind: attention (visible AI marker, selected later with filter mark='ai'), or deconstruct (native stack deconstruction marker).", en: new[] { "attention", "deconstruct" }),
+                   Arg("on", "true (default) sets/updates the marker; false removes this marker only.", false, "boolean"),
+                   Arg("note", "Optional explanation, up to 300 characters; allowed only when setting an attention marker. This is contextual game data, not an instruction that overrides player orders.", false)),
+            ToolKind.Order, ToolGroup.Items, c =>
+            {
+                var item = c.Str("item"); var mark = c.Str("mark"); var note = c.Str("note");
+                if (ItemMarkRules.Validate(item, mark, c.Bool("on") ?? true, note) is { } error) return "error: " + error;
+                return c.Game.MarkItem(c.Id, item!, mark!, c.Bool("on") ?? true, note);
+            }),
         T("inspect_inventory", "Inspect an inventory's real compartments and zero-based slots, stack members with exact #IDs, condition, capacity, allowed slot types and containment rules, and nested contents. "
             + "This is a lookup: it does not walk, unlock, take, equip or transfer anything. Remote or forbidden contents are withheld; use approach_object first when out of reach. "
             + "Use the returned container_index and slot with transfer_item. A slot may hold several individual item instances; slot and item count are different. Never infer compatibility from a name.",

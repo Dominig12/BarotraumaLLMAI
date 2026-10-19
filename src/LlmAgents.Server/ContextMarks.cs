@@ -18,7 +18,7 @@ internal static class ContextMarks
     public static readonly Identifier MarkId = "llmmark".ToIdentifier();
     public static readonly Identifier UnmarkId = "llmunmark".ToIdentifier();
 
-    public sealed record Mark(Item Item, string By, double At);
+    public sealed record Mark(Item Item, string By, double At, string? Note = null);
 
     static readonly Dictionary<ushort, Mark> marks = new();
     static readonly object gate = new();
@@ -51,6 +51,16 @@ internal static class ContextMarks
     {
         try
         {
+            if (order?.IsDeconstructOrder == true && order.TargetEntity is Item deconstructItem)
+            {
+                // Vanilla returns early for a matching active order, before changing DeconstructItems.
+                // A quick set/remove/set, or a stack whose members changed, must still apply the new state.
+                var stack = deconstructItem.GetStackedItems().ToHashSet();
+                stack.Add(deconstructItem);
+                __instance.ActiveOrders.RemoveAll(o => o.Order.IsDeconstructOrder && o.Order.TargetEntity is Item target && stack.Contains(target));
+                fadeOutTime = order.FadeOutTime;
+                return true;
+            }
             if (order == null || (order.Identifier != MarkId && order.Identifier != UnmarkId)) return true;
             if (order.TargetEntity is not Item item) return false;
             var by = order.OrderGiver?.Name ?? "a player";
@@ -62,7 +72,12 @@ internal static class ContextMarks
                 Changed?.Invoke(item, by, false);
                 return false;
             }
-            lock (gate) marks[item.ID] = new Mark(item, by, Timing.TotalTime);
+            lock (gate)
+            {
+                // A repeat mark refreshes its author/time but keeps the explanation unless the bot supplies a new one.
+                var note = marks.TryGetValue(item.ID, out var previous) && previous.Item == item ? previous.Note : null;
+                marks[item.ID] = new Mark(item, by, Timing.TotalTime, note);
+            }
             Changed?.Invoke(item, by, true);
             fadeOutTime = null;   // the icon stays until the mark is taken off
             return true;
@@ -85,6 +100,14 @@ internal static class ContextMarks
     }
 
     public static bool IsMarked(Item item) => All().Any(m => m.Item == item);
+
+    /// <summary>Optional bot explanation; the visual order remains the same native crew marker.</summary>
+    public static void SetNote(Item item, string? note)
+    {
+        lock (gate)
+            if (marks.TryGetValue(item.ID, out var mark) && mark.Item == item)
+                marks[item.ID] = mark with { Note = note };
+    }
 
     /// <summary>Live marks, newest first (removed items are dropped).</summary>
     public static List<Mark> All()

@@ -134,7 +134,8 @@ public sealed partial class GameAdapter
                 var where = i.GetRootInventoryOwner() is Character holder ? (holder == c ? "on you" : "carried by " + holder.Name)
                           : i.Container != null ? ItemQueries.Where(i, c) : i.CurrentHull != null ? RoomId(i.CurrentHull) : "outside";
                 var s = $"for the AI: {ItemQueries.InstanceLabel(i)} in {where} (marked by {m.By}, {Ago(m.At)}; select exact #ID or mark='ai')";
-                var inside = i.OwnInventory?.AllItems.ToList();
+                if (!string.IsNullOrWhiteSpace(m.Note)) s += "; attention note: " + m.Note;
+                var inside = i.GetComponents<Barotrauma.Items.Components.ItemContainer>().SelectMany(ic => ic.Inventory.AllItems).Distinct().ToList();
                 if (inside is { Count: > 0 })
                     s += "; contains " + string.Join(", ", inside.GroupBy(x => x.Prefab).Take(6).Select(g => $"{g.Key.Name.Value} x{g.Count()}"));
                 list.Add(s);

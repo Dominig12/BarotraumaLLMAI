@@ -6,13 +6,21 @@ namespace LlmAgents.Agents;
 /// <summary>A real station and the directed entity links read from the current submarine.</summary>
 public sealed record MachineryInfo(
     int Id, string Name, string Identifier, string Kind, string? Room, bool Active,
-    List<MachineryLinkInfo> Links, List<string>? Input = null, List<string>? Output = null, string? Power = null);
+    List<MachineryLinkInfo> Links, List<string>? Input = null, List<string>? Output = null, string? Power = null)
+{
+    /// <summary>Copyable tool argument; a numeric ID alone is not an item reference.</summary>
+    public string Reference => $"#{Id}";
+}
 
 /// <summary>FromId -> ToId is the actual entity link direction. An ingredient_source means that
 /// the target inventory supplies the source fabricator; proximity alone never creates this relationship.</summary>
 public sealed record MachineryLinkInfo(
     int FromId, int ToId, string Name, string Kind, string Relation, bool Accessible,
-    string? Inventory = null, List<string>? Contents = null);
+    string? Inventory = null, List<string>? Contents = null)
+{
+    public string FromReference => $"#{FromId}";
+    public string ToReference => $"#{ToId}";
+}
 
 /// <summary>Walk the actual source inventories, including nested bags, without double counting
 /// an inventory or item reachable through several machine links.</summary>

@@ -48,11 +48,7 @@ internal sealed class TreatTask : BotTask
             ClearObjective();
             choice = Choose();
             if (choice == null)
-                return applied > 0
-                    ? $"ok: nothing suitable left ({Summary()}); remaining: {ItemQueries.DescribeInjuries(patient)}"
-                    : onlyItemQuery != null
-                        ? $"failed: no '{onlyItemQuery}' that helps with {ItemQueries.DescribeInjuries(patient)}"
-                        : $"failed: no suitable medicine available for {ItemQueries.DescribeInjuries(patient)}; craft or find some";
+                return ItemQueries.NoTreatmentReport(Bot, patient, onlyItemQuery) + $" ({Summary()})";
         }
 
         // 1. get the medicine
@@ -76,6 +72,10 @@ internal sealed class TreatTask : BotTask
 
         // 3. apply it to the limb with the affliction it was chosen for
         ClearObjective();
+        // Another medic or a native rescue objective may have treated the patient while we fetched/walked.
+        // Re-evaluate at the instant of application, using the game's prediction rather than the stale choice.
+        choice = ItemQueries.ChooseTreatment(Bot, patient, choice.Item);
+        if (choice == null) return null;
         if (patient != Bot) Bot.SelectCharacter(patient);
         var limb = patient.CharacterHealth.GetAfflictionLimb(choice.Affliction);
         var name = choice.Item.Name;
@@ -94,7 +94,7 @@ internal sealed class TreatTask : BotTask
     ItemQueries.TreatmentChoice? Choose()
     {
         if (onlyItemQuery == null) return ItemQueries.ChooseTreatment(Bot, patient);
-        foreach (var candidate in ItemQueries.Find(Bot, onlyItemQuery, ItemQueries.IsMedical).Take(5))
+        foreach (var candidate in ItemQueries.Find(Bot, onlyItemQuery, ItemQueries.IsMedical))
         {
             var c = ItemQueries.ChooseTreatment(Bot, patient, candidate);
             if (c != null) return c;

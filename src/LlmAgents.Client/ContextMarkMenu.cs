@@ -56,6 +56,15 @@ internal static class ContextMarkMenu
     {
         try
         {
+            if (order?.IsDeconstructOrder == true && order.TargetEntity is Item deconstructItem)
+            {
+                // Match the server: native AddOrder otherwise drops rapid marker toggles as duplicates.
+                var stack = deconstructItem.GetStackedItems().ToHashSet();
+                stack.Add(deconstructItem);
+                __instance.ActiveOrders.RemoveAll(o => o.Order.IsDeconstructOrder && o.Order.TargetEntity is Item target && stack.Contains(target));
+                fadeOutTime = order.FadeOutTime;
+                return true;
+            }
             if (order == null || (order.Identifier != MarkId && order.Identifier != UnmarkId)) return true;
             if (order.TargetEntity is not Item item) return false;
             __instance.ActiveOrders.RemoveAll(o => o.Order.Identifier == MarkId && o.Order.TargetEntity == item);

@@ -116,9 +116,7 @@ internal abstract class BotTask
     }
 
     /// <summary>Into the bot's pockets, not its hands: Any slots first, the hands only if nothing else is free.</summary>
-    protected bool Pocket(Item item) =>
-        Bot.Inventory.TryPutItem(item, Bot, new List<InvSlotType> { InvSlotType.Any })
-        || Bot.Inventory.TryPutItem(item, Bot, CharacterInventory.AnySlot);
+    protected bool Pocket(Item item) => InventoryView.TryStore(Bot, item, Bot.Inventory);
 
     /// <summary>Into the pockets; something that fits no pocket (a diving suit, a big crate) into the hands, after what
     /// the hands hold goes into the pockets. The vanilla "get item" gives up on those: it tries to wear the suit.</summary>
@@ -134,8 +132,9 @@ internal abstract class BotTask
         if (Pocket(item)) return true;
         var hands = new List<InvSlotType> { InvSlotType.RightHand, InvSlotType.LeftHand };
         foreach (var held in hands.Select(slot => Bot.Inventory.GetItemInLimbSlot(slot)).Where(held => held != null && held != item).Distinct())
-            Bot.Inventory.TryPutItem(held, Bot, new List<InvSlotType> { InvSlotType.Any });
-        return Bot.Inventory.TryPutItem(item, Bot, hands);
+            foreach (int slot in InventoryView.AutomaticSlots(Bot.Inventory, pocketsOnly: true))
+                if (Bot.Inventory.CanBePutInSlot(held, slot) && Bot.Inventory.TryPutItem(held, slot, allowSwapping: false, allowCombine: false, user: Bot)) break;
+        return InventoryView.TryStore(Bot, item, Bot.Inventory);
     }
 
     protected AIObjectiveGoTo GoTo(ISpatialEntity target, float closeEnough = 100f) =>

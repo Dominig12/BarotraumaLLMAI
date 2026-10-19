@@ -102,7 +102,14 @@ public sealed class FakeGame : IGameApi
     public string Unequip(int botId, string item, ItemFilter? filter = null) => Capture(filter, Act(botId, $"unequip {item}"));
     public string DropResult = "ok";
     public string Drop(int botId, string item, ItemFilter? filter = null) => Capture(filter, Act(botId, $"drop {item}", DropResult));
-    public string MoveItem(int botId, string item, string to, int count = 0, string destination = "auto", ItemFilter? filter = null) { LastDestination = destination; return Capture(filter, Act(botId, $"move {item} -> {to}" + (count > 0 ? $" x{count}" : ""), "ok, started")); }
+    public string? LastMoveFrom;
+    public string MoveItem(int botId, string item, string to, int count = 0, string destination = "auto", ItemFilter? filter = null, string? from = null) { LastDestination = destination; LastMoveFrom = from; return Capture(filter, Act(botId, $"move {item} -> {to}" + (count > 0 ? $" x{count}" : ""), "ok, started")); }
+    public (string Item, string Mark, bool On, string? Note)? LastMark;
+    public string MarkItem(int botId, string item, string mark, bool on = true, string? note = null)
+    {
+        LastMark = (item, mark, on, note);
+        return Act(botId, $"mark {item} {mark} {on}");
+    }
     public string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority) =>
         Act(botId, $"order {orderId}" + (option != null ? ":" + option : "") + (target != null ? $" @{target}" : "") + $" [p{priority}]");
     public string PutIn(int botId, string item, string into, ItemFilter? filter = null) => Capture(filter, Act(botId, $"put {item} into {into}", "ok, started: put " + item));

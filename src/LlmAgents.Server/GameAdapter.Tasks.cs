@@ -108,12 +108,12 @@ public sealed partial class GameAdapter
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
         // already wearing something that fits ("diving suit" while in a combat suit): keep it, do not swap
         var worn = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>())
-            .FirstOrDefault(i => c.HasEquippedItem(i) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) == 3);
+            .FirstOrDefault(i => InventoryView.EquippedAsIntended(c, i) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) == 3);
         if (worn != null) return $"ok ({worn.Name} is already equipped)";
         var item = ItemQueries.Find(c, query, avoid: ClaimedByOthers(c), selection: filter).FirstOrDefault();
         if (item == null) return NotFound(c, query);
-        if (c.HasEquippedItem(item)) return $"ok ({item.Name} is already equipped)";
-        return StartTask(c, new EquipTask(c, ai, item, Replacer(c, query, filter)), evenOverPlayerOrders: true);
+        if (InventoryView.EquippedAsIntended(c, item)) return $"ok ({item.Name} is already equipped)";
+        return StartTask(c, new EquipTask(c, ai, item, Replacer(c, query, filter), PlayerSaidSo(c)), evenOverPlayerOrders: true);
     }
 
     public const int MaxTake = 8;
@@ -139,6 +139,12 @@ public sealed partial class GameAdapter
             var place = ItemsAt(c, from);
             if (place == null) return $"error: no container, room or crew member '{from}'; use a room id from 'rooms', a container name (cabinet, locker...) or a name";
             where = place.Value.Where;
+            if (from.Trim() == "self")
+            {
+                var mine = place.Value.Items.Where(i => ItemQueries.Matches(c, i, filter) && (all || ItemQueries.MatchScore(i, query) == 3)).ToList();
+                return mine.Count > 0 ? $"ok (already carrying {mine.Count} matching item(s); from=self selects only your current belongings)"
+                    : $"error: you carry no item matching '{query}' and the explicit filters";
+            }
             found = place.Value.Items
                 .Where(i => ItemQueries.IsAvailableTo(i, c) && ItemQueries.Matches(c, i, filter) && i.GetRootInventoryOwner() != c && !claimed.Contains(i))
                 .Select(i => (i, score: all ? 1 : ItemQueries.MatchScore(i, query)))
@@ -195,6 +201,13 @@ public sealed partial class GameAdapter
     (List<Item> Items, string Where)? ItemsAt(Character c, string from)
     {
         var f = from.Trim();
+        if (f == "self") return (Carried(c).ToList(), "your inventory");
+        if (ExactInventoryTarget(c, f) is Item exact && exact.GetComponents<ItemContainer>().Any())
+        {
+            var output = exact.GetComponent<Fabricator>()?.OutputContainer ?? exact.GetComponent<Deconstructor>()?.OutputContainer;
+            var compartments = output != null ? new[] { output } : exact.GetComponents<ItemContainer>();
+            return (compartments.SelectMany(ic => ic.Inventory.AllItems).Distinct().ToList(), ItemQueries.InstanceLabel(exact) + (output != null ? " (output)" : ""));
+        }
         Hull? hull = null;
         if (IsRoomRef(f)) hull = ResolveRoom(f);
         var person = hull == null && f.Length >= 3 ? FindCrew(f, c, includeSelf: true) : null;
@@ -334,10 +347,12 @@ public sealed partial class GameAdapter
 
         if (!string.IsNullOrWhiteSpace(from))
         {
-            var (places, where) = ContainersAt(c, from!, outputs: true);
-            if (places.Count == 0) return $"error: no container or room '{from}'; use a room id from 'rooms' or a container name (cabinet, locker, crate...)";
-            var candidates = places.SelectMany(ic => ic.Inventory.AllItems)
-                .Where(i => i.Prefab.AllowDeconstruct && i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i) && ItemQueries.Matches(c, i, filter))
+            var source = ItemsAt(c, from!);
+            if (source == null) return $"error: no source '{from}'; use self, an exact #container ID, or a room reference";
+            var where = source.Value.Where;
+            var claimed = ClaimedByOthers(c);
+            var candidates = source.Value.Items
+                .Where(i => ItemQueries.IsAvailableTo(i, c) && !claimed.Contains(i) && i.Prefab.AllowDeconstruct && i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i) && ItemQueries.Matches(c, i, filter))
                 .Select(i => (i, score: all ? 1 : ItemQueries.MatchScore(i, query)))
                 .Where(t => all || t.score == 3).ToList();
             // only the best match: "Сварочный аппарат" is the welding tool, not every "Топливный бак сварочного аппарата" next to it
@@ -438,7 +453,7 @@ public sealed partial class GameAdapter
         if (itemQuery != null && !ItemQueries.Find(c, itemQuery, ItemQueries.IsMedical).Any())
             return $"error: no '{itemQuery}' available; medical supplies: {string.Join(", ", ItemQueries.MedicalSupplies(c, 8))}";
         if (itemQuery == null && ItemQueries.ChooseTreatment(c, patient) == null)
-            return $"error: no medicine on the sub helps with {ItemQueries.DescribeInjuries(patient)}; craft some (inspect recipe) or find it";
+            return ItemQueries.NoTreatmentReport(c, patient).Replace("failed:", "error:");
         return StartTask(c, new TreatTask(c, ai, patient, itemQuery));
     }
 }

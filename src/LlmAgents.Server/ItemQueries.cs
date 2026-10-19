@@ -240,7 +240,7 @@ internal static class ItemQueries
     /// scored; among those reaching at least half of the best score the cheapest one wins (items already carried
     /// win ties). With <paramref name="onlyItem"/> the choice is restricted to that item.
     /// </summary>
-    public static TreatmentChoice? ChooseTreatment(Character medic, Character target, Item? onlyItem = null)
+    public static TreatmentChoice? ChooseTreatment(Character medic, Character target, Item? onlyItem = null, float predictFutureDuration = 10.0f)
     {
         var suitabilities = new Dictionary<Identifier, float>();
         var available = onlyItem != null
@@ -251,11 +251,11 @@ internal static class ItemQueries
                 .ToList();
         if (available.Count == 0) return null;
 
-        foreach (var affliction in TreatableAfflictions(target).Take(4))
+        foreach (var affliction in TreatableAfflictions(target))
         {
             var limb = target.CharacterHealth.GetAfflictionLimb(affliction);
             target.CharacterHealth.GetSuitableTreatments(suitabilities, medic, limb,
-                checkTreatmentThreshold: true, checkTreatmentSuggestionThreshold: false, predictFutureDuration: 10.0f);
+                checkTreatmentThreshold: true, checkTreatmentSuggestionThreshold: false, predictFutureDuration: predictFutureDuration);
 
             var candidates = new List<TreatmentChoice>();
             foreach (var item in available)
@@ -276,6 +276,25 @@ internal static class ItemQueries
                 .First();
         }
         return null;
+    }
+
+    /// <summary>Explain a missing native recommendation without confusing ongoing recovery with empty stock.</summary>
+    public static string NoTreatmentReport(Character medic, Character target, string? onlyItemQuery = null)
+    {
+        var available = Available(medic).Where(IsMedical)
+            .Concat(target.IsIncapacitated && target != medic && target.Inventory != null
+                ? target.Inventory.AllItems.Where(IsMedical) : Enumerable.Empty<Item>())
+            .Where(item => !item.Removed && (onlyItemQuery == null || MatchScore(item, onlyItemQuery) == 3)).Distinct().ToList();
+        var reason = TreatmentRules.NoChoice(available.Count,
+            available.Any(item => ChooseTreatment(medic, target, item, predictFutureDuration: 0) != null));
+        var injuries = DescribeInjuries(target) ?? "none above the treatment threshold";
+        var medicine = onlyItemQuery == null ? "available medicine" : $"'{onlyItemQuery}'";
+        return reason switch
+        {
+            TreatmentBlockReason.MissingStock => $"failed: no accessible stock of {medicine}; remaining injuries: {injuries}; inspect health for native treatment recommendations and locate the required supplies",
+            TreatmentBlockReason.RecoveryPredicted => $"ok: no additional dose given; the game's 10s prediction expects current effects or recovery to cover treatment needs. {medicine} is stocked ({available.Count}); patient is not fully healed; remaining injuries: {injuries}. Wait 10s and inspect health again before another dose; this is not evidence of missing medicine or a need for surgery",
+            _ => $"ok: no additional dose given; the game does not recommend {medicine} for the patient's current state (stock {available.Count}). Patient is not fully healed; remaining injuries: {injuries}. Inspect health for suitable treatments; do not infer missing stock, deep wounds or a need for surgery from this result",
+        };
     }
 
     public static string DescribePatient(Character medic, Character target)

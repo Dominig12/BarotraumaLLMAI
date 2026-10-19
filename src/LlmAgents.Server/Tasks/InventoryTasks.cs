@@ -11,6 +11,51 @@ namespace LlmAgents;
 /// <summary>The bot's inventory in words: slots, hands, what is inside tools and bags, how full things are.</summary>
 internal static class InventoryView
 {
+    internal static IReadOnlyList<InvSlotType> EquippingSlots(Item item) => EquipmentSlotRules.Preferred(
+        item.AllowedSlots.Select(slot => (int)slot), (int)InvSlotType.Any, (int)(InvSlotType.RightHand | InvSlotType.LeftHand))
+        .Select(mask => (InvSlotType)mask).ToArray();
+
+    static int OccupiedSlots(Character c, Item item) => c.Inventory == null || item.ParentInventory != c.Inventory ? 0
+        : Enumerable.Range(0, Math.Min(c.Inventory.Capacity, c.Inventory.SlotTypes.Length))
+            .Where(index => c.Inventory.GetItemsAt(index).Contains(item)).Aggregate(0, (mask, index) => mask | (int)c.Inventory.SlotTypes[index]);
+
+    internal static bool EquippedAsIntended(Character c, Item item) =>
+        EquippingSlots(item).Any(slot => EquipmentSlotRules.Satisfies(OccupiedSlots(c, item), (int)slot));
+
+    /// <summary>Normal native placement can stow displaced equipment in pockets, but never drops it.</summary>
+    internal static string? Equip(Character c, Item item, bool allowLockedSwap)
+    {
+        if (c.Inventory == null) return "you have no inventory";
+        if (item.ParentInventory != null && GameAdapter.InventoryAccessProblem(c, item.ParentInventory) is { } access) return access;
+        if (item.ParentInventory == null && !c.CanInteractWith(item)) return $"{item.Name} is out of interaction range";
+        var allowed = EquippingSlots(item);
+        if (allowed.Count == 0) return $"{item.Name} has no equipment slot";
+        bool locked = false;
+        foreach (var slot in allowed)
+        {
+            bool displacesLocked = Enumerable.Range(0, Math.Min(c.Inventory.Capacity, c.Inventory.SlotTypes.Length))
+                .Where(index => c.Inventory.SlotTypes[index] != InvSlotType.Any && slot.HasFlag(c.Inventory.SlotTypes[index]))
+                .SelectMany(index => c.Inventory.GetItemsAt(index)).Any(other => other != item && other.HasTag(Tags.HeavyDivingGear)
+                    && GearLock.IsLocked(c) && !allowLockedSwap);
+            if (displacesLocked) { locked = true; continue; }
+            if (c.Inventory.TryPutItem(item, c, new[] { slot }) && EquippedAsIntended(c, item)) return null;
+        }
+        return locked ? "your diving gear is locked (danger or keep_gear)"
+            : $"could not equip {item.Name} in {string.Join(" or ", allowed)}; incompatible or occupied slots and no room to stow existing equipment; inspect_inventory(target='self')";
+    }
+
+    /// <summary>A conservative read-only check: no swapping, auto-wearing, or dropping existing belongings.</summary>
+    internal static bool CanCarryWithoutDropping(Character c, Item item)
+    {
+        if (c.Inventory == null) return false;
+        return AutomaticSlots(c.Inventory).Any(index => c.Inventory.CanBePutInSlot(item, index)
+            && (c.Inventory.SlotTypes[index] == InvSlotType.Any || item.AllowedSlots.Any(allowed =>
+                (allowed & ~(InvSlotType.RightHand | InvSlotType.LeftHand)) == 0 && allowed.HasFlag(c.Inventory.SlotTypes[index])
+                && Enumerable.Range(0, Math.Min(c.Inventory.Capacity, c.Inventory.SlotTypes.Length))
+                    .Where(other => allowed.HasFlag(c.Inventory.SlotTypes[other]))
+                    .All(other => c.Inventory.GetItemsAt(other).All(held => held == item)))));
+    }
+
     public static IEnumerable<int> AutomaticSlots(Inventory inventory, bool pocketsOnly = false) => Enumerable.Range(0, inventory.Capacity)
         .Where(index => inventory is not CharacterInventory c || index < c.SlotTypes.Length &&
             (c.SlotTypes[index] == InvSlotType.Any || !pocketsOnly && (c.SlotTypes[index] == InvSlotType.LeftHand || c.SlotTypes[index] == InvSlotType.RightHand)))
@@ -217,7 +262,7 @@ internal sealed class PutInTask : BotTask
             if (walkingToDestination) { ClearObjective(); walkingToDestination = false; }
             if ((ObjectiveDone || ObjectiveFailed || Stalled(6)) && Bot.CanInteractWith(item)
                 && (item.ParentInventory == null || GameAdapter.InventoryAccessProblem(Bot, item.ParentInventory) == null) && PickUp(item)) { ClearObjective(); return null; }
-            if (!HasObjective) Run(new AIObjectiveGetItem(Bot, item, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false }, $"getting {item.Name} from {ItemQueries.Where(item, Bot)}");
+            if (!HasObjective) Run(GoTo(item.Container ?? item, 80f), $"getting {item.Name} from {ItemQueries.Where(item, Bot)}");
             else if (ObjectiveFailed || ObjectiveDone || Stalled(20)) { problems.Add($"could not get {item.Name} (no room or out of reach)"); ClearObjective(); current = null; }
             return null;
         }

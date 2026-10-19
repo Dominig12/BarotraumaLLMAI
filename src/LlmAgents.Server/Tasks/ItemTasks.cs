@@ -20,20 +20,22 @@ internal sealed class EquipTask : BotTask
     const int MaxSwitches = 2;
     Item item;
     readonly FindReplacement? replace;
+    readonly bool allowLockedSwap;
     readonly List<Item> tried = new();
     public override string Name => $"equip {item.Name}";
     protected override double TimeoutSeconds => 120;
     public override IEnumerable<Item> Claimed => new[] { item };
 
-    public EquipTask(Character bot, HumanAIController ai, Item item, FindReplacement? replace = null) : base(bot, ai)
+    public EquipTask(Character bot, HumanAIController ai, Item item, FindReplacement? replace = null, bool allowLockedSwap = false) : base(bot, ai)
     {
         this.item = item;
         this.replace = replace;
+        this.allowLockedSwap = allowLockedSwap;
     }
 
     protected override string? Update()
     {
-        if (Bot.HasEquippedItem(item)) return $"ok: {item.Name} equipped" + (tried.Count > 0 ? " (took another one: the first was taken or out of reach)" : "");
+        if (InventoryView.EquippedAsIntended(Bot, item)) return $"ok: {item.Name} equipped in {string.Join(" or ", InventoryView.EquippingSlots(item))}" + (tried.Count > 0 ? " (took another one: the first was taken or out of reach)" : "");
         bool lost = item.Removed || (item.GetRootInventoryOwner() is Character owner && owner != Bot);
         if (lost || ObjectiveFailed)
         {
@@ -45,18 +47,17 @@ internal sealed class EquipTask : BotTask
             ClearObjective();
             item = next;
         }
-        if (!HasObjective)
+        if (item.GetRootInventoryOwner() == Bot || item.ParentInventory != null
+            ? item.ParentInventory != null && GameAdapter.InventoryAccessProblem(Bot, item.ParentInventory) == null
+            : Bot.CanInteractWith(item))
         {
-            var get = new AIObjectiveGetItem(Bot, item, Ai.ObjectiveManager, equip: true)
-            {
-                Wear = item.GetComponent<Wearable>() != null,
-                SpeakIfFails = false,
-            };
-            Run(get, $"getting {item.Name} from {ItemQueries.Where(item, Bot)}");
-            return null;
+            ClearObjective();
+            var error = InventoryView.Equip(Bot, item, allowLockedSwap);
+            return error == null ? $"ok: {item.Name} equipped in {InventoryView.SlotName(Bot, item)}"
+                : "failed: " + error + (item.GetRootInventoryOwner() == Bot ? "; item remains carried, not equipped as requested" : "");
         }
-        if (ObjectiveDone && !Bot.HasEquippedItem(item))
-            return Bot.Inventory.Contains(item) ? $"ok: {item.Name} is in your inventory (could not equip it)" : $"failed: could not get {item.Name}";
+        if (!HasObjective) Run(GoTo(item.Container ?? item, 80f), $"getting {item.Name} from {ItemQueries.Where(item, Bot)}");
+        else if (ObjectiveDone || Stalled(20)) return $"failed: could not reach {item.Name} or access its inventory";
         return null;
     }
 }
@@ -99,7 +100,7 @@ internal sealed class TakeItemsTask : BotTask
         {
             bool lost = current.Removed || (current.GetRootInventoryOwner() is Character owner && owner != Bot);
             // at the cabinet, but the objective does not take it (stuck, or it fits no pocket): take it by hand
-            if (!lost && (Stalled(8) || ObjectiveFailed) && IsNear(current, 250f) && PickUp(current)) { got.Add(current); current = null; ClearObjective(); return null; }
+            if (!lost && (ObjectiveDone || Stalled(8) || ObjectiveFailed) && IsNear(current, 250f) && PickUp(current)) { got.Add(current); current = null; ClearObjective(); return null; }
             if (lost || ObjectiveFailed || Stalled(20) || (ObjectiveDone && current.GetRootInventoryOwner() != Bot))
             {
                 ClearObjective();
@@ -125,7 +126,9 @@ internal sealed class TakeItemsTask : BotTask
             if (IsNear(next, 150f))
             {
                 if (PickUp(next)) { got.Add(next); continue; }
-                full = true;
+                // Nearby can still be behind a wall or inside a locked compartment.
+                // A failed interaction says nothing about the available inventory space.
+                full = !HasRoom(next);
                 return Report();
             }
             current = next;
@@ -135,12 +138,13 @@ internal sealed class TakeItemsTask : BotTask
         return Report();
     }
 
-    AIObjectiveGetItem Get(Item i) => new(Bot, i, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false };
+    // Native GetItem promotes equip=false to Wear=true on a full inventory and may change held equipment.
+    // Walking and explicit pickup preserve the caller's inventory and count contract.
+    AIObjectiveGoTo Get(Item i) => GoTo(i.Container ?? i, 80f);
 
     Item? Replace(Item failed) => replace?.Invoke(failed, InventoryTaskRules.ReplacementExclusions(failed, tried, queue, got));
 
-    bool HasRoom(Item i) =>
-        Bot.Inventory.CanBePut(i, InvSlotType.Any) || Bot.Inventory.CanBePut(i, InvSlotType.RightHand) || Bot.Inventory.CanBePut(i, InvSlotType.LeftHand);
+    bool HasRoom(Item i) => GameAdapter.CanCarryWithoutDropping(Bot, i);
 
     string Report()
     {
@@ -263,8 +267,9 @@ internal sealed class UnpackTask : BotTask
             case Phase.Fetch:
                 if (carrying) { ClearObjective(); phase = Phase.Choose; return null; }
                 if (box.GetRootInventoryOwner() is Character other) return Report($"{other.Name} has it");
-                if (!HasObjective) Run(new AIObjectiveGetItem(Bot, box, Ai.ObjectiveManager, equip: true) { SpeakIfFails = false }, $"picking up {box.Name}");
-                else if (ObjectiveFailed || ObjectiveDone)
+                if (IsNear(box, 150f) && PickUp(box)) { ClearObjective(); phase = Phase.Choose; return null; }
+                if (!HasObjective) Run(GoTo(box.Container ?? box, 80f), $"picking up {box.Name}");
+                else if (ObjectiveFailed || ObjectiveDone || Stalled(20))
                 {
                     // could not carry it (hands full, too heavy...): unpack it where it is
                     ClearObjective();
@@ -524,14 +529,24 @@ internal sealed class MoveItemTask : BotTask
                 return null;
             }
             ClearObjective();
-            foreach (var i in load) { i.Drop(Bot); delivered.Add(i); }
+            foreach (var i in load)
+            {
+                if (i.ParentInventory != null && GameAdapter.InventoryAccessProblem(Bot, i.ParentInventory, requireDragAndDrop: true) != null)
+                {
+                    failed.Add(i);
+                    continue;
+                }
+                i.Drop(Bot);
+                if (i.ParentInventory == null && i.CurrentHull == room) delivered.Add(i);
+                else failed.Add(i);
+            }
             full = false;
             return null;
         }
         return "failed: no destination";
     }
 
-    AIObjectiveGetItem Get(Item i) => new(Bot, i, Ai.ObjectiveManager, equip: false) { SpeakIfFails = false };
+    AIObjectiveGoTo Get(Item i) => GoTo(i.Container ?? i, 80f);
 
     /// <summary>null = there; "" = walking; else the failure.</summary>
     string? Arrive(Item target, float near, string step)

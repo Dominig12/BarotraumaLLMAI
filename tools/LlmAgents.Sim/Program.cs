@@ -372,7 +372,7 @@ sealed class SimWorld : IGameApi
     }
     public string Unequip(int botId, string item, ItemFilter? filter = null) => Do(botId, $"unequip {item}");
     public string Drop(int botId, string item, ItemFilter? filter = null) => Do(botId, $"drop {item}");
-    public string MoveItem(int botId, string item, string to, int count = 0, string destination = "auto", ItemFilter? filter = null) { Report(botId, $"task 'move {item}' ok: delivered to {to}", 5); Do(botId, $"move {item} -> {to}"); return Started("move " + item); }
+    public string MoveItem(int botId, string item, string to, int count = 0, string destination = "auto", ItemFilter? filter = null, string? from = null) { Report(botId, $"task 'move {item}' ok: delivered to {to}", 5); Do(botId, $"move {item} -> {to}"); return Started("move " + item); }
     public string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority) =>
         Order(botId, option != null ? $"{orderId}:{option}" : orderId, priority);
     public string PutIn(int botId, string item, string into, ItemFilter? filter = null) { Report(botId, $"task 'put {item} into {into}' ok: {item} -> {into}", 3); Do(botId, $"put {item} into {into}"); return Started("put " + item); }

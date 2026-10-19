@@ -237,14 +237,25 @@ internal sealed class CraftTask : BotTask
 
     string Report()
     {
-        int inOutput = products.Count(i => !i.Removed && i.ParentInventory == fabricator.OutputContainer?.Inventory);
+        var outputProducts = products.Where(i => !i.Removed && i.ParentInventory == fabricator.OutputContainer?.Inventory).ToList();
+        int inOutput = outputProducts.Count;
         var locations = products.Where(i => !i.Removed).GroupBy(i => ItemQueries.Where(i, Bot))
             .Select(g => $"{g.Count()} in/at {g.Key} ({string.Join(", ", g.Select(i => $"#{i.ID}"))})");
         string room = fabricator.Item.CurrentHull != null ? GameAdapter.RoomId(fabricator.Item.CurrentHull) : fabricator.Item.Name;
         return $"ok: made {products.Count}x {recipe.DisplayName.Value} ({made} craft{(made > 1 ? "s" : "")}); {inOutput} newly made in the output of {fabricator.Item.Name} in {room}; products now: {string.Join("; ", locations)}" +
-               (clearedOutput.Count > 0 ? $"; cleared output into your inventory: {string.Join(", ", clearedOutput.Distinct())}" : "") +
-               (droppedOutput.Count > 0 ? $"; cleared output onto the floor by the fabricator in {room}: {string.Join(", ", droppedOutput.Distinct())}" : "") +
-               (inOutput > 0 ? $". Take the output with take_item(item=\"{recipe.TargetItemPrefabIdentifier}\", count={inOutput}, from=\"#{fabricator.Item.ID}\")" : "");
+               (clearedOutput.Count > 0 ? $"; during crafting, cleared output into your inventory: {string.Join(", ", clearedOutput.Distinct())}" : "") +
+               (droppedOutput.Count > 0 ? $"; during crafting, cleared output onto the floor by the fabricator in {room}: {string.Join(", ", droppedOutput.Distinct())}" : "") +
+               OutputGuidance(outputProducts) + ". Locations are the current snapshot; if an item is no longer carried, inspect its exact #ID to locate it before issuing drop or move";
+    }
+
+    string OutputGuidance(List<Item> outputProducts)
+    {
+        if (outputProducts.Count == 0) return "";
+        var next = outputProducts[0];
+        var take = GameAdapter.CanCarryWithoutDropping(Bot, next)
+            ? $". Take the next exact output with take_item(item=\"#{next.ID}\", count=1, from=\"#{fabricator.Item.ID}\"); recheck carrying capacity before another"
+            : ". No compatible free carrying slot for the next output; store or drop a carried item before picking it up";
+        return take + $". To leave an output beside this fabricator without carrying it, use drop(item=\"#{next.ID}\"). Output #IDs: {string.Join(", ", outputProducts.Select(item => $"#{item.ID}"))}";
     }
 
     protected override void OnFinish()

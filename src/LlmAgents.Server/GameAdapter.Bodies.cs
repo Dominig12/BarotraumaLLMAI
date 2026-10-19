@@ -38,7 +38,7 @@ public sealed partial class GameAdapter
 
     Character? FindBody(Character bot, string query) => NearbyBodies(bot)
         .Select(b => (Body: b, Score: BodyRules.MatchScore(query, b.ID, b.Name, b.SpeciesName.Value)))
-        .Where(x => x.Score > 0).OrderByDescending(x => x.Score)
+        .Where(x => x.Score >= 3 || query.Trim() == "nearest").OrderByDescending(x => x.Score)
         .ThenBy(x => Vector2.DistanceSquared(bot.WorldPosition, x.Body.WorldPosition)).Select(x => x.Body).FirstOrDefault();
 
     string? BodyBusy(Character bot, Character body) =>

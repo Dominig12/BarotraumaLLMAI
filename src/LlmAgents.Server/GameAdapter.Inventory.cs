@@ -13,6 +13,8 @@ namespace LlmAgents;
 /// <summary>What the bot carries: equip, drop, move, put in, refill, tidy.</summary>
 public sealed partial class GameAdapter
 {
+    internal static bool CanCarryWithoutDropping(Character c, Item item) => InventoryView.CanCarryWithoutDropping(c, item);
+
     // --------------------------------------------------------------- inventory
 
     /// <summary>What the bot carries, and what is inside the bags and crates it carries.</summary>
@@ -79,7 +81,7 @@ public sealed partial class GameAdapter
 
     /// <summary>The item and the rest of its stack: all of that item the bot carries, or all in the same cabinet or machine
     /// output (or lying loose next to it). count &gt; 0 = that many, nearest first.</summary>
-    List<Item> StackOf(Character c, Item item, int count, string query, ItemFilter? filter = null)
+    List<Item> StackOf(Character c, Item item, int count, string query, ItemFilter? filter = null, ICollection<Item>? source = null)
     {
         int max = count > 0 ? Math.Min(count, MaxMoveStack) : MaxMoveStack;
         IEnumerable<Item> same;
@@ -92,36 +94,41 @@ public sealed partial class GameAdapter
                                             && Vector2.Distance(i.WorldPosition, item.WorldPosition) < 200f);
         var claimed = ClaimedByOthers(c);
         var list = new List<Item> { item };
-        list.AddRange(same.Where(i => i != item && !claimed.Contains(i) && ItemQueries.IsAvailableTo(i, c) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) > 0).Take(max - 1));
+        list.AddRange(same.Where(i => i != item && (source == null || source.Contains(i)) && !claimed.Contains(i) && ItemQueries.IsAvailableTo(i, c) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) > 0).Take(max - 1));
         if (count > list.Count)
         {
             // asked for more than one stack holds: the nearest others of the same item
             list.AddRange(ItemQueries.Find(c, item.Prefab.Identifier.Value, i => i.Prefab == item.Prefab && i.GetRootInventoryOwner() != c, claimed)
-                .Where(i => !list.Contains(i) && !claimed.Contains(i) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) > 0).Take(max - list.Count));
+                .Where(i => !list.Contains(i) && (source == null || source.Contains(i)) && !claimed.Contains(i) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) > 0).Take(max - list.Count));
         }
         return list;
     }
 
-    public string MoveItem(int botId, string query, string to, int count = 0, string destination = "auto", ItemFilter? filter = null)
+    public string MoveItem(int botId, string query, string to, int count = 0, string destination = "auto", ItemFilter? filter = null, string? from = null)
     {
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
         if (count < 0 || count > MaxMoveStack) return $"error: count must be between 0 and {MaxMoveStack}";
         if (count > 1 && InventoryQuery.Parse(query).EntityId.HasValue) return "error: an exact #ID selects one instance; count must be 0 or 1";
-        if (destination == "self") return TakeItem(botId, query, count > 0 ? count : 1, filter: filter);
+        if (destination == "self") return TakeItem(botId, query, count > 0 ? count : 1, from, filter);
         if (destination is not ("auto" or "container" or "room" or "character" or "storage")) return "error: invalid 'destination' type";
+        var source = from != null ? ItemsAt(c, from) : null;
+        if (from != null && source == null) return $"error: no source '{from}'; use self, an exact #container ID, or a room reference";
+        bool InSource(Item i) => source == null || source.Value.Items.Contains(i);
 
         // what it carries first, but not the diving suit it has to keep on: then a spare one from the sub
         bool Locked(Item i) => i.HasTag(Tags.HeavyDivingGear) && c.HasEquippedItem(i) && GearLock.IsLocked(c) && !PlayerSaidSo(c);
         var claimed = ClaimedByOthers(c);
-        var carried = FindCarried(c, query, filter);
+        var carried = Carried(c).FirstOrDefault(i => InSource(i) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) == 3);
         var item = carried != null && !Locked(carried) ? carried
-            : ItemQueries.Find(c, query, i => i.GetRootInventoryOwner() != c && !claimed.Contains(i), selection: filter)
+            : ItemQueries.Find(c, query, i => InSource(i) && i.GetRootInventoryOwner() != c && !claimed.Contains(i), selection: filter)
                 .OrderByDescending(i => ItemQueries.MatchScore(i, query)).ThenByDescending(i => InMachineOutput(i) ? 1 : 0).FirstOrDefault();
         if (item == null)
             return carried != null ? "error: your diving gear is locked (danger or keep_gear) and there is no spare one aboard" : NotFound(c, query);
         if (item != carried && !ItemQueries.IsKindQuery(query) && ItemQueries.NoneFree(c, query, item) is { } busy) return "error: " + busy;
-        var replace = Replacer(c, query, filter);
-        var stack = StackOf(c, item, count, query, filter);
+        FindReplacement replace = from == null ? Replacer(c, query, filter) : (failed, tried) =>
+            InventoryTaskRules.SelectReplacement(ItemsAt(c, from)?.Items ?? new List<Item>(), failed, tried, ClaimedByOthers(c),
+                i => i.Prefab == failed.Prefab && ItemQueries.IsAvailableTo(i, c) && !Locked(i) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) == 3);
+        var stack = StackOf(c, item, count, query, filter, source?.Items);
 
         // "на место" / "away": where it belongs (onto the same items first)
         if (destination == "storage")

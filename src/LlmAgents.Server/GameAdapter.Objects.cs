@@ -138,6 +138,11 @@ public sealed partial class GameAdapter
             actions.Add(ObjectAction("approach_object", "target", reference, "Approach this exact object before inspecting or interacting with a remote inventory. Reachability and access are checked at execution."));
         if (entity is Item item)
         {
+            actions.Add(new ObjectToolBinding("mark_item", new JsonObject { ["item"] = reference, ["mark"] = "attention" },
+                "Set/remove the visible crew attention marker on this exact item. Optional note explains what needs attention. This does not destroy or transfer it."));
+            if (item.AllowDeconstruct && item.Prefab.AllowDeconstruct && item.Prefab.DeconstructItems.Any())
+                actions.Add(new ObjectToolBinding("mark_item", new JsonObject { ["item"] = reference, ["mark"] = "deconstruct" },
+                    "Set/remove the native deconstruction marker for this item's current stack. Existing deconstruction orders may act on the marked stack; this is distinct from attention."));
             foreach (var key in new[] { "select", "use" })
                 if (NativeInteractionComponents(item, key).Any())
                     actions.Add(new ObjectToolBinding("interact_object", new JsonObject { ["target"] = reference, ["key"] = key },
@@ -296,6 +301,9 @@ public sealed partial class GameAdapter
         };
         description["state"] = new JsonObject
         {
+            ["marked_for_deconstruction"] = Item.DeconstructItems.Contains(item),
+            ["marked_for_attention"] = ContextMarks.IsMarked(item),
+            ["attention_note"] = ContextMarks.All().FirstOrDefault(mark => mark.Item == item)?.Note,
             ["condition"] = item.Condition, ["maxCondition"] = item.MaxCondition, ["conditionPercent"] = item.ConditionPercentage,
             ["location"] = ItemQueries.Where(item, bot), ["container"] = item.Container != null ? ObjectReference(item.Container) : null,
             ["ownerCharacter"] = item.GetRootInventoryOwner() is Character owner ? ObjectReference(owner) : null,
