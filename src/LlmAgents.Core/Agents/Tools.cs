@@ -408,7 +408,7 @@ public static class Tools
             }),
 
         // ---- jobs
-        T("drag_body", "Drag a corpse or incapacitated person to a room or crew member. Find bodies and their exact [cID] with inspect(kind='bodies').",
+        T("drag_body", "Start one continuous task that holds and drags a corpse or incapacitated person until the BODY reaches a room or crew member. Do not repeat the call while it is running. Find bodies and exact [cID] with inspect(kind='bodies'). Native emergencies may pause the task; its final report confirms delivery or explains failure.",
             Schema(Arg("target", "Exact body [cID] or copied exact name from inspect(kind='bodies'). Use [cID] when several bodies share a name; reserved literal 'nearest' explicitly selects the closest body."), Arg("to", "Exact destination room [hID] or crew member [cID]/name")),
             ToolKind.Task, ToolGroup.Items, c =>
             {

@@ -12,7 +12,7 @@ internal abstract class BodyTask : BotTask
     readonly BodyApproachAnchor approachAnchor = new();
     protected BodyTask(Character bot, HumanAIController ai, Character target) : base(bot, ai) => Target = target;
     protected override double TimeoutSeconds => 240;
-    protected override void OnFinish()
+    protected override void OnStopping()
     {
         if (Bot.SelectedCharacter == Target) Bot.DeselectCharacter();
     }
@@ -44,12 +44,7 @@ internal sealed class DragBodyTask : BodyTask
 {
     readonly ISpatialEntity destination;
     readonly string destinationName;
-    bool dragging;
-    readonly BodyDragProgress progress = new();
-    AIObjectiveGoTo? navigation;
-    bool hasDragged;
-    Vector2 walkingTo;
-    Hull? walkingHull;
+    AIObjectiveDragBody? carry;
     public override string Name => $"drag {GameAdapter.BodyLabel(Target)} to {destinationName}";
 
     public DragBodyTask(Character bot, HumanAIController ai, Character target, ISpatialEntity destination, string destinationName) : base(bot, ai, target)
@@ -62,72 +57,31 @@ internal sealed class DragBodyTask : BodyTask
         : Vector2.DistanceSquared(Target.WorldPosition, destination.WorldPosition) < 250f * 250f
             && (destination is not Character person || Target.CurrentHull == person.CurrentHull);
 
-    void WalkToDestination()
-    {
-        walkingTo = destination.WorldPosition;
-        walkingHull = (destination as Character)?.CurrentHull;
-        // GoTo(Character) selects and deselects that character on completion, releasing the body.
-        // A positional target preserves the grip and still uses the destination hull for pathfinding.
-        var navigationTarget = destination is Character person
-            ? new OrderTarget(person.WorldPosition, person.CurrentHull) : destination;
-        Run(navigation = new AIObjectiveGoTo(navigationTarget, Bot, Ai.ObjectiveManager, closeEnough: 50f)
-            { AllowGoingOutside = true, ForceWalkPermanently = true }, $"dragging {Target.Name} to {destinationName}");
-        // SetForcedOrder alone does not switch CurrentObjective. Switch before acquiring the body:
-        // the previous objective's OnDeselected (notably rescue) is allowed to deselect characters.
-        Ai.ObjectiveManager.SortObjectives();
-    }
-
     protected override string? Update()
     {
         if (!GameAdapter.IsBody(Target)) return "failed: target is gone or conscious again";
         if (destination is Entity { Removed: true } || destination is Character { IsDead: true }) return "failed: destination is gone";
-        if (Delivered) return $"ok: {GameAdapter.BodyLabel(Target)} delivered to {destinationName}";
-        if (!Target.CanBeDraggedBy(Bot)) return "failed: target cannot be dragged";
-        if (Target.SelectedBy is { Removed: false } other && other != Bot) return $"failed: body taken by {other.Name}";
-        // Position is submarine-relative: movement of the submarine is not progress by the body.
-        // Start the clock at the first grip, so a long initial walk does not consume recovery time.
-        if (hasDragged) progress.Observe(Target.Position.X, Target.Position.Y, Target.CurrentHull?.ID, Timing.TotalTime);
-
-        if (dragging && Bot.SelectedCharacter != Target)
+        if (carry == null)
         {
-            // Character.Control already checks both the centre and the closest limb. Repeating
-            // only its centre-distance check here drops valid grips on stretched/large ragdolls.
-            progress.LostGrip(Timing.TotalTime);
-            Log.Info($"[{Bot.Name}] drag grip released: {GameAdapter.BodyLabel(Target)}; {PositionReport()}; "
-                + $"navigation active={Ai.ObjectiveManager.CurrentObjective == navigation}; losses without body movement={progress.GripLossesWithoutProgress}");
-            ClearObjective();
-            dragging = false;
+            // The forced objective stays the same for the ENTIRE transfer. Replacing a GoTo used
+            // to synchronously select idle/rescue between legs; those objectives release the body.
+            // Native Act now owns grip and child navigation each game frame, not just this 0.25s task tick.
+            carry = new AIObjectiveDragBody(Bot, Ai, Target, destination, destinationName);
+            Run(carry, $"approaching {Target.Name} to carry it to {destinationName}");
+            Ai.ObjectiveManager.SortObjectives();
         }
-        if (progress.CannotKeepGrip(Timing.TotalTime))
-            return "failed: native dragging repeatedly released the body without moving it; " + PositionReport();
-        if (!dragging)
-        {
-            if (Timing.TotalTime < progress.RetryAt) return null;
-            // Selecting a body at the full UI interaction range can immediately fail the native
-            // hand-to-limb visibility checks. Walk close before grabbing instead of reselecting
-            // it every tick from the same distant position.
-            var approach = Approach(80f);
-            if (approach != "ready") return approach;
-            WalkToDestination();
-            if (Ai.ObjectiveManager.CurrentObjective != navigation)
-            {
-                Step = "waiting for the native AI to finish its higher-priority action before grabbing";
-                return null;
-            }
-            Bot.SelectCharacter(Target);
-            dragging = Bot.SelectedCharacter == Target;
-            if (dragging && !hasDragged)
-            {
-                hasDragged = true;
-                progress.Observe(Target.Position.X, Target.Position.Y, Target.CurrentHull?.ID, Timing.TotalTime);
-            }
-            return null;
-        }
-        if (ObjectiveFailed || progress.Stuck(Timing.TotalTime)) return "failed: body stopped moving before reaching the destination; " + PositionReport();
-        // A path finishing is not proof the body followed. Keep pulling until its actual position agrees.
-        if (ObjectiveDone || destination is Character moved && (moved.CurrentHull != walkingHull
-            || Vector2.DistanceSquared(moved.WorldPosition, walkingTo) > 100f * 100f)) WalkToDestination();
+        Step = carry.Status;
+        if (carry.Failure is { } failure) return "failed: " + failure + "; " + PositionReport();
+        if (ObjectiveFailed) return "failed: carrying objective was abandoned; " + PositionReport();
+        if (ObjectiveDone)
+            return Delivered ? $"ok: {GameAdapter.BodyLabel(Target)} delivered to {destinationName}"
+                : "failed: carrying objective ended before the body reached its destination; " + PositionReport();
         return null;
+    }
+
+    protected override void OnStopping()
+    {
+        carry?.Cancel();
     }
 
     string PositionReport() => $"body in {(Target.CurrentHull is { } bodyHull ? GameAdapter.RoomId(bodyHull) : "outside")}; "

@@ -24,6 +24,7 @@ internal abstract class BotTask
 
     AIObjective? objective;
     bool objectiveDone, objectiveFailed;
+    bool finished;
 
     protected BotTask(Character bot, HumanAIController ai)
     {
@@ -61,11 +62,25 @@ internal abstract class BotTask
 
     string Finish(string report)
     {
-        ClearObjective();
-        try { OnFinish(); } catch { /* best effort */ }
+        if (finished) return report;
+        finished = true;
+        try
+        {
+            // ClearForcedOrder immediately selects another native objective. Release transient
+            // interaction ownership before that handoff, while it still belongs to this task.
+            try { OnStopping(); }
+            finally { ClearObjective(); }
+        }
+        finally
+        {
+            // A removed character may make native objective cleanup throw. Owned grips and
+            // fabrication reservations must still be released when the task is cancelled.
+            try { OnFinish(); } catch { /* best effort */ }
+        }
         return report;
     }
 
+    protected virtual void OnStopping() { }
     protected virtual void OnFinish() { }
 
     /// <summary>Runs a vanilla objective as the bot's top priority until it completes or is abandoned.</summary>

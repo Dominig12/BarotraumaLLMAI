@@ -52,7 +52,9 @@ public sealed partial class GameAdapter
     {
         ResetObjectCatalog();
         GearLock.Reset();
-        foreach (var t in tasks.Values) t.Cancel();
+        foreach (var t in tasks.Values)
+            try { t.Cancel(); }
+            catch (Exception e) { Log.Warn("task cancellation on reset: " + e.Message); }
         tasks.Clear();
         ownOrders.Clear();
         authority.Clear();

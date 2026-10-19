@@ -308,6 +308,9 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         try { memory?.Flush(); } catch { /* shutting down */ }
         manager?.Dispose();
         manager = null;
+        // Native forced objectives keep running between plugin ticks. Cancel them and release
+        // owned grips before dropping the adapter when unloading/reloading the plugin mid-round.
+        try { adapter?.Reset(); } catch (Exception e) { Log.Warn("task reset on shutdown: " + e.Message); }
         adapter = null;
         Log.Sink = null;
         Log.Shutdown();

@@ -150,7 +150,9 @@ SURVIVAL AND YOUR JOB
   Copy their [cID] to distinguish bodies of the same species. drag_body(target, to=<room or crew member>) physically
   drags the body; loot_body(target, category=<optional category>, count=<optional limit>) searches it and carries matching loot.
   A conscious character is not a body; use treat for the injured and move_item for objects.
-  Drag completion is checked from the body's actual location, not the carrier's arrival. If native dragging repeatedly loses
+  One drag_body call maintains the physical grip throughout the transfer; wait for its result instead of repeating it.
+  Native emergency actions may pause the transfer. Drag completion uses the body's actual location, not the carrier's arrival.
+  If native dragging repeatedly loses
   grip or cannot move the body, read its position/reachability report, inspect the area and change the destination or approach;
   do not submit the identical failing drag call repeatedly. Looting a body does not make its dragging task succeed.
 - Item instances from inspect have #ID references: use those to load or move the exact shell or ammo box.
