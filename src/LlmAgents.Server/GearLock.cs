@@ -22,6 +22,7 @@ internal static class GearLock
     static Harmony? harmony;
 
     public static bool Patched { get; private set; }
+    internal static Func<Character, bool>? PreserveLoadoutEquipment;
 
     public static void SetManual(Character c, bool on)
     {
@@ -88,6 +89,7 @@ internal static class GearLock
 
     public static void Unpatch()
     {
+        PreserveLoadoutEquipment = null;
         if (!Patched) return;
         harmony?.UnpatchSelf();
         Patched = false;
@@ -99,9 +101,9 @@ internal static class GearLock
         try
         {
             var c = __instance.Character;
-            if (c == null || !IsLocked(c)) return true;
+            if (c == null) return true;
             if (c.IsLowInOxygen) return true; // suffocating: let vanilla deal with an empty suit
-            return false;
+            return !IsLocked(c) && PreserveLoadoutEquipment?.Invoke(c) != true;
         }
         catch
         {

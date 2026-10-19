@@ -34,6 +34,8 @@ public enum EventKind
     Mail,
     /// <summary>The danger is over (time to take the suit off, go back to normal duties).</summary>
     Calm,
+    /// <summary>Opted-in review of the bot's saved desired inventory layout.</summary>
+    InventoryReview,
     /// <summary>Nothing happened for a while (only bots that act on their own: full control or autonomy "always").</summary>
     Heartbeat,
 }
@@ -83,6 +85,7 @@ public static class EventPolicy
         EventKind.RoundStart => "round start",
         EventKind.Mail => "message",
         EventKind.Calm => "calm",
+        EventKind.InventoryReview => "inventory review",
         _ => "heartbeat",
     };
 }

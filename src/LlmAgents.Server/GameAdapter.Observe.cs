@@ -55,6 +55,7 @@ public sealed partial class GameAdapter
             .Select(g => g.Count() > 1 ? $"{ItemQueries.Label(g.First())} x{g.Count()}" : InventoryView.Describe(g.First()))
             .Take(20).ToList();
         o.InventorySpace = InventoryView.Space(c);
+        o.InventoryLoadoutStatus = InventoryLoadoutSummary(c);
         o.Gear = DescribeGear(c);
         o.Machines = ObserveMachines(c);
 

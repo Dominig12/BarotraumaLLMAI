@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using LlmAgents.Agents;
 
 namespace LlmAgents.Memory;
@@ -19,6 +20,9 @@ public sealed class BotMemory
     /// <summary>Full AI control granted through the mod order; survives into the next round.</summary>
     public bool AiControl { get; set; }
     public string? AiControlBy { get; set; }
+    /// <summary>Desired inventory layout, addressed by stable slots and container paths rather than round entity IDs.</summary>
+    [JsonConverter(typeof(InventoryLoadoutMemoryConverter))]
+    public InventoryLoadout? InventoryLoadout { get; set; }
     /// <summary>Long-term facts the bot chose to remember (remember with long_term=true).</summary>
     public List<string> Facts { get; set; } = new();
     /// <summary>One short summary per round, newest last.</summary>
@@ -40,6 +44,24 @@ public sealed class Relationship
     public string Note { get; set; } = "";
     /// <summary>Round counter of the bot when this was last changed (for pruning: oldest go first).</summary>
     public int Round { get; set; }
+}
+
+/// <summary>A damaged inventory profile must not discard the rest of a character's campaign memory.</summary>
+public sealed class InventoryLoadoutMemoryConverter : JsonConverter<InventoryLoadout>
+{
+    public override InventoryLoadout? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var json = JsonDocument.ParseValue(ref reader);
+        try
+        {
+            var profile = json.RootElement.Deserialize<InventoryLoadout>(options);
+            return InventoryLoadoutRules.Validate(profile) == null ? profile : null;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    public override void Write(Utf8JsonWriter writer, InventoryLoadout value, JsonSerializerOptions options) =>
+        JsonSerializer.Serialize(writer, value, options);
 }
 
 /// <summary>Contents of one memory file (one per campaign save, plus "default" outside campaigns).</summary>
@@ -134,6 +156,8 @@ public sealed class MemoryStore
             if (b.JournalIds.Count > b.Journal.Count) b.JournalIds.RemoveRange(b.Journal.Count, b.JournalIds.Count - b.Journal.Count);
             b.LastRoundNotes ??= new();
             b.PendingNotes ??= new();
+            if (b.InventoryLoadout != null && InventoryLoadoutRules.Validate(b.InventoryLoadout) != null)
+                b.InventoryLoadout = null;
             b.Relationships = new Dictionary<string, Relationship>(b.Relationships ?? new(), StringComparer.OrdinalIgnoreCase);
             foreach (var person in b.Relationships.Where(kv => kv.Value == null).Select(kv => kv.Key).ToList()) b.Relationships.Remove(person);
         }
@@ -228,6 +252,7 @@ public sealed class MemoryStore
     static BotMemory Copy(BotMemory b) => new()
     {
         Name = b.Name, Job = b.Job, Rounds = b.Rounds, AiControl = b.AiControl, AiControlBy = b.AiControlBy,
+        InventoryLoadout = b.InventoryLoadout?.Clone(),
         Facts = b.Facts.ToList(), Journal = b.Journal.ToList(), JournalIds = b.JournalIds.ToList(), LastRoundNotes = b.LastRoundNotes.ToList(), PendingNotes = b.PendingNotes.ToList(),
         Relationships = b.Relationships.ToDictionary(kv => kv.Key, kv => new Relationship { Feeling = kv.Value.Feeling, Note = kv.Value.Note, Round = kv.Value.Round }, StringComparer.OrdinalIgnoreCase),
     };
@@ -347,6 +372,15 @@ public sealed class MemoryStore
         b.AiControl = on;
         b.AiControlBy = on ? by : null;
     });
+
+    /// <summary>Replaces the complete desired inventory layout; callers cannot retain references to stored rules.</summary>
+    public void SetInventoryLoadout(string bot, string job, InventoryLoadout profile)
+    {
+        var copy = profile?.Clone();
+        var error = InventoryLoadoutRules.Validate(copy);
+        if (error != null) throw new ArgumentException(error, nameof(profile));
+        Change(d => BotIn(d, bot, job).InventoryLoadout = copy!);
+    }
 
     /// <summary>Clipped at the last full sentence that fits, so a summary never ends in the middle of a word.</summary>
     public static string ClipAtSentence(string s, int max)

@@ -23,6 +23,8 @@ public sealed partial class GameAdapter
             nextDangerCheck = Timing.TotalTime + 1.0;
             try { GearLock.UpdateDanger(Settings); } catch (Exception e) { Log.Warn("danger check failed: " + e.Message); }
         }
+        try { TickLoadouts(); }
+        catch (Exception e) { Log.ErrorThrottled("inventory loadout", "inventory maintenance failed: " + e.Message); }
         if (tasks.Count == 0 || Timing.TotalTime < nextTaskTick) return;
         nextTaskTick = Timing.TotalTime + TaskTickSeconds;
         foreach (var (id, task) in tasks.ToList())
@@ -50,6 +52,7 @@ public sealed partial class GameAdapter
 
     public void Reset()
     {
+        ResetLoadouts();
         ResetObjectCatalog();
         GearLock.Reset();
         foreach (var t in tasks.Values)

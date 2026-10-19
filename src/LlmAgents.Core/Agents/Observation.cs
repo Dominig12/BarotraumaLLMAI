@@ -50,6 +50,9 @@ public sealed class Observation
     public string? Gear { get; set; }
     /// <summary>"3 free slots; hands: right Welding Tool, left empty".</summary>
     public string? InventorySpace { get; set; }
+    /// <summary>Complete saved desired layout, using the same field names as set_inventory_loadout.</summary>
+    public JsonObject? InventoryLoadout { get; set; }
+    public string? InventoryLoadoutStatus { get; set; }
     /// <summary>Medical items available on the sub (own inventory first), with counts. Only filled when someone is hurt or for medics.</summary>
     public List<string>? MedicalSupplies { get; set; }
     public SubInfo? Submarine { get; set; }

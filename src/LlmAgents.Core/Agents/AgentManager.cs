@@ -241,6 +241,7 @@ public sealed partial class AgentManager : IDisposable
             {
                 agent = new BotAgent(h) { Clock = clock };
                 agents[h.Id] = agent;
+                RestoreInventoryLoadout(agent, now);
                 Log.Info($"agent created: {h.Name} ({h.Job}) -> provider '{ProviderFor(agent)}'" + (personas.PromptFor(h.Name) != null ? " (persona)" : ""));
                 // full AI control given in an earlier round stays until a player takes it back
                 if (MemoryOn && memory.Bot(h.Name) is { AiControl: true } m)

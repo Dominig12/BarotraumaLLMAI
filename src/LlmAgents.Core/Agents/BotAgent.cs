@@ -71,6 +71,9 @@ public sealed class BotAgent
     public bool InDanger { get; set; }
     public double DangerGoneSince { get; set; } = double.NaN;
     public double NextSituationCheckAt { get; set; }
+    /// <summary>Explicit desired slot layout, also restored from campaign memory.</summary>
+    public InventoryLoadout? InventoryLoadout { get; set; }
+    public double NextInventoryReviewAt { get; set; } = double.PositiveInfinity;
     /// <summary>The latest observation (from the situation check), reused when a decision starts right after it.</summary>
     public Observation? LastObservation { get; set; }
     public double LastObservationAt { get; set; } = double.NegativeInfinity;

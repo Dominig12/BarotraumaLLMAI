@@ -41,7 +41,7 @@ public sealed record ToolContext(ToolCall Call, BotAgent Agent, IGameApi Game, A
 }
 
 /// <summary>Tool schemas shown to the LLM and the executor that maps calls onto IGameApi. Whitelist only.</summary>
-public static class Tools
+public static partial class Tools
 {
     /// <summary>Tool name -> vanilla order identifier, for orders that need no target.</summary>
     public static readonly IReadOnlyDictionary<string, string> SimpleOrders = new Dictionary<string, string>
@@ -394,6 +394,9 @@ public static class Tools
         T("refill", "Replace depleted supplies in carried gear with available full compatible fuel/tanks/batteries/ammo. Optional item/category filters select the carried gear to service; without a selection services carried gear. Does not manufacture ammunition.",
             ItemArgs(Arg("item", "Optional exact carried gear reference; '*' explicitly selects all carried gear. Filters apply to the gear being refilled.", required: false)), ToolKind.Task, ToolGroup.Inventory,
             c => WithFilter(c, f => c.Game.Refill(c.Id, c.Str("item"), f))),
+        InventoryLoadoutTool(),
+        T("inspect_loadout", "Read your saved inventory slot layout and its live maintenance status: actual contents, missing items and blocked slots. Lookup result arrives next turn; call last and wait. Use inspect_inventory to discover numeric slots and exact prefab identifiers.",
+            NoArgs(), ToolKind.Lookup, ToolGroup.Inventory, c => c.Mgr.InspectInventoryLoadout(c.Agent)),
         T("tidy_inventory", "Put away what you carry but do not wear or hold, each where it belongs.",
             Schema(Arg("keep", "Optional: things to keep, comma separated", required: false)), ToolKind.Task, ToolGroup.Inventory,
             c => c.Game.TidyInventory(c.Id, c.Str("keep"))) with { MovesOn = true },
@@ -570,7 +573,7 @@ public static class Tools
             foreach (var (branch, error) in results)
                 if (node is JsonObject candidate && branch["required"] is JsonArray required &&
                     required.FirstOrDefault()?.GetValue<string>() is { } discriminator && candidate.ContainsKey(discriminator)) return error;
-            return $"'{path}' must match one declared plan node form (do, if, wait_until, repeat or try)";
+            return $"'{path}' must match exactly one of the declared JSON forms";
         }
         var type = schema["type"]?.GetValue<string>();
         var kind = node?.GetValueKind();
@@ -582,6 +585,7 @@ public static class Tools
             "boolean" => kind is JsonValueKind.True or JsonValueKind.False,
             "integer" => node is JsonValue iv && iv.TryGetValue<int>(out _),
             "number" => kind == JsonValueKind.Number,
+            "null" => node == null,
             _ => true,
         };
         if (!valid) return $"'{path}' must be {type}";
@@ -611,6 +615,10 @@ public static class Tools
                     return $"unknown argument '{(path == "arguments" ? entry.Key : path + "." + entry.Key)}'; use only declared fields";
             }
         }
+        if (node is JsonArray boundedArray &&
+            (schema["maxItems"] is JsonValue maximumItems && boundedArray.Count > maximumItems.GetValue<int>() ||
+             schema["minItems"] is JsonValue minimumItems && boundedArray.Count < minimumItems.GetValue<int>()))
+            return $"'{path}' has an invalid number of entries";
         if (node is JsonArray array && schema["items"] is JsonObject itemSchema)
             for (var i = 0; i < array.Count; i++)
             {

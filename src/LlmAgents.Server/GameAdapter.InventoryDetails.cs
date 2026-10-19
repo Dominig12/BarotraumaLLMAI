@@ -103,15 +103,19 @@ public sealed partial class GameAdapter
             ["reference_lifetime"] = "current round only",
             ["indexing"] = "container_index and slot are zero-based; repeated #IDs in hand slots are one two-handed item",
             ["interaction"] = "transfer_item(item='#ID',target='self|#container|[cID]',count=1,container_index=?,slot=?). Omit slot for normal placement; occupied contents are never replaced or dropped. Inspect inaccessible contents after approach_object.",
-            ["inventories"] = new JsonArray(inventories.Select(i => (JsonNode)DescribeInventoryTree(bot, i.Inventory, i.Component, i.Index, depth, visited, ref itemBudget)).ToArray()),
+            ["loadout_interaction"] = "set_inventory_loadout(slots=[{slot:ZERO_BASED_SLOT,prefab:EXACT_PREFAB,count:1,path:LOADOUT_PATH}]). Copies stable paths only from your own root inspection; prefab=null requests an empty slot. inspect_loadout compares desired and actual contents.",
+            ["inventories"] = new JsonArray(inventories.Select(i => (JsonNode)DescribeInventoryTree(bot, i.Inventory, i.Component, i.Index, depth, visited, ref itemBudget,
+                entity == bot ? new List<InventoryContainerStep>() : null)).ToArray()),
         };
         return result.ToJsonString(InventoryJson);
     }
 
     static JsonObject DescribeInventoryTree(Character bot, Inventory inventory, ItemContainer? container, int? componentIndex,
-        int depth, HashSet<Inventory> visited, ref int budget)
+        int depth, HashSet<Inventory> visited, ref int budget, List<InventoryContainerStep>? loadoutPath = null)
     {
         var node = new JsonObject { ["owner"] = InventoryOwnerRef(inventory.Owner), ["container_index"] = componentIndex, ["capacity"] = inventory.Capacity };
+        if (loadoutPath != null) node["loadout_path"] = new JsonArray(loadoutPath.Select(step => (JsonNode)new JsonObject
+            { ["slot"] = step.Slot, ["container_index"] = step.ContainerIndex }).ToArray());
         if (!visited.Add(inventory)) { node["already_described"] = true; return node; }
         var access = InventoryAccessProblem(bot, inventory);
         node["accessible_now"] = access == null;
@@ -166,7 +170,8 @@ public sealed partial class GameAdapter
                 var children = new JsonArray();
                 itemNode["inventories"] = children;
                 for (int compartment = 0; compartment < nested.Count; compartment++)
-                    children.Add(DescribeInventoryTree(bot, nested[compartment].Inventory, nested[compartment], compartment, depth - 1, visited, ref budget));
+                    children.Add(DescribeInventoryTree(bot, nested[compartment].Inventory, nested[compartment], compartment, depth - 1, visited, ref budget,
+                        loadoutPath?.Concat(new[] { new InventoryContainerStep(index, compartment) }).ToList()));
             }
         }
         return node;

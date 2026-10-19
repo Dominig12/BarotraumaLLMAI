@@ -26,6 +26,19 @@ public sealed class FakeGame : IGameApi
         ? $"object {target}" : $"error: object {target} is unavailable";
     public (string Item, string Target, int Count, int? ContainerIndex, int? Slot)? LastTransfer;
     public string InspectInventory(int botId, string? target = null, int depth = 4) => $"inventory {target ?? "self"} depth={depth}";
+    public readonly Dictionary<int, InventoryLoadout> InventoryLoadouts = new();
+    public int InventoryLoadoutConfigureCalls;
+    /// <summary>Return an error to reject a replacement; can also inspect the backend's independent profile copy.</summary>
+    public Func<int, InventoryLoadout, string?>? RejectInventoryLoadout;
+    public string ConfigureInventoryLoadout(int botId, InventoryLoadout profile)
+    {
+        InventoryLoadoutConfigureCalls++;
+        if (RejectInventoryLoadout?.Invoke(botId, profile) is { } error) return error;
+        InventoryLoadouts[botId] = profile.Clone();
+        return Act(botId, "set inventory loadout", "ok: inventory layout saved");
+    }
+    public string InspectInventoryLoadout(int botId) => InventoryLoadouts.TryGetValue(botId, out var profile)
+        ? $"inventory loadout enabled={profile.Enabled} slots={profile.Slots.Count}" : "inventory loadout: none";
     public string TransferItem(int botId, string item, string target, int count = 1, int? containerIndex = null, int? slot = null)
     {
         LastTransfer = (item, target, count, containerIndex, slot);
@@ -64,6 +77,8 @@ public sealed class FakeGame : IGameApi
             Threats = src.Threats.ToList(), Leaks = src.Leaks.ToList(), Inventory = src.Inventory.ToList(),
             Bodies = src.Bodies.ToList(),
             Equipped = src.Equipped.ToList(), Infestations = src.Infestations.ToList(), Marks = src.Marks.ToList(),
+            InventoryLoadout = src.InventoryLoadout?.DeepClone().AsObject(),
+            InventoryLoadoutStatus = src.InventoryLoadoutStatus ?? (InventoryLoadouts.ContainsKey(botId) ? InspectInventoryLoadout(botId) : null),
         };
     }
 

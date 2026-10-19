@@ -136,6 +136,20 @@ SURVIVAL AND YOUR JOB
 - Inventory: 'equipped' shows the slot (right hand: ...), charge or fuel (40%) and what is inside ([in it: ...]);
   'inventorySpace' your free slots and hands. Keep your tools working: refill() loads full fuel/tanks/batteries/ammo,
   put_in(item, into) loads one thing, tidy_inventory() puts away what you do not need, inspect(kind='inventory') shows it all.
+- INVENTORY LOADOUT: use inspect_inventory(target='self') to read real ZERO-BASED slots, prefab identifiers and container_index.
+  set_inventory_loadout(slots=[{{slot:NUMBER,prefab:EXACT_IDENTIFIER,count:1}}], enabled=true) defines your desired layout;
+  this REPLACES the full saved layout, so retain every rule you still want. Unlisted slots remain unmanaged.
+  prefab=null explicitly keeps a slot empty. Never guess indices, use localized names or save temporary #IDs as prefabs.
+  For a carried bag/toolbelt use path=[{{slot:PARENT_SLOT,container_index:0}}] then slot=ITS_INNER_SLOT; repeat steps for deeper bags.
+  Two-handed items may occupy both hands as ONE instance. Do not demand different items in overlapping equipment slots.
+  The bot automatically rearranges ALREADY CARRIED items every check_interval_seconds (default 15), deferring while busy/unsafe.
+  It never obtains missing items, drops belongings or overrides protective gear to satisfy a layout. Use explicit take_item,
+  craft or refill plans when supplies are missing. inspect_loadout shows desired vs actual contents and reasons for deferral.
+  inventoryLoadout contains the current full tool-compatible layout; inventoryLoadoutStatus describes automatic maintenance.
+  A periodic [inventory review] (default 120s, review_interval_seconds) is your chance to inspect needs, revise rules or obtain
+  supplies. Keep it brief when nothing needs changing; carry_on is enough. Do not abandon an active duty to sort pockets.
+  enabled=false pauses maintenance and model reviews; slots=[] clears the layout. Memory-enabled campaigns retain the layout
+  across rounds. tidy_inventory may stow spare items: avoid choosing it for items that the layout expects you to keep.
 - Items: 'equipped' is what you wear or hold, 'inventory' what you carry. take_item carries items; equip wears/holds one;
   unequip returns one to your inventory; drop puts one on the floor. A task walks to its source automatically.
   move_item requires destination='container' with an exact container reference in to, 'room' with a room [hID], or

@@ -122,6 +122,7 @@ public sealed partial class AgentManager
             agent.AddEvent(EventKind.PlanReview, $"your plan has been running for {ModStatus.Ago(now - plan.StartedAt).Replace(" ago", "")}: keep it (keep_plan) or change it", now);
         }
 
+        CollectInventoryReview(agent, now);
         if (HeartbeatOn(agent) && !agent.Busy && agent.Events.Count == 0 && !agent.Pending && now - agent.LastRequestAt >= HeartbeatInterval(agent))
             agent.AddEvent(EventKind.Heartbeat, agent.AiControl
                 ? "routine check (full AI control): anything to plan or improve?"
@@ -245,6 +246,9 @@ public sealed partial class AgentManager
         obs.Notes = agent.Notes(now);
         obs.Conversation = ConversationFor(agent, now);
         obs.LastActionResults = results.ToList();
+        obs.InventoryLoadout = LoadoutForPrompt(agent);
+        if (events.Any(e => e.Kind == EventKind.InventoryReview) && agent.InventoryLoadout is { } loadout)
+            agent.NextInventoryReviewAt = now + loadout.ReviewIntervalSeconds;
         obs.EarlierOrders = agent.PastOrders.Select(p => $"({ModStatus.Ago(now - p.At)}) {p.Text}").ToList();
         if (agent.AiControl) obs.Control = $"FULL AI CONTROL (given by {agent.ControlBy ?? "a player"})";
         if (MemoryOn) obs.Memory = MemoryFor(agent, obs);

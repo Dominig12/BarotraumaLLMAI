@@ -65,7 +65,7 @@ public sealed partial class AgentManager
 
     /// <summary>Events that stay with the bot itself: what players and the crew say to it, and its own lookups.</summary>
     static bool BotKeeps(EventKind k) => k is EventKind.Order or EventKind.Control or EventKind.MenuOrder or EventKind.Mail
-        or EventKind.Retry or EventKind.Lookup;
+        or EventKind.Retry or EventKind.Lookup or EventKind.InventoryReview;
 
     /// <summary>Moves the bot's events about its work to the director.</summary>
     void RouteToDirector(BotAgent agent)

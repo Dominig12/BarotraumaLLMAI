@@ -36,7 +36,11 @@ public sealed partial class GameAdapter : IGameApi
     readonly List<MenuOrder> menuOrders = new();
     double nextTaskTick, nextDangerCheck;
 
-    public GameAdapter(ModSettings settings) { Settings = settings; }
+    public GameAdapter(ModSettings settings)
+    {
+        Settings = settings;
+        GearLock.PreserveLoadoutEquipment = PreserveIdleLoadoutEquipment;
+    }
 
     // ------------------------------------------------------------------ bots
 

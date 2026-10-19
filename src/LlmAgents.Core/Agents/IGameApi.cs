@@ -88,6 +88,10 @@ public interface IGameApi
     /// <summary>Inspect all compartments, slots and nested contents of self, an exact #item, or [cID].
     /// Indices are zero-based. Does not open locked containers or grant permission to take their contents.</summary>
     string InspectInventory(int botId, string? target = null, int depth = 4) => "error: not supported in this game backend";
+    /// <summary>Replace a persistent desired layout for the bot's own carried inventory. No items are spawned or obtained.</summary>
+    string ConfigureInventoryLoadout(int botId, InventoryLoadout profile) => "error: not supported in this game backend";
+    /// <summary>Desired vs actual inventory slots and the latest maintenance/defer status.</summary>
+    string InspectInventoryLoadout(int botId) => "error: not supported in this game backend";
     /// <summary>Transfer individual items to an exact inventory owner, optionally selecting a zero-based
     /// ItemContainer component and inventory slot. Never replaces existing contents implicitly; reports completion later.</summary>
     string TransferItem(int botId, string item, string target, int count = 1, int? containerIndex = null, int? slot = null) => "error: not supported in this game backend";
