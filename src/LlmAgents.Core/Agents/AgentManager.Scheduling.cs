@@ -116,7 +116,7 @@ public sealed partial class AgentManager
             CheckSituation(agent, now);
         }
 
-        if (agent.Plan is { Reviewed: false } plan && now - plan.StartedAt >= g.MaxPlanSeconds)
+        if (agent.Plan is { Reviewed: false } plan && now - plan.LastReviewedAt >= g.MaxPlanSeconds)
         {
             plan.Reviewed = true;
             agent.AddEvent(EventKind.PlanReview, $"your plan has been running for {ModStatus.Ago(now - plan.StartedAt).Replace(" ago", "")}: keep it (keep_plan) or change it", now);
@@ -316,7 +316,8 @@ public sealed partial class AgentManager
             return;
         }
         agent.Pending = false;
-        if (!agents.ContainsKey(agent.Id)) return;
+        if (!agents.TryGetValue(agent.Id, out var currentAgent) || !ReferenceEquals(currentAgent, agent)
+            || !Settings.IsJobEnabled(agent.Job) || !Settings.IsCharacterEnabled(agent.Name)) return;
         var g = Settings.Global;
 
         agent.Stats.Requests++;

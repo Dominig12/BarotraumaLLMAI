@@ -55,6 +55,11 @@ public sealed partial class GameAdapter
             .Select(g => g.Count() > 1 ? $"{ItemQueries.Label(g.First())} x{g.Count()}" : InventoryView.Describe(g.First()))
             .Take(20).ToList();
         o.InventorySpace = InventoryView.Space(c);
+        o.InventoryItems = Carried(c).Select(item => new ObservedInventoryItem(item.ID, item.Prefab.Identifier.Value,
+            item.Name, (int)Math.Round(item.ConditionPercentage), c.HasEquippedItem(item), item.ParentInventory?.FindIndex(item) ?? -1,
+            item.Container is { } parent ? (int?)parent.ID : null)).ToList();
+        o.InventoryFreeSlots = c.Inventory == null ? 0 : Enumerable.Range(0, c.Inventory.Capacity)
+            .Count(index => c.Inventory.SlotTypes[index] == InvSlotType.Any && !c.Inventory.GetItemsAt(index).Any());
         o.InventoryLoadoutStatus = InventoryLoadoutSummary(c);
         o.Gear = DescribeGear(c);
         o.Machines = ObserveMachines(c);

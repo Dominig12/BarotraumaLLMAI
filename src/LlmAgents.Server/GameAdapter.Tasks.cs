@@ -13,6 +13,9 @@ namespace LlmAgents;
 /// <summary>Multi-step tasks: taking, unpacking, crafting, deconstructing, treating.</summary>
 public sealed partial class GameAdapter
 {
+    readonly Dictionary<ushort, long> taskIds = new();
+    static long nextTaskId;
+
     // --------------------------------------------------------------- tasks
 
     /// <summary>Called every frame from the plugin; ticks the running tasks a few times per second.</summary>
@@ -29,17 +32,30 @@ public sealed partial class GameAdapter
         nextTaskTick = Timing.TotalTime + TaskTickSeconds;
         foreach (var (id, task) in tasks.ToList())
         {
+            // An earlier task's native callback may already have cancelled or replaced this snapshot entry.
+            if (!tasks.TryGetValue(id, out var beforeTick) || !ReferenceEquals(beforeTick, task)) continue;
+            long? taskId = taskIds.TryGetValue(id, out var runningId) ? runningId : null;
             string? result;
             try { result = task.Tick(); }
             catch (Exception e)
             {
                 // Tick catches the task's own faults; this is a fault around it (a character torn down mid-tick)
                 Log.ErrorThrottled("task:" + task.GetType().Name, $"task {task.GetType().Name} broke: {e}");
+                // Keep identity and ownership until a failed native cleanup succeeds.
+                // BotTask.Tick now retries only cleanup, without resuming its work.
+                if (task.CleanupPending) continue;
                 result = "failed: " + e.Message;
             }
             if (result == null) continue;
-            tasks.Remove(id);
-            reports.Add(new GameReport(id, $"task '{NameOf(task)}' {result}"));
+            // Native callbacks may have replaced a task during its final tick. Its result still belongs to
+            // the captured identity and must never remove or complete the replacement.
+            if (tasks.TryGetValue(id, out var current) && ReferenceEquals(current, task))
+            {
+                tasks.Remove(id);
+                taskIds.Remove(id);
+            }
+            reports.Add(new GameReport(id, $"task '{NameOf(task)}' {result}", taskId,
+                result.StartsWith("ok", StringComparison.Ordinal)));
         }
     }
 
@@ -59,6 +75,7 @@ public sealed partial class GameAdapter
             try { t.Cancel(); }
             catch (Exception e) { Log.Warn("task cancellation on reset: " + e.Message); }
         tasks.Clear();
+        taskIds.Clear(); // nextTaskId deliberately survives round resets: queued old reports cannot match a new task.
         ownOrders.Clear();
         authority.Clear();
         controlled.Clear();       // restored from long-term memory when the agents are created again
@@ -77,9 +94,36 @@ public sealed partial class GameAdapter
 
     void CancelTask(Character c, bool quiet)
     {
-        if (!tasks.Remove(c.ID, out var t)) return;
+        if (!tasks.TryGetValue(c.ID, out var t)) return;
+        long? taskId = taskIds.TryGetValue(c.ID, out var id) ? id : null;
         t.Cancel();
-        if (!quiet) reports.Add(new GameReport(c.ID, $"task '{NameOf(t)}' cancelled"));
+        // Cancellation can synchronously invoke native callbacks. Remove only this task,
+        // and retain it on cleanup failure so the plan can retry cancellation safely.
+        if (tasks.TryGetValue(c.ID, out var current) && ReferenceEquals(current, t))
+        {
+            tasks.Remove(c.ID);
+            taskIds.Remove(c.ID);
+        }
+        if (!quiet) reports.Add(new GameReport(c.ID, $"task '{NameOf(t)}' cancelled", taskId, false));
+    }
+
+    public long? CurrentTaskId(int botId) => botId is >= ushort.MinValue and <= ushort.MaxValue
+        && tasks.ContainsKey((ushort)botId) && taskIds.TryGetValue((ushort)botId, out var id) ? id : null;
+
+    public double? CurrentTaskTimeoutSeconds(int botId) => botId is >= ushort.MinValue and <= ushort.MaxValue
+        && tasks.TryGetValue((ushort)botId, out var task) ? task.TimeoutAllowance : null;
+
+    public string CancelCurrentTask(int botId)
+    {
+        if (Find(botId) is not { } c) return "error: character gone";
+        bool active = tasks.ContainsKey(c.ID);
+        try { CancelTask(c, quiet: true); }
+        catch (Exception e)
+        {
+            Log.Warn($"could not cancel task for {c.Name}: {e.Message}");
+            return "error: task cancellation failed: " + e.Message;
+        }
+        return active ? "ok, current task cancelled" : "ok (no current task)";
     }
 
     /// <param name="evenOverPlayerOrders">Short self-care tasks (putting on gear) are fine while carrying out a player's order.</param>
@@ -88,6 +132,7 @@ public sealed partial class GameAdapter
         if (!evenOverPlayerOrders && PlayerOrderBlock(c, null) is { } blocked) return blocked;
         CancelTask(c, quiet: true);
         tasks[c.ID] = task;
+        taskIds[c.ID] = checked(++nextTaskId);
         return $"ok, started: {NameOf(task)} (result will be reported)";
     }
 

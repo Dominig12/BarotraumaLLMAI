@@ -123,6 +123,9 @@ public sealed partial class AgentManager : IDisposable
     public void Reset()
     {
         EndRound(summarize: false);
+        foreach (var agent in agents.Values)
+            if (agent.Plan is { } plan)
+                try { StopAwaitedWork(agent, plan); } catch (Exception e) { Log.Warn("plan reset cleanup: " + e.Message); }
         Interlocked.Increment(ref generation);
         agents.Clear();
         objectTools.Clear();
@@ -150,11 +153,11 @@ public sealed partial class AgentManager : IDisposable
 
         // Every phase on its own: a fault in one (a broken game call, a bug) must not stop the others, or the bots
         // would freeze until the round ends.
-        Phase("answers", () => RunGameThreadWork(now));     // answers of finished requests
         Phase("agents", () => SyncAgents(now));
-        Phase("reports", () => DrainReports(now));
         Phase("control", () => DrainControl(now));
         Phase("menu orders", () => DrainMenuOrders(now));
+        Phase("answers", () => RunGameThreadWork(now));     // apply only after current membership and human orders
+        Phase("reports", () => DrainReports(now));
         Phase("waits", () => CheckWaits(now));
         Phase("watchdog", () => Watchdog(now));
         Phase("chat", () => DispatchChats(now));            // chat routing gets LLM slots before the bots
@@ -183,7 +186,9 @@ public sealed partial class AgentManager : IDisposable
         {
             Log.ErrorThrottled($"{agent.Id}:{what}", $"[{agent.Name}] {what} failed: {e}");
             if (agent.Plan == null) return;
+            try { StopAwaitedWork(agent, agent.Plan); } catch (Exception cleanup) { Log.Warn("plan error cleanup: " + cleanup.Message); }
             agent.ClearPlan();
+            agent.TaskTool = null;
             agent.AddEvent(EventKind.TaskFailed, $"your plan was stopped by an internal error ({Tools.Clip(e.Message, 120)}); decide again", clock());
         }
     }
@@ -267,6 +272,8 @@ public sealed partial class AgentManager : IDisposable
         foreach (var id in agents.Keys.Where(k => !seen.Contains(k)).ToList())
         {
             Log.Info($"agent removed: {agents[id].Name}");
+            if (agents[id].Plan is { } plan)
+                try { StopAwaitedWork(agents[id], plan); } catch (Exception e) { Log.Warn("removed agent plan cleanup: " + e.Message); }
             ArchiveMemory(agents[id]);
             agents.Remove(id);
             objectTools.Remove(id);
@@ -336,6 +343,9 @@ public sealed partial class AgentManager : IDisposable
     public void Dispose()
     {
         EndRound(summarize: false);
+        foreach (var agent in agents.Values)
+            if (agent.Plan is { } plan)
+                try { StopAwaitedWork(agent, plan); } catch (Exception e) { Log.Warn("plan shutdown cleanup: " + e.Message); }
         memory.Flush();
         cts.Cancel();
         router.Dispose();

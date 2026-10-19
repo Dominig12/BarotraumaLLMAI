@@ -75,6 +75,7 @@ public sealed class FakeGame : IGameApi
             CurrentOrder = src.CurrentOrder, Doing = src.Doing, Rooms = src.Rooms.ToList(), Crew = src.Crew.ToList(),
             Gear = src.Gear, Submarine = src.Submarine, CurrentTask = src.CurrentTask,
             Threats = src.Threats.ToList(), Leaks = src.Leaks.ToList(), Inventory = src.Inventory.ToList(),
+            InventoryItems = src.InventoryItems?.ToList(), InventoryFreeSlots = src.InventoryFreeSlots,
             Bodies = src.Bodies.ToList(),
             Equipped = src.Equipped.ToList(), Infestations = src.Infestations.ToList(), Marks = src.Marks.ToList(),
             InventoryLoadout = src.InventoryLoadout?.DeepClone().AsObject(),
@@ -85,7 +86,20 @@ public sealed class FakeGame : IGameApi
     string Act(int id, string what, string result = "ok")
     {
         Actions.Enqueue($"{id}:{what}");
+        if (result.StartsWith("ok, started", StringComparison.Ordinal)) TaskIds[id] = checked(++nextTaskId);
         return result;
+    }
+
+    public readonly Dictionary<int, long> TaskIds = new();
+    long nextTaskId;
+    public long? CurrentTaskId(int botId) => TaskIds.TryGetValue(botId, out var id) ? id : null;
+    public double TestTaskTimeoutSeconds = 180;
+    public double? CurrentTaskTimeoutSeconds(int botId) => TaskIds.ContainsKey(botId) ? TestTaskTimeoutSeconds : null;
+    public string? CancelTaskError;
+    public string CancelCurrentTask(int botId)
+    {
+        if (CancelTaskError is { } error) return error;
+        return TaskIds.Remove(botId) ? Act(botId, "cancel task", "ok, current task cancelled") : "ok (no current task)";
     }
 
     static string P(int priority) => priority == Tools.TopPriority ? "" : $" p{priority}";
@@ -168,9 +182,24 @@ public sealed class FakeGame : IGameApi
     public IReadOnlyList<GameReport> DrainReports()
     {
         if (BreakReports) throw new InvalidOperationException("the game is broken");
-        var r = PendingReports.ToList();
+        // Old fixtures can omit correlation fields; bind those reports to the task that is current at drain time.
+        // Tests for stale completions supply their original TaskId explicitly.
+        var r = PendingReports.Select(report => report with
+        {
+            TaskId = report.TaskId ?? CurrentTaskId(report.BotId),
+            Success = report.Success ?? LegacyTaskSucceeded(report.Text),
+        }).ToList();
         PendingReports.Clear();
+        foreach (var report in r)
+            if (report.TaskId == null || CurrentTaskId(report.BotId) == report.TaskId) TaskIds.Remove(report.BotId);
         return r;
+    }
+
+    static bool LegacyTaskSucceeded(string text)
+    {
+        int separator = text.StartsWith("task '", StringComparison.Ordinal) ? text.IndexOf("' ", 6, StringComparison.Ordinal) : -1;
+        if (separator >= 0) return text[(separator + 2)..].StartsWith("ok", StringComparison.Ordinal);
+        return !text.Contains("failed", StringComparison.Ordinal) && !text.Contains("cancelled", StringComparison.Ordinal);
     }
 }
 

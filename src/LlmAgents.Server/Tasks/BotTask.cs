@@ -4,6 +4,7 @@ using System.Collections.Immutable;
 using System.Linq;
 using Barotrauma;
 using Barotrauma.Items.Components;
+using LlmAgents.Agents;
 using Microsoft.Xna.Framework;
 
 namespace LlmAgents;
@@ -21,10 +22,12 @@ internal abstract class BotTask
     public abstract string Name { get; }
     public string Step { get; protected set; } = "starting";
     protected virtual double TimeoutSeconds => 180;
+    internal double TimeoutAllowance => TimeoutSeconds;
 
     AIObjective? objective;
     bool objectiveDone, objectiveFailed;
-    bool finished;
+    readonly TaskStopState stop = new();
+    internal bool CleanupPending => stop.CleanupPending;
 
     protected BotTask(Character bot, HumanAIController ai)
     {
@@ -41,6 +44,9 @@ internal abstract class BotTask
     /// <summary>null = still running, otherwise the final report ("ok ..." / "failed ...").</summary>
     public string? Tick()
     {
+        // A cancellation/completion whose native cleanup threw must only retry cleanup.
+        // Running Update again here could resume work which the plan has already stopped.
+        if (stop.Started) return Finish(stop.Report!);
         if (Bot.IsDead || Bot.Removed) return Finish("failed: you died");
         if (Bot.IsIncapacitated) return null;
         TrackMovement();
@@ -60,28 +66,14 @@ internal abstract class BotTask
 
     public void Cancel() => Finish("cancelled");
 
-    string Finish(string report)
-    {
-        if (finished) return report;
-        finished = true;
-        try
-        {
-            // ClearForcedOrder immediately selects another native objective. Release transient
-            // interaction ownership before that handoff, while it still belongs to this task.
-            try { OnStopping(); }
-            finally { ClearObjective(); }
-        }
-        finally
-        {
-            // A removed character may make native objective cleanup throw. Owned grips and
-            // fabrication reservations must still be released when the task is cancelled.
-            try { OnFinish(); } catch { /* best effort */ }
-        }
-        return report;
-    }
+    // Release transient ownership before native objective handoff. If native cleanup
+    // throws, retry only owned work cleanup; never repeat hooks against a new owner.
+    string Finish(string report) => stop.Finish(report, OnStopping, ClearOwnedWork, OnFinish);
 
     protected virtual void OnStopping() { }
     protected virtual void OnFinish() { }
+    /// <summary>Retryable cleanup of this task's objective and any owned child task.</summary>
+    protected virtual void ClearOwnedWork() => ClearObjective();
 
     /// <summary>Runs a vanilla objective as the bot's top priority until it completes or is abandoned.</summary>
     protected void Run(AIObjective o, string step)

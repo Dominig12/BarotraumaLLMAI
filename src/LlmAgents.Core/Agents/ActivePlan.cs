@@ -1,9 +1,10 @@
+using System;
 using System.Collections.Generic;
 
 namespace LlmAgents.Agents;
 
 /// <summary>What a running plan is waiting for before its next step.</summary>
-public enum PlanWait { None, Task, Arrival, Condition }
+public enum PlanWait { None, Task, Arrival, Condition, Yield }
 
 /// <summary>
 /// The plan a bot is carrying out: always a <see cref="PlanTree"/>. A reply of plain calls is a tree of one sequence,
@@ -16,12 +17,22 @@ public sealed class ActivePlan
         Tree = tree;
         Authority = authority;
         StartedAt = startedAt;
+        LastReviewedAt = startedAt;
     }
 
-    public PlanTree Tree { get; }
+    public PlanTree Tree { get; internal set; }
+    public string Id { get; } = Guid.NewGuid().ToString("N");
+    public const int MaximumExecutedSteps = 1024;
+    public const int MaximumImmediateSteps = 16;
+    public int ExecutedSteps { get; set; }
+    public long? AwaitedTaskId { get; set; }
+    public bool TaskTimedOut { get; set; }
+    public string? CancellationFailure { get; set; }
     /// <summary>The steps carry the authority of the reply that set the plan (a player's order may override menu orders).</summary>
     public bool Authority { get; }
     public double StartedAt { get; set; }
+    /// <summary>Review scheduling is separate from elapsed plan time used in conditions.</summary>
+    public double LastReviewedAt { get; set; }
     /// <summary>A "your plan runs long" review was already asked for.</summary>
     public bool Reviewed { get; set; }
 
@@ -47,6 +58,8 @@ public sealed class ActivePlan
     public void WaitFor(PlanWait what, double now, string? room = null, double deadline = 0)
     {
         Waiting = what;
+        TaskTimedOut = false;
+        CancellationFailure = null;
         WaitingSince = now;
         WaitRoom = room;
         WaitDeadline = deadline;
@@ -58,6 +71,17 @@ public sealed class ActivePlan
     {
         Waiting = PlanWait.None;
         WaitRoom = null;
+        WaitDeadline = 0;
+        AwaitedTaskId = null;
+        TaskTimedOut = false;
+        CancellationFailure = null;
+    }
+
+    public void YieldUntilNextTick(double now)
+    {
+        Waiting = PlanWait.Yield;
+        WaitDeadline = 0;
+        NextCheckAt = now + 0.001;
     }
 
     /// <summary>For the model and the status: what it waits for and the tree with ids and progress marks.</summary>
@@ -69,8 +93,9 @@ public sealed class ActivePlan
             case PlanWait.Task: parts.Add("now: waiting for the current task"); break;
             case PlanWait.Arrival: parts.Add($"now: walking to {WaitRoom}"); break;
             case PlanWait.Condition: parts.Add("now: waiting for a condition"); break;
+            case PlanWait.Yield: parts.Add("now: queued for next tick"); break;
         }
-        parts.Add("steps: " + Tree.Describe(max));
+        parts.Add($"plan_id={Id}, revision={Tree.Revision}; steps: " + Tree.Describe(max));
         return string.Join("; ", parts);
     }
 }

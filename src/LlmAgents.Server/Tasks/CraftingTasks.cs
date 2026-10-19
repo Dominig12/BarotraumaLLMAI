@@ -358,7 +358,11 @@ internal sealed class DeconstructManyTask : BotTask
         return null;
     }
 
-    protected override void OnFinish() => current?.Cancel();
+    protected override void ClearOwnedWork()
+    {
+        try { current?.Cancel(); }
+        finally { base.ClearOwnedWork(); }
+    }
 }
 
 /// <summary>craft(salvage=true): break down the planned scrap first, then craft.</summary>
@@ -400,11 +404,16 @@ internal sealed class SalvageAndCraftTask : BotTask
         Step = (crafting ? "" : $"salvaging ({salvaged.Count + 1}/{salvaged.Count + 1 + toSalvage.Count}): ") + current.Step;
         if (r == null) return null;
         current = null;
-        if (crafting) return (salvaged.Count > 0 ? $"salvaged {string.Join(", ", salvaged)}; " : "") + r;
+        // Keep the child's ok/failed prefix first: task reports expose that outcome separately from the details.
+        if (crafting) return r + (salvaged.Count > 0 ? $"; salvaged {string.Join(", ", salvaged)}" : "");
         if (r.StartsWith("failed")) return $"{r} (while salvaging for {target})";
         salvaged.Add(r.Replace("ok: ", "").Replace(" (in the deconstructor's output)", ""));
         return null;
     }
 
-    protected override void OnFinish() => current?.Cancel();
+    protected override void ClearOwnedWork()
+    {
+        try { current?.Cancel(); }
+        finally { base.ClearOwnedWork(); }
+    }
 }

@@ -20,7 +20,7 @@ public sealed partial class AgentManager
     enum Progress { Waiting, Done, Failed }
 
     /// <summary>Calls that are about the plan itself, not steps of it.</summary>
-    static bool IsPlanControl(ToolCall c) => c.Name is "plan" or "update_plan" or "keep_plan";
+    static bool IsPlanControl(ToolCall c) => c.Name is "plan" or "update_plan" or "edit_plan" or "append_plan" or "cancel_plan" or "inspect_plan" or "keep_plan";
 
     // ---------------------------------------------------------------- a reply
 
@@ -30,19 +30,47 @@ public sealed partial class AgentManager
         // Plan controls are consumed here rather than through Tools.Execute; enforce their wire contract before
         // changing a goal, editing an existing tree or running any other call in this reply.
         foreach (var call in calls.Where(IsPlanControl))
-            if (Tools.ValidateArguments(call) is { } error)
+            if (!IsToolAllowed(agent, call.Name) || Tools.ValidateArguments(call) is { })
             {
-                RejectPlan(agent, call.Name + ": " + error, now);
+                RejectPlan(agent, call.Name + ": " + (Tools.ValidateArguments(call) ?? "tool is not allowed"), now);
                 return;
             }
-        if (autoGoal is { } goal) agent.SetGoal(goal.Text, now, goal.Source, goal.Player);
         bool lookup = calls.Any(c => ResolveTool(agent, c.Name)?.Kind == ToolKind.Lookup);
         bool rewrite = calls.Any(c => c.Name == "plan");
-
-        // the running plan goes on: changed in one place (update_plan) or kept (keep_plan), this reply's other calls in between
-        if (!rewrite && agent.Plan is { } running && calls.Any(c => c.Name is "update_plan" or "keep_plan"))
+        bool editing = calls.Any(c => c.Name is "edit_plan" or "append_plan" or "update_plan");
+        bool cancelling = calls.Any(c => c.Name == "cancel_plan");
+        if (calls.Count(c => c.Name == "plan") > 1 || calls.Count(c => c.Name == "cancel_plan") > 1
+            || rewrite && (editing || cancelling) || editing && cancelling)
         {
-            ContinueRunning(agent, running, calls, authority, lookup, now);
+            RejectPlan(agent, "combine edits in edit_plan; do not mix plan creation, editing and cancellation", now);
+            return;
+        }
+        bool preserving = editing || cancelling || calls.Any(c => c.Name is "keep_plan" or "inspect_plan")
+            || agent.Plan != null && calls.All(c => c.Name == "carry_on");
+        if (!rewrite && preserving)
+        {
+            if (calls.Where(c => !IsPlanControl(c) && c.Name != "carry_on")
+                .Any(c => ResolveTool(agent, c.Name)?.Kind is not (ToolKind.Talk or ToolKind.Lookup or ToolKind.Memory)))
+            {
+                RejectPlan(agent, "plan management can be combined only with speech, memory and lookups; insert actions into the plan explicitly", now);
+                return;
+            }
+            if (calls.Where(c => !IsPlanControl(c)).Select(c => ValidatePlanCall(agent, c)).FirstOrDefault(e => e != null) is { } sideError)
+            {
+                RejectPlan(agent, sideError, now);
+                return;
+            }
+            if (editing && !ApplyPlanEdits(agent, calls, now)) return;
+            if (cancelling)
+            {
+                var call = calls.First(c => c.Name == "cancel_plan");
+                if (PlanVersionError(agent.Plan, call.Arguments) is { } versionError)
+                { RejectPlan(agent, versionError, now); return; }
+                var result = CancelPlan(agent, Tools.Str(call.Arguments, "reason"), Tools.Bool(call.Arguments, "clear_goal") ?? false);
+                RecordPlanControl(agent, "cancel_plan", result, now);
+                if (IsError(result)) return;
+            }
+            ContinueRunning(agent, calls, authority, lookup, now);
             return;
         }
 
@@ -50,7 +78,8 @@ public sealed partial class AgentManager
         try
         {
             tree = rewrite ? PlanTree.Build(TreeSteps(calls), PlanToolNames(agent))
-                           : PlanTree.FromCalls(calls.Where(c => c.Name != "keep_plan"));
+                           : PlanTree.FromCalls(calls.Where(c => !IsPlanControl(c) && c.Name != "carry_on"));
+            if (rewrite && ValidatePlanActions(agent, tree.Root) is { } invalid) throw new FormatException(invalid);
         }
         catch (FormatException e)
         {
@@ -58,8 +87,13 @@ public sealed partial class AgentManager
             return;
         }
 
-        if (agent.Plan != null) Log.Info($"[{agent.Name}] new decision replaces the plan: {agent.PlanText()}");
-        // the new plan starts now (a task still running goes on until a new task replaces it; its report just wakes the bot)
+        if (agent.Plan is { } previous)
+        {
+            if (StopAwaitedWork(agent, previous) is { } stopError) { RejectPlan(agent, stopError, now); return; }
+            Log.Info($"[{agent.Name}] new decision replaces the plan: {agent.PlanText()}");
+        }
+        if (autoGoal is { } goal) agent.SetGoal(goal.Text, now, goal.Source, goal.Player);
+        agent.TaskTool = null;
         var plan = new ActivePlan(tree, authority, now) { Lookup = lookup, FromReply = true };
         agent.SetPlan(plan);
         if (rewrite) Log.Info($"[{agent.Name}] plan: {tree.Describe(500)}");
@@ -82,7 +116,7 @@ public sealed partial class AgentManager
     static JsonArray TreeSteps(IEnumerable<ToolCall> calls)
     {
         var all = new JsonArray();
-        foreach (var c in calls.Where(c => c.Name is not ("update_plan" or "keep_plan")))
+        foreach (var c in calls.Where(c => c.Name == "plan" || !IsPlanControl(c) && c.Name != "carry_on"))
         {
             if (c.Name != "plan")
             {
@@ -96,23 +130,18 @@ public sealed partial class AgentManager
         return all;
     }
 
-    void ContinueRunning(BotAgent agent, ActivePlan plan, List<ToolCall> calls, bool authority, bool lookup, double now)
+    void ContinueRunning(BotAgent agent, List<ToolCall> calls, bool authority, bool lookup, double now)
     {
-        foreach (var u in calls.Where(c => c.Name == "update_plan"))
+        foreach (var c in calls.Where(c => !IsPlanControl(c) && c.Name != "carry_on" || c.Name == "inspect_plan")) Run(agent, c, authority);
+        if (agent.Plan is not { } plan)
         {
-            var node = Tools.Str(u.Arguments, "node") ?? "";
-            var err = plan.Tree.Replace(node, u.Arguments["steps"], PlanToolNames(agent));
-            var line = $"update_plan(node={node}) -> {(err == null ? "ok, plan now: " + plan.Tree.Describe(300) : "error: " + err)}";
-            agent.RecordResult(line);
-            Log.Info($"[{agent.Name}] {line}");
-            if (err != null) agent.AddError(line);
-            // the wait may be gone: look at the tree again
-            else if (plan.Waiting == PlanWait.Condition) plan.StopWaiting();
+            if (lookup) agent.AddEvent(EventKind.Lookup, "lookup results are ready (lastActionResults)", now);
+            return;
         }
-        foreach (var c in calls.Where(c => !IsPlanControl(c))) Run(agent, c, authority);
-        if (calls.Any(c => c.Name == "keep_plan")) plan.StartedAt = now;
+        plan.LastReviewedAt = now;
         plan.Reviewed = false;
         plan.Lookup |= lookup;
+        if (lookup) agent.AddEvent(EventKind.PlanReview, "requested lookup/plan snapshot is ready (lastActionResults); retain or edit the existing plan explicitly", now);
         if (plan.Waiting == PlanWait.None) Continue(agent, plan, "plan done", now);
     }
 
@@ -121,11 +150,21 @@ public sealed partial class AgentManager
     /// <summary>Runs steps until one has to be waited for, the plan is done or it failed (then it is stopped already).</summary>
     Progress Advance(BotAgent agent, ActivePlan plan, double now)
     {
+        int immediateSteps = 0;
         while (plan.Waiting == PlanWait.None)
         {
+            if (immediateSteps >= ActivePlan.MaximumImmediateSteps)
+            {
+                plan.YieldUntilNextTick(now);
+                return Progress.Waiting;
+            }
             switch (plan.Tree.Next(ConditionContext(agent, plan, now)))
             {
                 case PlanTree.ActAction act:
+                    if (plan.ExecutedSteps >= ActivePlan.MaximumExecutedSteps)
+                    { StopPlan(agent, "execution budget exhausted; inspect and create a new bounded plan", now); return Progress.Failed; }
+                    plan.ExecutedSteps++;
+                    immediateSteps++;
                     if (!RunStep(agent, plan, act, now)) return Progress.Failed;
                     break;
                 case PlanTree.WaitAction w:
@@ -162,12 +201,16 @@ public sealed partial class AgentManager
         }
         if (!IsError(result) && definition?.Kind == ToolKind.Task && result.StartsWith("ok, started"))
         {
-            plan.WaitFor(PlanWait.Task, now);
+            plan.WaitFor(PlanWait.Task, now, deadline: now + (act.TimeoutSeconds
+                ?? game.CurrentTaskTimeoutSeconds(agent.Id) + 5
+                ?? Math.Max(180, Settings.Global.PlanStepTimeoutSeconds)));
+            plan.AwaitedTaskId = game.CurrentTaskId(agent.Id);
             agent.TaskTool = canonical.Name;
         }
         // (a walk kept below a player's orders waits for them: the bot gets there later, not now, so it is not awaited)
         else if (!IsError(result) && canonical.Name == "go_to_room" && !result.Contains("already") && !result.Contains("priority lowered"))
-            plan.WaitFor(PlanWait.Arrival, now, ArrivalRoom(result) ?? Tools.Str(canonical.Arguments, "room"));
+            plan.WaitFor(PlanWait.Arrival, now, ArrivalRoom(result) ?? Tools.Str(canonical.Arguments, "room"),
+                deadline: now + (act.TimeoutSeconds ?? Settings.Global.PlanStepTimeoutSeconds));
         else plan.Tree.Report(true, result);   // done at once (an order, a word: a failed word does not stop the work)
         return true;
     }
@@ -202,7 +245,7 @@ public sealed partial class AgentManager
     {
         if (agent.LastObservation != null && now - agent.LastObservationAt < 1.0) return agent.LastObservation;
         try { return game.Observe(agent.Id); }
-        catch { return agent.LastObservation ?? new Observation(); }
+        catch (Exception e) { throw new InvalidOperationException("current plan facts are unavailable", e); }
     }
 
     // ---------------------------------------------------------------- what plans wait for
@@ -212,11 +255,13 @@ public sealed partial class AgentManager
     {
         foreach (var agent in agents.Values.ToList())
         {
-            if (agent.Plan is not { Waiting: PlanWait.Arrival or PlanWait.Condition } plan || now < plan.NextCheckAt) continue;
+            if (agent.Plan is not { Waiting: PlanWait.Arrival or PlanWait.Condition or PlanWait.Task or PlanWait.Yield } plan || now < plan.NextCheckAt) continue;
             plan.NextCheckAt = now + 1.0;
             Guarded(agent, "plan", () =>
             {
-                if (!game.IsAlive(agent.Id)) agent.ClearPlan();
+                if (!game.IsAlive(agent.Id)) { StopAwaitedWork(agent, plan); agent.ClearPlan(); }
+                else if (plan.Waiting == PlanWait.Yield) { plan.StopWaiting(); Continue(agent, plan, "plan done", now); }
+                else if (plan.Waiting == PlanWait.Task) CheckTaskWait(agent, plan, now);
                 else if (plan.Waiting == PlanWait.Arrival) CheckArrival(agent, plan, now);
                 else CheckCondition(agent, plan, now);
             });
@@ -234,8 +279,11 @@ public sealed partial class AgentManager
             plan.Tree.Report(true, $"arrived in {room}");
             Continue(agent, plan, $"arrived in {room}", now);
         }
-        else if (now - plan.WaitingSince > Settings.Global.PlanStepTimeoutSeconds)
-            Resume(agent, plan, false, $"did not reach {room} in {Settings.Global.PlanStepTimeoutSeconds:0}s", now);
+        else if (now >= plan.WaitDeadline)
+        {
+            game.EndTravel(agent.Id);
+            Resume(agent, plan, false, $"did not reach {room} in {plan.WaitDeadline - plan.WaitingSince:0}s", now);
+        }
     }
 
     void CheckCondition(BotAgent agent, ActivePlan plan, double now)
@@ -256,6 +304,7 @@ public sealed partial class AgentManager
     void Resume(BotAgent agent, ActivePlan plan, bool ok, string result, double now)
     {
         plan.StopWaiting();
+        agent.LastObservation = null;
         if (plan.Tree.Report(ok, result) is { } why) StopPlan(agent, why, now);
         else Continue(agent, plan, result, now);
     }
@@ -266,7 +315,8 @@ public sealed partial class AgentManager
         foreach (var r in game.DrainReports())
         {
             if (!agents.TryGetValue(r.BotId, out var agent)) continue;
-            bool failed = r.Text.Contains("failed") || r.Text.Contains("cancelled");
+            agent.LastObservation = null;
+            bool failed = r.Success is { } success ? !success : LegacyTaskFailed(r.Text);
             agent.RecordResult(r.Text);
             agent.LogEvent(r.Text);
             agent.AddActivity(failed ? "task-failed" : "task", r.Text, now);
@@ -278,19 +328,21 @@ public sealed partial class AgentManager
             else agent.Stats.TasksDone++;
             Log.Info($"[{agent.Name}] {r.Text}");
 
-            if (agent.Plan is { Waiting: PlanWait.Task } plan)
+            if (agent.Plan is { Waiting: PlanWait.Task } plan && r.TaskId == plan.AwaitedTaskId)
                 Guarded(agent, "task report", () =>
                 {
+                    bool ok = !failed && !plan.TaskTimedOut;
+                    string detail = plan.TaskTimedOut ? "task timed out; " + r.Text : r.Text;
                     plan.StopWaiting();
-                    if (plan.Tree.Report(!failed, r.Text) is { } why)
+                    if (plan.Tree.Report(ok, detail) is { } why)
                     {
-                        StopPlan(agent, plan.Tree.HasPendingSteps ? "a task failed: " + Tools.Clip(why, 120) : r.Text, now);
+                        StopPlan(agent, plan.Tree.HasPendingSteps ? "a task failed: " + Tools.Clip(why, 120) : detail, now);
                         agent.TaskTool = null;
                     }
-                    else Continue(agent, plan, r.Text, now);
+                    else Continue(agent, plan, detail, now);
                 });
             // a task outside of the current plan (replaced by a newer decision): only a failure matters
-            else if (failed) agent.AddEvent(EventKind.TaskFailed, Tools.Clip(r.Text, 200), now);
+            else if (failed && r.TaskId == null && agent.Plan == null) agent.AddEvent(EventKind.TaskFailed, Tools.Clip(r.Text, 200), now);
         }
     }
 
@@ -299,7 +351,10 @@ public sealed partial class AgentManager
     void StopPlan(BotAgent agent, string why, double now)
     {
         var plan = agent.Plan;
-        var rest = plan is { Tree.HasPendingSteps: true } ? plan.Describe() : null;
+        // The tree already unwound failed branches and marks their remainder skipped. Preserve that
+        // final state in the report even though no executable continuation remains on its stack.
+        var rest = plan is { } stopped && (stopped.Tree.HasPendingSteps || stopped.Tree.HasUnfinishedSteps) ? stopped.Describe() : null;
+        if (plan != null && StopAwaitedWork(agent, plan) is { } cleanupError) why += "; " + cleanupError;
         agent.ClearPlan();
         var line = $"plan stopped ({why})" + (rest != null ? "; not done: " + rest : "");
         agent.RecordResult(line);
@@ -377,7 +432,13 @@ public sealed partial class AgentManager
             agent.RecordResult(line);
             agent.AddActivity(error ? "error" : "do", line, clock());
         }
-        if (!PassiveTool(agent, call.Name) && result.StartsWith("ok") && !result.Contains("already")) agent.ActedSinceDecision = true;
+        if (!PassiveTool(agent, call.Name) && result.StartsWith("ok"))
+        {
+            // A subsequent condition must observe synchronous inventory/order changes from this
+            // step, rather than reusing the snapshot taken before it began.
+            agent.LastObservation = null;
+            if (!result.Contains("already")) agent.ActedSinceDecision = true;
+        }
         if (error) agent.AddError(line);
         if (!NotLogged.Contains(call.Name) && !result.Contains("already")) agent.LogEvent(line);
         Log.Info($"[{agent.Name}] {line}");

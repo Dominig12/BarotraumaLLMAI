@@ -43,7 +43,15 @@ public sealed partial class AgentManager
                 continue;
             }
             if (a.Busy) Log.Info($"[{a.Name}] command menu order from {m.By} cancels the plan: {a.PlanText()}");
+            if (a.Plan is { } previousPlan)
+                try { StopAwaitedWork(a, previousPlan); }
+                catch (System.Exception e) { Log.Warn("menu order plan cleanup: " + e.Message); }
+            // A ready or delayed answer to the pre-menu state must not create new work after the
+            // human's order. Its reservation finishes normally, but its result is now stale.
+            a.RequestSeq++;
+            a.Pending = false;
             a.ClearPlan();
+            a.TaskTool = null;
             var text = m.Dismissal
                 ? $"{m.By} dismissed your orders through the command menu ({m.Order}); do not give them to yourself again"
                 : $"{m.By} gave you an order through the command menu: {m.Order}";

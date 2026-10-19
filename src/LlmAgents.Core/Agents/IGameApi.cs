@@ -6,7 +6,9 @@ namespace LlmAgents.Agents;
 public sealed record BotHandle(int Id, string Name, string Job, string? Trait = null);
 
 /// <summary>A message from the game about one bot, e.g. a multi-step task that finished or failed.</summary>
-public sealed record GameReport(int BotId, string Text);
+/// <param name="TaskId">Identity of the task that produced this report. Null is for older backends and non-task events.</param>
+/// <param name="Success">The task's actual outcome, independent of item names and other text in the report.</param>
+public sealed record GameReport(int BotId, string Text, long? TaskId = null, bool? Success = null);
 
 /// <summary>A player gave (Granted) or took back full AI control of a bot through the mod's command-menu order.</summary>
 public sealed record ControlEvent(int BotId, bool Granted, string By);
@@ -74,6 +76,15 @@ public interface IGameApi
     void Speak(int botId, string text);
 
     // ---- items and machinery: start a multi-step task, completion comes later through DrainReports
+    /// <summary>The current multi-step task's identity, or null when none is running or the backend cannot correlate tasks.
+    /// A supported backend must allocate a new identity for every start, including replacements, without reusing it between rounds.</summary>
+    long? CurrentTaskId(int botId) => null;
+    /// <summary>Total duration allowance of the current task, in seconds. Null means no running task or unknown.
+    /// The plan executor uses this allowance when the step does not specify its own timeout.</summary>
+    double? CurrentTaskTimeoutSeconds(int botId) => null;
+    /// <summary>Cancel only the current multi-step task and release its temporary objective and interactions.
+    /// Ordinary orders, including player orders, stay. Does not enqueue a cancellation report that could finish a replacement plan.</summary>
+    string CancelCurrentTask(int botId) => "error: task cancellation is not supported in this game backend";
     string Equip(int botId, string item, ItemFilter? filter = null);
     string RefuelReactor(int botId);
     /// <summary>salvage = deconstruct scrap aboard for missing ingredients first.</summary>

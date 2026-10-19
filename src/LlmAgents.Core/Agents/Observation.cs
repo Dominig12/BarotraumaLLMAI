@@ -46,6 +46,11 @@ public sealed class Observation
     public List<string> Equipped { get; set; } = new();
     /// <summary>Other items carried.</summary>
     public List<string> Inventory { get; set; } = new();
+    /// <summary>One entry per own item, including nested container contents. Exact inventory facts for plan conditions;
+    /// null means the adapter does not supply these facts, while an empty list means the inventory is empty.</summary>
+    public List<ObservedInventoryItem>? InventoryItems { get; set; }
+    /// <summary>Empty root inventory slots, excluding equipment-only slots. Null means unavailable.</summary>
+    public int? InventoryFreeSlots { get; set; }
     /// <summary>Diving gear state, e.g. "diving suit on (oxygen 80%); gear locked (danger)".</summary>
     public string? Gear { get; set; }
     /// <summary>"3 free slots; hands: right Welding Tool, left empty".</summary>
@@ -178,6 +183,11 @@ public sealed class MemoryView
 }
 
 public sealed record RoomInfo(string Id, int WaterPercent, int Fires);
+
+/// <summary>An actual item instance in the bot's inventory. Slot is local to its immediate inventory owner;
+/// ParentId is null for the character inventory. Equipped means worn or held on the character, not stored in a bag.</summary>
+public sealed record ObservedInventoryItem(int Id, string Prefab, string Name, int ConditionPercent,
+    bool Equipped = false, int Slot = -1, int? ParentId = null);
 
 public sealed record CrewInfo(string Name, string Job, string? Room, int HealthPercent, bool IsPlayer, string Order, string? Injuries = null);
 

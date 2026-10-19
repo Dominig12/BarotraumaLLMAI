@@ -250,6 +250,8 @@ sealed class SimWorld : IGameApi
         {
             Name = me.Name, Job = me.Job, HealthPercent = me.Health, OxygenPercent = 100,
             Room = me.Room, RoomWaterPercent = RoomWater(me.Room), RoomFires = RoomFire(me.Room), CurrentOrder = me.Order,
+            CurrentTask = CurrentTaskId(botId) is { } taskId
+                ? reports.FirstOrDefault(report => report.Report.TaskId == taskId).Report?.Text : null,
             Inventory = me.Job == "mechanic" ? new() { "Welding Tool", "Wrench" } : me.Job == "medicaldoctor" ? new() { "Bandage x4", "Morphine" } : new() { "Diving Mask" },
             Submarine = new SubInfo(me.Job == "engineer" ? 55 : null, 2140, Breach ? 1 : 0),
             Rooms = rooms.Select(r => new RoomInfo(r, RoomWater(r), RoomFire(r))).ToList(),
@@ -270,6 +272,7 @@ sealed class SimWorld : IGameApi
     string Order(int id, string order, int priority, string? room = null)
     {
         var b = B(id);
+        ForgetTask(id);
         if (order is "wait" or "follow") b.Orders.RemoveAll(o => o.Id is "wait" or "follow"); // movement orders replace each other
         b.Add(order, priority);
         if (room != null) b.Room = room;
@@ -308,6 +311,7 @@ sealed class SimWorld : IGameApi
     public void GiveMenuOrder(int botId, string by, string order)
     {
         var b = B(botId);
+        ForgetTask(botId);
         b.Add(order, Tools.TopPriority);
         menuOrders.Add(new MenuOrder(botId, by, order));
         lock (Console.Out) { Console.ForegroundColor = ConsoleColor.Green; Console.WriteLine($"[{SimClock.Now,6:0.0}s] {by} gives {b.Name} through the command menu: {order}"); Console.ResetColor(); }
@@ -325,7 +329,7 @@ sealed class SimWorld : IGameApi
     public string SimpleOrder(int botId, string orderKey, int priority = Tools.TopPriority) => Order(botId, Tools.SimpleOrders[orderKey], priority);
     public string Operate(int botId, string role, string? option, int priority = Tools.TopPriority) =>
         Order(botId, (Tools.OrderAliases.TryGetValue(role, out var id) ? id : role) + (option != null ? ":" + option : ""), priority);
-    public string Dismiss(int botId) { B(botId).Orders.Clear(); return Do(botId, "dismiss all orders"); }
+    public string Dismiss(int botId) { ForgetTask(botId); B(botId).Orders.Clear(); return Do(botId, "dismiss all orders"); }
 
     public string SetOrderPriority(int botId, string order, int priority)
     {
@@ -354,6 +358,24 @@ sealed class SimWorld : IGameApi
     public IReadOnlyList<ControlEvent> DrainControlEvents() { var r = controlEvents.ToList(); controlEvents.Clear(); return r; }
 
     readonly List<(double Due, GameReport Report)> reports = new();
+    readonly Dictionary<int, long> taskIds = new();
+    long nextTaskId;
+    public long? CurrentTaskId(int botId) => taskIds.TryGetValue(botId, out var taskId) ? taskId : null;
+    public double? CurrentTaskTimeoutSeconds(int botId) => CurrentTaskId(botId) is { } taskId
+        ? Math.Max(30, reports.FirstOrDefault(report => report.Report.TaskId == taskId).Due - SimClock.Now + 5) : null;
+    public string CancelCurrentTask(int botId)
+    {
+        if (!IsAlive(botId)) return "error: character gone";
+        if (!taskIds.ContainsKey(botId)) return "ok (no current task)";
+        ForgetTask(botId);
+        return Do(botId, "cancel current task");
+    }
+    void ForgetTask(int botId)
+    {
+        if (!taskIds.Remove(botId, out var taskId)) return;
+        // Include completions whose due time has passed but which the manager has not drained yet.
+        reports.RemoveAll(report => report.Report.BotId == botId && report.Report.TaskId == taskId);
+    }
     public void BeginCommand(int botId, bool playerAuthority) { }
     readonly HashSet<int> gearOn = new();
     static string Started(string what) => $"ok, started: {what} (result will be reported)";
@@ -388,11 +410,19 @@ sealed class SimWorld : IGameApi
         "recipe" => $"{query}: needs Steel Bar x1 (available 4). All ingredients available.",
         _ => $"{query}: 2 in Cabinet in Medbay [h4]",
     };
-    void Report(int botId, string text, double after) => reports.Add((SimClock.Now + after, new GameReport(botId, text)));
+    void Report(int botId, string text, double after)
+    {
+        ForgetTask(botId);
+        long taskId = checked(++nextTaskId);
+        taskIds[botId] = taskId;
+        reports.Add((SimClock.Now + after, new GameReport(botId, text, taskId, true)));
+    }
     public IReadOnlyList<GameReport> DrainReports()
     {
         var due = reports.Where(r => r.Due <= SimClock.Now).ToList();
         reports.RemoveAll(r => r.Due <= SimClock.Now);
+        foreach (var entry in due)
+            if (CurrentTaskId(entry.Report.BotId) == entry.Report.TaskId) taskIds.Remove(entry.Report.BotId);
         return due.Select(r => r.Report).ToList();
     }
 

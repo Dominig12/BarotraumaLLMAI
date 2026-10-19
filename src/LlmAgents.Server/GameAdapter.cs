@@ -128,6 +128,7 @@ public sealed partial class GameAdapter : IGameApi
         string task = "";
         if (tasks.Remove(bot.ID, out var t))
         {
+            taskIds.Remove(bot.ID);
             t.Cancel();
             task = $" (your task '{t.Name}' was cancelled)";
         }

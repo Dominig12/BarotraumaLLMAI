@@ -20,8 +20,8 @@ public sealed partial class AgentManager
         (Settings.Bots.AllowedTools.Count == 0 || Settings.Bots.AllowedTools.Contains(name, StringComparer.OrdinalIgnoreCase)) &&
         (agent.AiControl || !definition.ControlOnly) && (MemoryOn || definition.Group != ToolGroup.Memory || name == "remember");
 
-    internal IReadOnlyCollection<string> PlanToolNames(BotAgent agent) => Tools.All.Select(spec => spec.Name)
-        .Concat(objectTools.Names(agent.Id)).ToHashSet(StringComparer.Ordinal);
+    internal IReadOnlyCollection<string> PlanToolNames(BotAgent agent) => Tools.For(Settings.Bots.AllowedTools, agent.AiControl, MemoryOn).Select(spec => spec.Name)
+        .Concat(objectTools.Names(agent.Id).Where(name => IsToolAllowed(agent, name))).ToHashSet(StringComparer.Ordinal);
 
     internal IReadOnlyList<ToolSpec> ToolsFor(BotAgent agent)
     {
@@ -52,7 +52,7 @@ public sealed partial class AgentManager
     }
 
     bool PassiveTool(BotAgent agent, string name) => ResolveTool(agent, name)?.Kind is ToolKind.Talk or ToolKind.Lookup or ToolKind.Memory
-        || name is "keep_plan" or "update_plan";
+        || name is "keep_plan" or "update_plan" or "edit_plan" or "append_plan" or "cancel_plan";
 
     bool MissingAllRequired(BotAgent agent, ToolCall call)
     {

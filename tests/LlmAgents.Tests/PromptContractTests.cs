@@ -95,9 +95,9 @@ public class PromptContractTests
     public void PlanSchemaDocumentsEveryCanonicalNodeAndItsNestedArguments()
     {
         var schema = Tools.Def("plan")!.Schema;
-        Assert.Equal(5, schema["$defs"]!["step"]!["oneOf"]!.AsArray().Count);
+        Assert.Equal(6, schema["$defs"]!["step"]!["oneOf"]!.AsArray().Count);
         var prompt = ToolPrompt.Build("SYS", Tools.Filtered(new[] { "plan" }));
-        foreach (var keyword in new[] { "\"do\"", "\"args\"", "\"if\"", "\"then\"", "\"else\"", "\"wait_until\"", "\"timeout\"", "\"repeat\"", "\"until\"", "\"max\"", "\"try\"", "\"catch\"" })
+        foreach (var keyword in new[] { "\"do\"", "\"args\"", "\"if\"", "\"then\"", "\"else\"", "\"wait_until\"", "\"timeout\"", "\"repeat\"", "\"until\"", "\"while\"", "\"max\"", "\"try\"", "\"catch\"", "\"steps\"" })
             Assert.Contains(keyword, prompt);
         Assert.Contains("minimum", Tools.ToolHelp("plan"));
         var error = Tools.ValidateArguments(new ToolCall("plan", Args("""{"steps":[{"wait_until":"oxygen > 50","timeout":301}]}""")));

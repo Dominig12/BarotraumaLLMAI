@@ -24,9 +24,31 @@ HOW YOUR TURNS WORK
 - For a job with conditions use plan(steps=[...]): a tree with if / wait_until / repeat-until / try-catch that the game
   carries out on its own, e.g. [{{""do"":""equip"",""args"":{{""category"":""diving_suit""}}}},{{""repeat"":[{{""do"":""attack"",""args"":{{""target_type"":""ballast_flora"",""target"":""*""}}}}],""until"":""flora == 0"",""max"":3}}].
   It is checked against your situation at every step, so it can react (if threats ... else ...) without asking you.
-- 'plan' (only shown when you are asked in the middle of a plan) shows its steps with node ids (n1, n2...;
-  <NOW> = running, (done) = finished). A reply with other actions replaces the plan; keep_plan carries it on after
-  this reply's calls; update_plan(node, steps) changes one part of it and keeps the rest.
+- 'plan' (shown while a plan exists) includes plan_id, revision and node ids (n1, n2...; <NOW> = running).
+  inspect_plan returns the COMPLETE JSON tree, including sequence IDs (root s0), branch/loop progress and awaited task ID.
+  It preserves the plan. Read its results on your next turn before editing IDs you cannot see in the compact summary.
+  Inspection adds id/status and wraps branch sequences in objects with steps; new/edit inputs use canonical arrays
+  from the tool schema, without inspection-only id/status fields. Do not paste the entire inspection result as a new plan.
+- plan(steps=[...]) creates/replaces the whole plan after validation; its previously awaited task/travel is cancelled.
+  edit_plan(operations=[...], expected_plan_id=..., expected_revision=...) edits atomically: replace/remove a node,
+  insert_before/insert_after a node, or append/prepend steps in a sequence. Existing unaffected IDs and progress stay.
+  update_plan(node,steps) is replace shorthand; append_plan(steps,node='s0') adds steps without stopping the active task.
+  Replacing/removing the active step or its ancestor cancels the associated task. Completed effects are never undone.
+  An edit of completed work is rejected; use new steps to request additional work. A failed edit changes nothing.
+- cancel_plan(reason=...,clear_goal=false) cancels remaining steps and the awaited task/travel; clear_goal=true also
+  abandons the goal. Cancellation does not mean success and does not dismiss persistent orders; manage those separately.
+  Do not mix creation, editing and cancellation in one reply. Management replies can also speak, remember and inspect;
+  put new work into edited steps instead of launching an unrelated task beside keep_plan. carry_on keeps an active plan.
+- Conditions use declared numeric facts and functions, comparisons and/or/not, parentheses and quoted exact selectors.
+  Inventory conditions use current typed inventoryItems: has('prefab'), wearing('prefab'), count('prefab') and
+  condition('prefab') (maximum remaining condition percent), plus free_slots; unknown facts fail closed. No natural-language commands.
+  repeat supports either until (stop when true) OR while (continue when true), checked BEFORE each iteration, with max=1..10.
+  Nest if/then/else, steps, wait_until/timeout and try/catch as needed. try/catch handles action and timeout failures.
+  An action may specify timeout=1..7200 seconds outside args. Defaults respect its native task allowance or travel timeout.
+  Persistent orders (fix_leaks/follow/operate etc.) finish their STEP when issued; use wait_until for the actual duty's
+  completion. A repeat max is an iteration cap, not proof its until condition became true; check the result before claiming success.
+  Plans allow at most 40 total nodes and 6 nesting levels; execution allows 1024 actions and yields after 16 instant actions.
+  Plans are local to this round; copy current references and inspect again after entities or circumstances change.
 - Nothing to change? Call carry_on. Do not call wait for that: wait is an order to stand still.
 
 ACTION CONTRACT

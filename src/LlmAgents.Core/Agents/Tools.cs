@@ -117,8 +117,11 @@ public static partial class Tools
             ["type"] = "array", ["description"] = description, ["maxItems"] = PlanTree.MaxNodes,
             ["items"] = new JsonObject { ["$ref"] = "#/$defs/step" },
         };
-        var action = Schema(Arg("do", "Exact offered tool name. Cannot be plan/update_plan/keep_plan/carry_on; use canonical tool names only."),
-            Arg("args", "Arguments object conforming to that tool's full JSON Schema. Omit only for tools requiring no arguments.", false, "object"));
+        var action = Schema(Arg("do", "Exact offered action tool name. Plan management tools and carry_on cannot be nested actions. Generated object tools can be used while their handles are valid."),
+            Arg("args", "Arguments object conforming to that tool's full JSON Schema. Omit only for tools requiring no arguments.", false, "object"),
+            Arg("timeout", "Optional per-step timeout for tasks/travel, 1-7200 seconds. Default uses the native task's configured allowance or the normal travel timeout.", false, "number"));
+        action["properties"]!["timeout"]!["minimum"] = 1;
+        action["properties"]!["timeout"]!["maximum"] = 7200;
         var conditional = Schema(Arg("if", "Condition expression, checked when this node starts."));
         conditional["properties"]!["then"] = StepList("Steps when if is true.");
         conditional["properties"]!["else"] = StepList("Optional steps when if is false.");
@@ -128,6 +131,7 @@ public static partial class Tools
         wait["properties"]!["timeout"]!["minimum"] = 1;
         wait["properties"]!["timeout"]!["maximum"] = PlanTree.MaxWaitSeconds;
         var repeat = Schema(Arg("until", "Stop before the next iteration when this expression is true; optional when only max limits repetition.", false),
+            Arg("while", "Continue only while this expression is true, checked before each iteration. Cannot be combined with until.", false),
             Arg("max", $"Maximum iterations, 1-{PlanTree.MaxRepeat}, default 3. The until condition is checked before each iteration.", false, "integer"));
         repeat["properties"]!["repeat"] = StepList("Steps to repeat.");
         repeat["required"]!.AsArray().Add("repeat");
@@ -137,12 +141,16 @@ public static partial class Tools
         attempt["properties"]!["try"] = StepList("Steps to attempt. A failed step cancels this branch and starts catch instead of failing the whole plan.");
         attempt["properties"]!["catch"] = StepList("Optional recovery steps after try fails; last result is available to result()/last_failed conditions.");
         attempt["required"]!.AsArray().Add("try");
+        var sequence = Schema();
+        sequence["properties"]!["steps"] = StepList("Nested sequence of steps.");
+        sequence["required"]!.AsArray().Add("steps");
         var schema = update ? Schema(Arg("node", "Exact node id shown in the running plan, e.g. n3.")) : Schema();
+        if (update) AddPlanVersionArguments(schema);
         schema["properties"]!["steps"] = StepList($"Plan nodes; at most {PlanTree.MaxNodes} total nodes and {PlanTree.MaxDepth} nesting levels. Nested actions use the same argument schemas as top-level calls.");
         schema["required"]!.AsArray().Add("steps");
         schema["$defs"] = new JsonObject
         {
-            ["step"] = new JsonObject { ["oneOf"] = new JsonArray(action, conditional, wait, repeat, attempt) },
+            ["step"] = new JsonObject { ["oneOf"] = new JsonArray(action, conditional, wait, repeat, attempt, sequence) },
         };
         return schema;
     }
@@ -272,15 +280,20 @@ public static partial class Tools
             }),
         T("plan", "A plan with conditions, run without asking you again until done or failed: an array of steps. "
             + "{\"do\":\"<tool>\",\"args\":{...}}; {\"if\":\"<cond>\",\"then\":[...],\"else\":[...]}; {\"wait_until\":\"<cond>\",\"timeout\":60}; "
-            + "{\"repeat\":[...],\"until\":\"<cond>\",\"max\":3}; {\"try\":[...],\"catch\":[...]}. "
+            + "{\"repeat\":[...],\"until\":\"<cond>\",\"max\":3} or while instead of until; {\"try\":[...],\"catch\":[...]}; {\"steps\":[...]}. "
             + "Conditions: health, oxygen, room_water, room_fire, threats, leaks, flora, reactor, reactor_fuel, sub_oxygen, injured, time, task, last_ok, last_failed, marked; "
-            + "in_room('X'), has('item'), wearing('item'), order('id'), threat('kind'), water('room'), fires('room'), near('name'), result('text'); "
-            + "< > <= >= == !=, and, or, not. Replaces the current plan.",
+            + "in_room('X'), has('prefab/#ID'), wearing('prefab/#ID'), count('prefab/#ID'), condition('prefab/#ID'), free_slots, bodies, order('id'), threat('kind'), water('room'), fires('room'), near('name'), result('text'); "
+            + "< > <= >= == !=, and, or, not. Replaces the current plan after full validation, cancelling its awaited native task/travel. Completed effects remain. inspect_plan gives exact state and IDs. Execution is limited to 1024 actions; long instant sequences yield between ticks.",
             PlanArgs(), ToolKind.Plan, ToolGroup.Plans,
             _ => "error: 'plan' is read with the whole reply; it cannot run inside a plan"),
-        T("update_plan", "Replace one node of the running plan ('plan' shows ids like n3) with new steps; the rest goes on.",
+        T("update_plan", "Replace one node of the running plan with canonical steps; shorthand for edit_plan op=replace. Inspect plan IDs/revision first. Replacing the active node or its ancestor cancels that step's task, preserving completed effects and untouched progress.",
             PlanArgs(update: true), ToolKind.Plan, ToolGroup.Plans,
             _ => "error: no plan is running to update; send the steps as a new reply"),
+        EditPlanTool(),
+        AppendPlanTool(),
+        CancelPlanTool(),
+        T("inspect_plan", "Inspect the complete current plan: plan_id, revision, all node/sequence IDs, exact arguments, execution state and awaited task. Preserves execution; call last and read the snapshot in the next decision before editing.",
+            NoArgs(), ToolKind.Lookup, ToolGroup.Plans, c => c.Mgr.InspectPlan(c.Agent)),
         T("keep_plan", "Only when 'plan' is shown: carry it on after this reply's other calls.", NoArgs(), ToolKind.Plan, ToolGroup.Core,
             c => c.Agent.Busy ? "ok, continuing the plan" : "ok (no plan left)"),
 
