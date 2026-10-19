@@ -20,6 +20,11 @@ internal sealed class AttackTask : BotTask
     readonly Hull? floraArea;
     readonly int branchesAtStart;
     AIObjectiveBurnFlora? burn;
+    int? previousLiveBranches;
+    float? previousEnemyVitality;
+    protected override int? CompletedUnits => enemy != null ? enemy.IsDead ? 1 : 0
+        : Math.Max(0, branchesAtStart - AIObjectiveBurnFlora.LiveBranches(Bot.Submarine, floraArea).Count());
+    protected override int? TotalUnits => enemy != null ? 1 : branchesAtStart;
     public override string Name => enemy != null ? $"attack {enemy.DisplayName}" : "burn the ballast flora";
     protected override double TimeoutSeconds => enemy != null ? 240 : 420;
     public override IEnumerable<Item> Claimed => weapon != null ? new[] { weapon } : Enumerable.Empty<Item>();
@@ -37,17 +42,23 @@ internal sealed class AttackTask : BotTask
         if (enemy == null)
         {
             int left = AIObjectiveBurnFlora.LiveBranches(Bot.Submarine, floraArea).Count();
+            if (previousLiveBranches is { } previous && left < previous) MarkProgress();
+            previousLiveBranches = left;
             if (left == 0) return $"ok: the ballast flora{(floraArea != null ? " in " + GameAdapter.RoomId(floraArea) : "")} is gone (burnt {branchesAtStart} branches)";
             if (!HasObjective) { Run(burn = new AIObjectiveBurnFlora(Bot, Ai.ObjectiveManager, weapon!, floraArea), "burning the ballast flora"); return null; }
             if (burn != null) Step = burn.Step;
             if (ObjectiveFailed || ObjectiveDone)
                 return branchesAtStart - left > 0
-                    ? $"ok: burnt {branchesAtStart - left} of {branchesAtStart} branches, {left} left ({burn?.Problem ?? "stopped"})"
+                    ? $"failed: partially burnt {branchesAtStart - left} of {branchesAtStart} branches, {left} still alive ({burn?.Problem ?? "stopped"})"
                     : $"failed: {burn?.Problem ?? "could not burn the flora"}";
             return null;
         }
 
-        if (enemy.IsDead || enemy.Removed) return $"ok: {enemy.DisplayName} is dead";
+        if (enemy.IsDead) return $"ok: {enemy.DisplayName} is dead";
+        if (enemy.Removed) return "failed: the target disappeared; its death was not confirmed";
+        float vitality = enemy.Vitality;
+        if (previousEnemyVitality is { } prior && vitality < prior - 0.05f) MarkProgress();
+        previousEnemyVitality = vitality;
         if (weapon != null && !weapon.Removed && weapon.GetRootInventoryOwner() != Bot)
         {
             if (!HasObjective) Run(new AIObjectiveGetItem(Bot, weapon, Ai.ObjectiveManager, equip: true) { SpeakIfFails = false }, $"getting {weapon.Name}");

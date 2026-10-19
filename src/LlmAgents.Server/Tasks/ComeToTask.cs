@@ -36,12 +36,14 @@ internal sealed class ComeToTask : BotTask
         else if (ObjectiveFailed) return $"failed: cannot reach {target.Name}";
 
         bool near = IsNear(target, 250f);
+        if (!near) arrivedAt = -1;
         if (near && arrivedAt < 0)
         {
             arrivedAt = Timing.TotalTime;
+            MarkProgress();
             Step = $"next to {target.Name}, waiting for orders";
         }
-        if (arrivedAt >= 0 && Timing.TotalTime - arrivedAt >= hold)
+        if (near && arrivedAt >= 0 && Timing.TotalTime - arrivedAt >= hold)
             return $"ok: you came to {target.Name} and stayed {hold:0}s. This order is DONE: set_goal(done=true) and go back to your duties, unless {target.Name} gave you a new order";
         return null;
     }

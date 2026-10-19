@@ -19,6 +19,8 @@ public sealed class PlanTree
     public const int MaxDepth = 6;
     public const int MaxRepeat = 10;
     public const double MaxWaitSeconds = 300;
+    public const double DefaultVerifyTimeoutSeconds = 10;
+    public const double MaxVerifyTimeoutSeconds = 300;
 
     public abstract class Node
     {
@@ -29,6 +31,8 @@ public sealed class PlanTree
     {
         public ToolCall Call = null!;
         public double? TimeoutSeconds;
+        public PlanConditions.Condition? Ensure;
+        public double VerifyTimeoutSeconds = DefaultVerifyTimeoutSeconds;
         public override IEnumerable<Node> Children => Enumerable.Empty<Node>();
     }
     public sealed class Seq : Node
@@ -65,7 +69,8 @@ public sealed class PlanTree
     }
 
     public abstract record Action;
-    public sealed record ActAction(ToolCall Call, string NodeId, double? TimeoutSeconds = null) : Action;
+    public sealed record ActAction(ToolCall Call, string NodeId, double? TimeoutSeconds = null,
+        PlanConditions.Condition? Ensure = null, double VerifyTimeoutSeconds = DefaultVerifyTimeoutSeconds) : Action;
     public sealed record WaitAction(Wait Node) : Action;
     public sealed record DoneAction : Action;
     public sealed record FailedAction(string Reason) : Action;
@@ -80,6 +85,7 @@ public sealed class PlanTree
     public Seq Root { get; private set; }
     readonly List<Frame> stack = new();
     readonly Dictionary<string, string> statuses = new(StringComparer.Ordinal);
+    readonly Dictionary<string, (bool Ok, string Result)> outcomes = new(StringComparer.Ordinal);
     readonly Dictionary<string, int> iterations = new(StringComparer.Ordinal);
     int nextId = 1, nextSeq = 1;
     string? pendingAction;
@@ -89,6 +95,15 @@ public sealed class PlanTree
     public bool? LastOk { get; private set; }
     public string? LastResult { get; private set; }
     public string? CurrentId { get; private set; }
+    /// <summary>The issued action remains current through native execution and outcome verification.</summary>
+    public Do? CurrentDo => stack.Count > 0 && stack[^1].Node is Do d && d.Id == pendingAction ? d : null;
+
+    /// <summary>Keep the action on its execution frame until its real-world postcondition is reported.</summary>
+    public void MarkVerifying()
+    {
+        if (CurrentDo is not { } d) throw new InvalidOperationException("there is no current action to verify");
+        statuses[d.Id] = "verifying";
+    }
 
     PlanTree(Seq root)
     {
@@ -186,7 +201,7 @@ public sealed class PlanTree
         }
         else
         {
-            Keys(o, "do", "args", "timeout");
+            Keys(o, "do", "args", "timeout", "ensure", "verify_timeout");
             var name = RequiredString(o, "do");
             if (NotInPlans.Contains(name)) throw new FormatException($"'{name}' cannot be a step of a plan");
             if (!tools.Contains(name)) throw new FormatException($"unknown tool '{name}' in the plan");
@@ -194,7 +209,15 @@ public sealed class PlanTree
             var call = new ToolCall(name, (JsonObject)args.DeepClone());
             if (Tools.Def(name) != null && Tools.ValidateArguments(call) is { } error)
                 throw new FormatException($"'{name}': {error}");
-            result = new Do { Call = call, TimeoutSeconds = o.ContainsKey("timeout") ? Number(o, "timeout", 60, 1, 7200) : null };
+            if (o.ContainsKey("verify_timeout") && !o.ContainsKey("ensure"))
+                throw new FormatException("'verify_timeout' requires an 'ensure' condition");
+            result = new Do
+            {
+                Call = call,
+                TimeoutSeconds = o.ContainsKey("timeout") ? Number(o, "timeout", 60, 1, 7200) : null,
+                Ensure = o.ContainsKey("ensure") ? Cond(RequiredString(o, "ensure")) : null,
+                VerifyTimeoutSeconds = Number(o, "verify_timeout", DefaultVerifyTimeoutSeconds, 1, MaxVerifyTimeoutSeconds),
+            };
         }
         if (result.Id.Length == 0) result.Id = NewId();
         return result;
@@ -254,7 +277,7 @@ public sealed class PlanTree
         {
             if (stack.Count == 0) { CurrentId = null; return new DoneAction(); }
             var f = stack[^1];
-            statuses[f.Node.Id] = "running";
+            if (Status(f.Node) != "verifying") statuses[f.Node.Id] = "running";
             switch (f.Node)
             {
                 case Seq s:
@@ -263,7 +286,7 @@ public sealed class PlanTree
                     break;
                 case Do d:
                     pendingAction = CurrentId = d.Id;
-                    return new ActAction(d.Call, d.Id, d.TimeoutSeconds);
+                    return new ActAction(d.Call, d.Id, d.TimeoutSeconds, d.Ensure, d.VerifyTimeoutSeconds);
                 case If i:
                     if (f.Index == 0)
                     {
@@ -321,7 +344,7 @@ public sealed class PlanTree
     void Mark(Node n, string status) { foreach (var child in All(n)) statuses[child.Id] = status; }
     void ClearStatuses(Node n)
     {
-        foreach (var child in All(n)) { statuses.Remove(child.Id); iterations.Remove(child.Id); }
+        foreach (var child in All(n)) { statuses.Remove(child.Id); iterations.Remove(child.Id); outcomes.Remove(child.Id); }
     }
 
     // A satisfied immediate wait and its following branch can run in one Next call. Result predicates must see
@@ -346,6 +369,7 @@ public sealed class PlanTree
     {
         LastOk = true;
         LastResult = "condition satisfied: " + node.Cond.Text;
+        outcomes[node.Id] = (true, Tools.Clip(LastResult, 1000));
         Pop("completed");
     }
 
@@ -354,7 +378,11 @@ public sealed class PlanTree
     {
         LastOk = ok;
         LastResult = result;
-        if (stack.Count > 0 && (stack[^1].Node.Id == pendingAction || stack[^1].Node is Wait)) Pop(ok ? "completed" : "failed");
+        if (stack.Count > 0 && (stack[^1].Node.Id == pendingAction || stack[^1].Node is Wait))
+        {
+            outcomes[stack[^1].Node.Id] = (ok, Tools.Clip(result, 1000));
+            Pop(ok ? "completed" : "failed");
+        }
         pendingAction = CurrentId = null;
         if (ok) return null;
         while (stack.Count > 0)
@@ -392,7 +420,11 @@ public sealed class PlanTree
     {
         Node Copy(Node n) => n switch
         {
-            Do d => new Do { Id = d.Id, Call = new ToolCall(d.Call.Name, (JsonObject)d.Call.Arguments.DeepClone()), TimeoutSeconds = d.TimeoutSeconds },
+            Do d => new Do
+            {
+                Id = d.Id, Call = new ToolCall(d.Call.Name, (JsonObject)d.Call.Arguments.DeepClone()),
+                TimeoutSeconds = d.TimeoutSeconds, Ensure = d.Ensure, VerifyTimeoutSeconds = d.VerifyTimeoutSeconds,
+            },
             Seq s => new Seq { Id = s.Id, Items = s.Items.Select(Copy).ToList() },
             If i => new If { Id = i.Id, Cond = i.Cond, Then = (Seq)Copy(i.Then), Else = i.Else != null ? (Seq)Copy(i.Else) : null },
             Wait w => new Wait { Id = w.Id, Cond = w.Cond, Timeout = w.Timeout },
@@ -409,6 +441,7 @@ public sealed class PlanTree
         var nodes = All(copy.Root).ToDictionary(n => n.Id, StringComparer.Ordinal);
         foreach (var frame in stack) copy.stack.Add(new Frame { Node = nodes[frame.Node.Id], Index = frame.Index, InCatch = frame.InCatch });
         foreach (var pair in statuses) copy.statuses[pair.Key] = pair.Value;
+        foreach (var pair in outcomes) copy.outcomes[pair.Key] = pair.Value;
         foreach (var pair in iterations) copy.iterations[pair.Key] = pair.Value;
         return copy;
     }
@@ -432,6 +465,8 @@ public sealed class PlanTree
         stack.AddRange(candidate.stack);
         statuses.Clear();
         foreach (var pair in candidate.statuses) statuses[pair.Key] = pair.Value;
+        outcomes.Clear();
+        foreach (var pair in candidate.outcomes) outcomes[pair.Key] = pair.Value;
         iterations.Clear();
         foreach (var pair in candidate.iterations) iterations[pair.Key] = pair.Value;
         nextId = candidate.nextId;
@@ -485,6 +520,7 @@ public sealed class PlanTree
             stack.Clear();
             stack.Add(new Frame { Node = Root });
             statuses.Clear();
+            outcomes.Clear();
             iterations.Clear();
             pendingAction = CurrentId = failure = null;
             return isCurrent;
@@ -549,6 +585,8 @@ public sealed class PlanTree
             if (hasActiveChild && index == activeIndex)
             {
                 var activeChild = stack[parentAt + 1].Node;
+                if (Status(activeChild) == "verifying")
+                    throw new FormatException("cannot insert before an action whose effects are being verified; this would repeat the action; insert after it or replace/remove it explicitly");
                 if (activeChild is not (Do or Wait))
                     throw new FormatException("cannot insert before a running control branch; append to its active sequence or target a pending step");
                 invalidates = CurrentId != null;
@@ -573,12 +611,14 @@ public sealed class PlanTree
         JsonObject NodeJson(Node node)
         {
             var o = new JsonObject { ["id"] = node.Id, ["status"] = Status(node) };
+            if (outcomes.TryGetValue(node.Id, out var outcome)) { o["ok"] = outcome.Ok; o["result"] = outcome.Result; }
             switch (node)
             {
                 case Seq s: o["steps"] = new JsonArray(s.Items.Select(n => (JsonNode?)NodeJson(n)).ToArray()); break;
                 case Do d:
                     o["do"] = d.Call.Name; o["args"] = d.Call.Arguments.DeepClone();
                     if (d.TimeoutSeconds != null) o["timeout"] = d.TimeoutSeconds;
+                    if (d.Ensure != null) { o["ensure"] = d.Ensure.Text; o["verify_timeout"] = d.VerifyTimeoutSeconds; }
                     break;
                 case If i:
                     o["if"] = i.Cond.Text; o["then"] = NodeJson(i.Then);
@@ -615,7 +655,7 @@ public sealed class PlanTree
 
     void Write(StringBuilder sb, Node n, bool top = false)
     {
-        string MarkText(Node x) => x.Id == CurrentId ? " <NOW>" : Status(x) == "completed" ? " (done)" : "";
+        string MarkText(Node x) => Status(x) == "verifying" ? " <VERIFYING>" : x.Id == CurrentId ? " <NOW>" : Status(x) == "completed" ? " (done)" : "";
         switch (n)
         {
             case Seq s:
@@ -623,7 +663,10 @@ public sealed class PlanTree
                 for (int i = 0; i < s.Items.Count; i++) { if (i > 0) sb.Append("; "); Write(sb, s.Items[i]); }
                 if (!top) sb.Append(']');
                 break;
-            case Do d: sb.Append($"{d.Id} {d.Call.Name}({Tools.ArgsToString(d.Call)}){MarkText(d)}"); break;
+            case Do d:
+                sb.Append($"{d.Id} {d.Call.Name}({Tools.ArgsToString(d.Call)}){MarkText(d)}");
+                if (d.Ensure != null) sb.Append($" ensure {d.Ensure.Text} (verify max {d.VerifyTimeoutSeconds:0.###}s)");
+                break;
             case If i:
                 sb.Append($"{i.Id} if {i.Cond.Text} then "); Write(sb, i.Then);
                 if (i.Else != null) { sb.Append(" else "); Write(sb, i.Else); }

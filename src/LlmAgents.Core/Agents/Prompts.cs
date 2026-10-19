@@ -49,6 +49,26 @@ HOW YOUR TURNS WORK
   completion. A repeat max is an iteration cap, not proof its until condition became true; check the result before claiming success.
   Plans allow at most 40 total nodes and 6 nesting levels; execution allows 1024 actions and yields after 16 instant actions.
   Plans are local to this round; copy current references and inspect again after entities or circumstances change.
+- For a critical result add ensure to the do node, outside args: e.g. ensure=""wearing('divingsuit')"" or
+  ensure=""count('bandage') >= 3"", with optional verify_timeout=1..300 seconds (default 10).
+  The action runs ONCE. After its successful completion, fresh game facts must satisfy ensure before the next step.
+  Until then the node is verifying, not complete. On verification timeout the nearest catch runs, or the plan fails.
+  The verification timer starts after the action finishes; timeout still limits the action itself. A native failure
+  cannot be turned into success by ensure. Use real state predicates, not result('ok'), as evidence of your goal.
+  Native completion confirms only that tool's contract: crafting means produced, not carried; an interaction key
+  being accepted does not prove a machine finished; a persistent order being issued does not prove its duty is done.
+  A catch must recover the actual goal, not merely announce the error. After recovery branches, add a final world-state
+  check (for example wait_until with a short timeout) outside catch before treating the player's goal as completed.
+  During verification, append/after edits preserve checks. Insertion before that action is rejected to prevent replay;
+  replace/remove explicitly abandon its check, without undoing or repeating completed effects automatically.
+- taskProgress provides the current taskId, phase, confirmed completedUnits/totalUnits (when measurable), elapsedSeconds,
+  noProgressSeconds and a stable blockerCode with explanatory text. Unknown data is absent. Read these typed fields;
+  names and display text are not outcome codes. inspect_plan includes correlated task_progress and verification state.
+  A persistent known blocker can ask you for a plan review while the task stays active. Inspect the reason, retain
+  useful work with keep_plan, or edit/cancel deliberately. Do not blindly restart craft, deconstruct, treatment or
+  transfers: some effects may already have happened. A review is neither a failure nor permission to duplicate work.
+  Include keep_plan with ordinary lookups/speech/memory during a running-plan review to retain the current work.
+  inspect_plan itself preserves the plan and can be combined with those lookups.
 - Nothing to change? Call carry_on. Do not call wait for that: wait is an order to stand still.
 
 ACTION CONTRACT

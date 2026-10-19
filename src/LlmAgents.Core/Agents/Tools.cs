@@ -119,9 +119,14 @@ public static partial class Tools
         };
         var action = Schema(Arg("do", "Exact offered action tool name. Plan management tools and carry_on cannot be nested actions. Generated object tools can be used while their handles are valid."),
             Arg("args", "Arguments object conforming to that tool's full JSON Schema. Omit only for tools requiring no arguments.", false, "object"),
-            Arg("timeout", "Optional per-step timeout for tasks/travel, 1-7200 seconds. Default uses the native task's configured allowance or the normal travel timeout.", false, "number"));
+            Arg("timeout", "Optional per-step timeout for tasks/travel, 1-7200 seconds. Default uses the native task's configured allowance or the normal travel timeout.", false, "number"),
+            Arg("ensure", "Optional postcondition in the same condition DSL. After the action succeeds, wait for these observed world facts before completing the step. Failure/timeout enters catch or stops the plan; the action is never retried automatically. Choose observable inventory, equipment, room or other world state rather than a success message.", false),
+            Arg("verify_timeout", "Seconds allowed for ensure after native action success, 1-300, default 10. Requires ensure; independent of the task/travel timeout.", false, "number"));
         action["properties"]!["timeout"]!["minimum"] = 1;
         action["properties"]!["timeout"]!["maximum"] = 7200;
+        action["properties"]!["verify_timeout"]!["minimum"] = 1;
+        action["properties"]!["verify_timeout"]!["maximum"] = PlanTree.MaxVerifyTimeoutSeconds;
+        action["dependentRequired"] = new JsonObject { ["verify_timeout"] = new JsonArray("ensure") };
         var conditional = Schema(Arg("if", "Condition expression, checked when this node starts."));
         conditional["properties"]!["then"] = StepList("Steps when if is true.");
         conditional["properties"]!["else"] = StepList("Optional steps when if is false.");
@@ -279,11 +284,11 @@ public static partial class Tools
                 return "ok, goal: " + c.Agent.Goal;
             }),
         T("plan", "A plan with conditions, run without asking you again until done or failed: an array of steps. "
-            + "{\"do\":\"<tool>\",\"args\":{...}}; {\"if\":\"<cond>\",\"then\":[...],\"else\":[...]}; {\"wait_until\":\"<cond>\",\"timeout\":60}; "
+            + "{\"do\":\"<tool>\",\"args\":{...},\"ensure\":\"<optional postcondition>\",\"verify_timeout\":10}; {\"if\":\"<cond>\",\"then\":[...],\"else\":[...]}; {\"wait_until\":\"<cond>\",\"timeout\":60}; "
             + "{\"repeat\":[...],\"until\":\"<cond>\",\"max\":3} or while instead of until; {\"try\":[...],\"catch\":[...]}; {\"steps\":[...]}. "
             + "Conditions: health, oxygen, room_water, room_fire, threats, leaks, flora, reactor, reactor_fuel, sub_oxygen, injured, time, task, last_ok, last_failed, marked; "
             + "in_room('X'), has('prefab/#ID'), wearing('prefab/#ID'), count('prefab/#ID'), condition('prefab/#ID'), free_slots, bodies, order('id'), threat('kind'), water('room'), fires('room'), near('name'), result('text'); "
-            + "< > <= >= == !=, and, or, not. Replaces the current plan after full validation, cancelling its awaited native task/travel. Completed effects remain. inspect_plan gives exact state and IDs. Execution is limited to 1024 actions; long instant sequences yield between ticks.",
+            + "< > <= >= == !=, and, or, not. Optional ensure verifies observed world state after native success; verify_timeout defaults to 10 seconds (1-300). An unmet postcondition fails/catches the step without reissuing its action. Replaces the current plan after full validation, cancelling its awaited native task/travel. Completed effects remain. inspect_plan gives exact state and IDs. Execution is limited to 1024 actions; long instant sequences yield between ticks.",
             PlanArgs(), ToolKind.Plan, ToolGroup.Plans,
             _ => "error: 'plan' is read with the whole reply; it cannot run inside a plan"),
         T("update_plan", "Replace one node of the running plan with canonical steps; shorthand for edit_plan op=replace. Inspect plan IDs/revision first. Replacing the active node or its ancestor cancels that step's task, preserving completed effects and untouched progress.",
@@ -616,6 +621,12 @@ public static partial class Tools
             if (schema["required"] is JsonArray req)
                 foreach (var r in req)
                     if (r?.GetValue<string>() is { } key && !obj.ContainsKey(key)) return $"missing '{key}'";
+            if (schema["dependentRequired"] is JsonObject dependencies)
+                foreach (var dependency in dependencies)
+                    if (obj.ContainsKey(dependency.Key) && dependency.Value is JsonArray keys)
+                        foreach (var requiredKey in keys)
+                            if (requiredKey?.GetValue<string>() is { } key && !obj.ContainsKey(key))
+                                return $"missing '{key}' required by '{dependency.Key}'";
             var props = schema["properties"] as JsonObject;
             foreach (var entry in obj)
             {

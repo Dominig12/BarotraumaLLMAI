@@ -219,10 +219,13 @@ internal static class InventoryView
 internal sealed class PutInTask : BotTask
 {
     readonly Queue<(Item Item, ItemContainer Into)> todo;
+    readonly List<(Item Item, ItemContainer Into)> selected;
     readonly List<string> done = new();
     readonly List<string> problems = new();
     readonly string label;
     readonly int wanted;
+    protected override int? CompletedUnits => selected.Count(pair => IsInDestination(pair.Item, pair.Into));
+    protected override int? TotalUnits => wanted;
     bool walkingToDestination;
     (Item Item, ItemContainer Into)? current;
     public override string Name => label;
@@ -232,6 +235,7 @@ internal sealed class PutInTask : BotTask
 
     public PutInTask(Character bot, HumanAIController ai, List<(Item, ItemContainer)> pairs, string label) : base(bot, ai)
     {
+        selected = pairs.ToList();
         todo = new Queue<(Item, ItemContainer)>(pairs);
         wanted = pairs.Count;
         this.label = label;
@@ -281,16 +285,25 @@ internal sealed class PutInTask : BotTask
         ClearObjective();
         var err = InventoryView.PutInto(Bot, item, into, out var removed);
         if (err != null) problems.Add(err);
-        else done.Add($"{item.Name}{InventoryView.Condition(item)} -> {into.Item.Name}" + (removed != null ? $" (took out {removed.Name}{InventoryView.Condition(removed)})" : ""));
+        else { done.Add($"{item.Name}{InventoryView.Condition(item)} -> {into.Item.Name}" + (removed != null ? $" (took out {removed.Name}{InventoryView.Condition(removed)})" : "")); MarkProgress(); }
         current = null;
         return null;
     }
 
     string Report()
     {
-        if (done.Count == 0) return "failed: " + (problems.Count > 0 ? string.Join("; ", problems.Take(4)) : "nothing loaded");
-        return (problems.Count == 0 ? "ok: " : "failed: partially loaded; ") + string.Join("; ", done) + (problems.Count > 0 ? "; not done: " + string.Join("; ", problems.Take(4)) : "");
+        var present = selected.Where(pair => IsInDestination(pair.Item, pair.Into)).ToList();
+        var missing = selected.Where(pair => !IsInDestination(pair.Item, pair.Into))
+            .Select(pair => $"#{pair.Item.ID} -> #{pair.Into.Item.ID} (removed, consumed, or no longer in the requested compartment)").ToList();
+        bool complete = present.Count == wanted && problems.Count == 0;
+        return (complete ? "ok: loaded " : "failed: partially loaded; ")
+            + $"final compartment check {present.Count}/{wanted}; currently present: "
+            + (present.Count == 0 ? "none" : string.Join("; ", present.Select(pair => $"#{pair.Item.ID} {pair.Item.Name}{InventoryView.Condition(pair.Item)} -> #{pair.Into.Item.ID}")))
+            + (missing.Count > 0 ? "; unavailable: " + string.Join("; ", missing.Take(8)) : "")
+            + (problems.Count > 0 ? "; not done: " + string.Join("; ", problems.Take(4)) : "");
     }
+
+    static bool IsInDestination(Item item, ItemContainer into) => !item.Removed && !into.Item.Removed && item.ParentInventory == into.Inventory;
 }
 
 // ------------------------------------------------------------------------------------------- tidy up
@@ -302,6 +315,9 @@ internal sealed class TidyInventoryTask : BotTask
     readonly HashSet<Item> left = new();
     readonly HashSet<Item> unreachable = new();
     readonly List<(string What, string Where)> done = new();
+    readonly Dictionary<Item, ItemContainer> stored = new();
+    protected override int? CompletedUnits => stored.Count(pair => !pair.Key.Removed && pair.Key.ParentInventory == pair.Value.Inventory);
+    protected override int? TotalUnits => items.Count;
     ItemContainer? target;
     int trips;
     public override string Name => "put away carried items";
@@ -332,7 +348,7 @@ internal sealed class TidyInventoryTask : BotTask
             foreach (var i in Pending())
             {
                 if (StoragePlanner.Choose(Bot, i, unreachable)?.Container != target) continue;
-                if (InventoryView.TryStore(Bot, i, target.Inventory)) { done.Add((i.Prefab.Name.Value, StoragePlanner.Describe(target))); n++; }
+                if (InventoryView.TryStore(Bot, i, target.Inventory)) { stored[i] = target; done.Add((i.Prefab.Name.Value, StoragePlanner.Describe(target))); n++; MarkProgress(); }
             }
             if (n == 0) unreachable.Add(target.Item);
             target = null;
@@ -351,7 +367,9 @@ internal sealed class TidyInventoryTask : BotTask
     {
         var parts = done.GroupBy(d => d).Select(g => $"{g.Key.What} x{g.Count()} -> {g.Key.Where}").ToList();
         var kept = items.Where(i => !i.Removed && i.GetRootInventoryOwner() == Bot && !Bot.HasEquippedItem(i)).GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}").ToList();
-        var s = parts.Count == 0 ? "failed: put nothing away (no fitting place)" : (kept.Count == 0 ? "ok: put away " : "failed: partially put away ") + string.Join("; ", parts.Take(10));
+        int verified = stored.Count(pair => !pair.Key.Removed && pair.Key.ParentInventory == pair.Value.Inventory);
+        var s = parts.Count == 0 ? "failed: put nothing away (no fitting place)" : (verified == items.Count ? "ok: put away " : "failed: partially put away ") + string.Join("; ", parts.Take(10));
+        s += $"; final storage check: {verified}/{items.Count} selected items still in their destination";
         if (kept.Count > 0) s += "; still carrying: " + string.Join(", ", kept.Take(8));
         return s;
     }

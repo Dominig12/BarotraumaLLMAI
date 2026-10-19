@@ -77,6 +77,8 @@ internal sealed class TakeItemsTask : BotTask
     bool full;
     public override string Name => $"take {label}";
     protected override double TimeoutSeconds => 60 + 30 * wanted;
+    protected override int? CompletedUnits => got.Count(i => !i.Removed && i.GetRootInventoryOwner() == Bot);
+    protected override int? TotalUnits => wanted;
     public override IEnumerable<Item> Claimed => current != null ? queue.Append(current) : queue;
 
     public TakeItemsTask(Character bot, HumanAIController ai, List<Item> items, string label, FindReplacement? replace = null) : base(bot, ai)
@@ -148,6 +150,7 @@ internal sealed class TakeItemsTask : BotTask
 
     string Report()
     {
+        got.RemoveWhere(i => i.Removed || i.GetRootInventoryOwner() != Bot);
         var left = wanted - got.Count;
         var why = full ? "your inventory is full" : "could not get them (taken or out of reach)";
         if (got.Count == 0) return $"failed: took nothing: {why}";
@@ -193,6 +196,8 @@ internal sealed class ReceiveItemsTask : BotTask
     readonly List<Item> got = new();
     public override string Name => $"get {string.Join(", ", items.Select(i => i.Name).Distinct())} from {holder.Name}";
     protected override double TimeoutSeconds => 120;
+    protected override int? CompletedUnits => got.Count(i => !i.Removed && i.GetRootInventoryOwner() == Bot);
+    protected override int? TotalUnits => items.Count;
     public override IEnumerable<Item> Claimed => items;
 
     public ReceiveItemsTask(Character bot, HumanAIController ai, Character holder, List<Item> items) : base(bot, ai)
@@ -213,6 +218,7 @@ internal sealed class ReceiveItemsTask : BotTask
         ClearObjective();
         foreach (var i in items.Where(i => !i.Removed && i.GetRootInventoryOwner() == holder))
             if (PickUp(i)) got.Add(i);
+        got.RemoveAll(i => i.Removed || i.GetRootInventoryOwner() != Bot);
         if (got.Count == 0) return $"failed: took nothing from {holder.Name} (no room, or they no longer carry it)";
         var list = string.Join(", ", got.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"));
         return (got.Count == items.Count ? "ok: " : "failed: partially received; ") + $"{holder.Name} handed over {list} (in your inventory now)";
@@ -413,6 +419,8 @@ internal sealed class MoveItemTask : BotTask
     string label => items.Count == 0 ? "items" : items.Count == 1 ? items[0].Name : $"{items[0].Name} x{items.Count}";
     public override string Name => $"move {label} to {destination}";
     protected override double TimeoutSeconds => 150 + 10 * items.Count;
+    protected override int? CompletedUnits => items.Count(IsAtDestination);
+    protected override int? TotalUnits => items.Count;
     public override IEnumerable<Item> Claimed => items;
 
     /// <param name="items">One stack (or one item): picked up into the pockets together, delivered together.</param>
@@ -565,7 +573,8 @@ internal sealed class MoveItemTask : BotTask
     string Report()
     {
         var where = receiver != null ? $"gave to {receiver.Name}" : container != null ? $"in {destination}" : $"left in {destination}";
-        var inPlace = container != null ? items.Where(i => !i.Removed && i.ParentInventory == container.Inventory).ToList() : delivered;
+        // Delivery history is not a final state: another character or a machine may have moved an earlier item.
+        var inPlace = items.Where(IsAtDestination).ToList();
         string Count(IEnumerable<Item> l) => string.Join(", ", l.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"));
         if (inPlace.Count == 0)
             return $"failed: could not move {label} ({(full ? "your inventory is full" : failed.Count > 0 ? "could not get it or it did not fit" : "nothing to move")})";
@@ -576,4 +585,8 @@ internal sealed class MoveItemTask : BotTask
             r += $"; {notDone.Count} not moved ({(full ? "inventory full" : "out of reach or did not fit")}){(notDone.Any(Mine) ? ", still in your inventory" : "")}";
         return r;
     }
+
+    bool IsAtDestination(Item item) => !item.Removed && (container != null ? !container.Item.Removed && item.ParentInventory == container.Inventory
+        : receiver != null ? !receiver.Removed && !receiver.IsDead && item.GetRootInventoryOwner() == receiver
+        : room != null && !room.Removed && item.ParentInventory == null && item.CurrentHull == room);
 }

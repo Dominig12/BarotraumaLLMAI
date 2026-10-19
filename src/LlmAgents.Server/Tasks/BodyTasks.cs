@@ -45,6 +45,9 @@ internal sealed class DragBodyTask : BodyTask
     readonly ISpatialEntity destination;
     readonly string destinationName;
     AIObjectiveDragBody? carry;
+    float? nearestBodyDistance;
+    protected override int? CompletedUnits => !Target.Removed && Delivered ? 1 : 0;
+    protected override int? TotalUnits => 1;
     public override string Name => $"drag {GameAdapter.BodyLabel(Target)} to {destinationName}";
 
     public DragBodyTask(Character bot, HumanAIController ai, Character target, ISpatialEntity destination, string destinationName) : base(bot, ai, target)
@@ -61,6 +64,9 @@ internal sealed class DragBodyTask : BodyTask
     {
         if (!GameAdapter.IsBody(Target)) return "failed: target is gone or conscious again";
         if (destination is Entity { Removed: true } || destination is Character { IsDead: true }) return "failed: destination is gone";
+        float bodyDistance = Vector2.Distance(Target.WorldPosition, destination.WorldPosition);
+        if (nearestBodyDistance is { } nearest && bodyDistance + 40 < nearest) { MarkProgress(); nearestBodyDistance = bodyDistance; }
+        nearestBodyDistance ??= bodyDistance;
         if (carry == null)
         {
             // The forced objective stays the same for the ENTIRE transfer. Replacing a GoTo used
@@ -94,7 +100,8 @@ internal sealed class LootBodyTask : BodyTask
     readonly string? query;
     readonly int count;
     readonly ItemFilter? filter;
-    readonly List<string> taken = new();
+    readonly List<Item> taken = new();
+    protected override int? CompletedUnits => taken.Count(item => !item.Removed && item.GetRootInventoryOwner() == Bot);
     readonly HashSet<Item> skipped = new();
     public override string Name => $"loot {GameAdapter.BodyLabel(Target)}";
     public LootBodyTask(Character bot, HumanAIController ai, Character target, string? query, int count, ItemFilter? filter = null) : base(bot, ai, target)
@@ -119,18 +126,23 @@ internal sealed class LootBodyTask : BodyTask
         if (Target.Inventory == null || !Bot.CanAccessInventory(Target.Inventory)) return "failed: body inventory is inaccessible; took " + Summary();
         var candidates = Candidates();
         if (candidates.Count == 0 || taken.Count >= count)
+        {
+            if (taken.Any(item => item.Removed || item.GetRootInventoryOwner() != Bot))
+                return "failed: some looted items are no longer carried; inspect the current inventory; taken earlier: " + Summary();
             return taken.Count > 0 ? "ok: looted " + Summary() + $" from {GameAdapter.BodyLabel(Target)}"
                 : "ok: no matching loot in " + GameAdapter.BodyLabel(Target);
+        }
         foreach (var item in candidates)
         {
             if (item.ParentInventory == null || GameAdapter.InventoryAccessProblem(Bot, item.ParentInventory) != null) { skipped.Add(item); continue; }
             if (!PickUp(item))
                 return "failed: no inventory space for " + item.Name + "; took " + Summary() + "; remaining loot stays on the body";
-            taken.Add(ItemQueries.Label(item));
+            taken.Add(item);
+            MarkProgress();
             // Transfer at most one item per tick; children of a bag already taken are no longer loot candidates.
             return null;
         }
         return taken.Count > 0 ? "ok: looted " + Summary() + "; remaining containers are inaccessible" : "failed: matching loot is inaccessible";
     }
-    string Summary() => taken.Count == 0 ? "nothing" : string.Join(", ", taken);
+    string Summary() => taken.Count == 0 ? "nothing" : string.Join(", ", taken.Select(item => "#" + item.ID + " " + item.Prefab.Name.Value));
 }

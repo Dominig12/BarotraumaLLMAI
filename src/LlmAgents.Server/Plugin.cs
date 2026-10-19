@@ -93,7 +93,10 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
             Log.Error("'mark for the AI' disabled, could not patch the game: " + e.Message);
         }
 
-        settingsBridge = new SettingsBridge(() => settingsService, () => adapter, r => manager?.Monitor(r.Bot, Features(), r.Activity));
+        try { DeconstructionReceipts.Patch(); }
+        catch (Exception e) { Log.Error("native deconstruction result verification unavailable: " + e.Message); }
+
+        settingsBridge = new SettingsBridge(() => settingsService, () => adapter, MonitorResponse);
         TryRegisterSettingsWindow();
 
         try
@@ -131,7 +134,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     internal bool OnChatCommand(Barotrauma.Networking.Client sender, string text)
     {
         if (sender == null || !SettingsService.IsCommand(text)) return false;
-        settingsBridge ??= new SettingsBridge(() => settingsService, () => adapter, r => manager?.Monitor(r.Bot, Features(), r.Activity));
+        settingsBridge ??= new SettingsBridge(() => settingsService, () => adapter, MonitorResponse);
         return settingsBridge.TryHandleChat(sender, text);
     }
 
@@ -271,6 +274,10 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
     public void OnUpdate(double fixedDeltaTime)
     {
         TryRegisterSettingsWindow();
+        // Network callbacks only enqueue monitor requests. Views and commands read/mutate agent state here,
+        // including when the server is in the lobby or ordinary LLM scheduling is disabled.
+        try { settingsBridge?.Tick(); }
+        catch (Exception e) { Log.ErrorThrottled("tick:monitor", "monitor update failed: " + e.Message); }
         if (manager == null) return;
         if (GameMain.GameSession?.IsRunning != true)
         {
@@ -294,6 +301,7 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
 
     public void Dispose()
     {
+        settingsBridge?.Dispose();
         try
         {
             EventService?.Unsubscribe<IEventUpdate>(this);
@@ -311,9 +319,35 @@ public sealed class Plugin : IAssemblyPlugin, IEventUpdate, IEventRoundStarted, 
         // Native forced objectives keep running between plugin ticks. Cancel them and release
         // owned grips before dropping the adapter when unloading/reloading the plugin mid-round.
         try { adapter?.Reset(); } catch (Exception e) { Log.Warn("task reset on shutdown: " + e.Message); }
+        try { DeconstructionReceipts.Unpatch(); } catch { /* shutting down */ }
         adapter = null;
         Log.Sink = null;
         Log.Shutdown();
+    }
+
+    MonitorSnapshot MonitorResponse(MonitorRequest request, Barotrauma.Networking.Client client)
+    {
+        bool authorized = SettingsBridge.CanEdit(client);
+        MonitorCommandResult? command = null;
+        if (request.Op != "get")
+            command = manager?.HandleMonitorCommand(request, client.Connection, client.Name, authorized)
+                ?? new MonitorCommandResult
+                { RequestId = request.RequestId ?? "", Success = false, Code = "unavailable", Message = "LLM-агенты сейчас не запущены." };
+        MonitorSnapshot snapshot;
+        try
+        {
+            snapshot = manager?.Monitor(request.Bot, Features(), request.Activity, request.HistoryPlanId)
+                ?? new MonitorSnapshot { Version = ModInfo.Version, Message = "LLM-агенты сейчас не запущены." };
+        }
+        catch (Exception e)
+        {
+            Log.Warn("monitor snapshot failed: " + e.Message);
+            snapshot = new MonitorSnapshot { Version = ModInfo.Version, Message = "Не удалось получить состояние ботов." };
+        }
+        // Keep a successful command receipt even if building its accompanying view failed.
+        snapshot.CanControlPlans = authorized;
+        snapshot.CommandResult = command;
+        return snapshot;
     }
 
     /// <summary>One memory per campaign save; everything outside campaigns shares "default".</summary>

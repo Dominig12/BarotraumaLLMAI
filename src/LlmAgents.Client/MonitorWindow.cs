@@ -14,7 +14,7 @@ namespace LlmAgents.Client;
 /// conversation). While the window is open it asks the server for a fresh snapshot about once a second; the lists
 /// are only rebuilt when something in them changed, so scrolling is not reset all the time.
 /// </summary>
-internal sealed class MonitorWindow
+internal sealed partial class MonitorWindow
 {
     readonly Action<MonitorRequest> send;
     GUIMessageBox? box;
@@ -28,8 +28,8 @@ internal sealed class MonitorWindow
     double nextAsk, lastAnswer = double.NegativeInfinity;
     string botsKey = "", contentKey = "";
 
-    const string Overview = "Обзор", Actions = "Действия", Memory = "Память и ошибки", Stats = "Статистика", Crew = "Весь экипаж";
-    static readonly string[] Tabs = { Overview, Actions, Memory, Stats, Crew };
+    const string Overview = "Обзор", Plan = "План", Actions = "Действия", Memory = "Память", Stats = "Статистика", Crew = "Экипаж";
+    static readonly string[] Tabs = { Overview, Plan, Actions, Memory, Stats, Crew };
     const double AskEvery = 1.0;
 
     static readonly Color Head = new(120, 200, 255);
@@ -68,30 +68,49 @@ internal sealed class MonitorWindow
         if (GameMain.Client == null)
         {
             SetStatus("Монитор работает только в мультиплеере, на сервере с модом LlmAgents.", Bad);
+            RefreshPlanControls();
             return;
         }
         if (!paused && now >= nextAsk)
         {
             nextAsk = now + AskEvery;
-            send(new MonitorRequest { Bot = selected, Activity = tab == Actions });
+            send(new MonitorRequest { Bot = selected, Activity = tab == Actions, HistoryPlanId = tab == Plan ? historyPlanId : null });
         }
         if (snap == null) SetStatus("Жду ответа сервера...", Dim);
+        else if (paused) SetStatus("Обновление на паузе · показан сохранённый снимок", Warn);
         else if (now - lastAnswer > 6) SetStatus("Сервер давно не отвечает: данные могут быть устаревшими.", Warn);
+        RefreshPlanControls();
     }
 
-    public void OnSnapshot(MonitorSnapshot s)
+    public void OnSnapshot(MonitorSnapshot s, double receivedAgoSeconds = 0)
     {
         if (!IsOpen) return;
+        ReceivePlanCommand(s.CommandResult);
+        double receivedAt = Timing.TotalTime - Math.Max(0, receivedAgoSeconds);
+        if (paused)
+        {
+            pausedSnapshot = s;
+            pausedSnapshotAt = receivedAt;
+            RefreshPlanControls();
+            return;
+        }
         snap = s;
-        lastAnswer = Timing.TotalTime;
+        lastAnswer = receivedAt;
         if (selected == 0 || s.Bots.All(b => b.Id != selected))
         {
             int first = s.Bots.FirstOrDefault()?.Id ?? 0;
             if (first != selected)
             {
                 selected = first;
+                ResetPlanSelection();
                 nextAsk = 0;   // ask again for this bot's details
             }
+        }
+        if (historyPlanId != null && s.Details is { } planDetailsForBot && planDetailsForBot.Id == selected &&
+            planDetailsForBot.PlanHistory.All(plan => plan.PlanId != historyPlanId))
+        {
+            historyPlanId = null;
+            nextAsk = 0;
         }
         Redraw();
         SetStatus(s.Message ?? (paused ? "Обновление на паузе" : $"Обновлено · LlmAgents {s.Version}"), s.Message != null ? Bad : Dim);
@@ -137,7 +156,9 @@ internal sealed class MonitorWindow
                 },
             };
         }
-        content = new GUIListBox(new RectTransform(new Vector2(1f, 0.93f), right.RectTransform)) { Spacing = 2 };
+        var contentHost = new GUIFrame(new RectTransform(new Vector2(1f, 0.93f), right.RectTransform), style: null) { CanBeFocused = false };
+        content = new GUIListBox(new RectTransform(Vector2.One, contentHost.RectTransform)) { Spacing = 2 };
+        BuildPlanPanel(contentHost);
 
         var bottom = new GUILayoutGroup(new RectTransform(new Vector2(1f, 0.055f), main.RectTransform), isHorizontal: true, childAnchor: Anchor.CenterLeft)
         {
@@ -151,9 +172,18 @@ internal sealed class MonitorWindow
             OnClicked = (b, _) =>
             {
                 paused = !paused;
+                cancelConfirmation = null;
                 b.Text = paused ? "Продолжить" : "Пауза";
                 nextAsk = 0;
                 SetStatus(paused ? "Обновление на паузе" : "Обновляю...", Dim);
+                if (!paused && pausedSnapshot is { } deferred)
+                {
+                    var receivedAt = pausedSnapshotAt;
+                    pausedSnapshot = null;
+                    OnSnapshot(deferred);
+                    lastAnswer = receivedAt;
+                }
+                RefreshPlanControls();
                 return true;
             },
         };
@@ -177,6 +207,9 @@ internal sealed class MonitorWindow
         if (snap == null || bots == null || content == null) return;
         if (header != null) header.Text = HeaderLine(snap);
         DrawBots(snap);
+        content.Visible = tab != Plan;
+        if (planRoot != null) planRoot.Visible = tab == Plan;
+        if (tab == Plan) { DrawPlan(resetScroll); return; }
         var lines = new List<Line>();
         var bot = snap.Bots.FirstOrDefault(b => b.Id == selected);
         var d = snap.Details != null && snap.Details.Id == selected ? snap.Details : null;
@@ -213,7 +246,8 @@ internal sealed class MonitorWindow
 
     void DrawBots(MonitorSnapshot s)
     {
-        var key = string.Join("\n", s.Bots.Select(b => $"{b.Id}|{b.Name}|{b.State}|{b.Goal}|{b.Doing}|{b.Health}|{b.AiControl}|{b.Directed}|{b.Errors}")) + "|" + selected;
+        var key = string.Join("\n", s.Bots.Select(b => $"{b.Id}|{b.Name}|{b.State}|{b.Goal}|{b.Task}|{b.Doing}|{b.Health}|{b.AiControl}|{b.Directed}|{b.Errors}|" +
+            (b.TaskProgress is { } p ? $"{p.TaskId}|{p.Phase}|{p.Step}|{p.CompletedUnits}|{p.TotalUnits}|{p.NoProgressSeconds:0}|{p.BlockerCode}|{p.Blocker}" : ""))) + "|" + selected;
         if (key == botsKey) return;
         botsKey = key;
         float scroll = bots!.BarScroll;
@@ -231,6 +265,7 @@ internal sealed class MonitorWindow
                 OnClicked = (_, _) =>
                 {
                     selected = id;
+                    ResetPlanSelection();
                     nextAsk = 0;
                     botsKey = contentKey = "";
                     Redraw(resetScroll: true);
@@ -243,9 +278,14 @@ internal sealed class MonitorWindow
             new GUITextBlock(new RectTransform(new Vector2(1f, 0.34f), col.RectTransform), title, font: GUIStyle.SmallFont, textColor: Head) { CanBeFocused = false };
             var state = StateText(b.State) + (b.Health >= 0 && b.Health < 100 ? $" · здоровье {b.Health}%" : "") + (b.Room != null ? $" · {b.Room}" : "");
             new GUITextBlock(new RectTransform(new Vector2(1f, 0.33f), col.RectTransform), state, font: GUIStyle.SmallFont, textColor: StateColor(b.State)) { CanBeFocused = false };
-            var what = b.Goal ?? b.Task ?? b.Doing ?? "—";
+            var what = b.Goal ?? b.TaskProgress?.Step ?? b.Task ?? b.Doing ?? "—";
             new GUITextBlock(new RectTransform(new Vector2(1f, 0.33f), col.RectTransform), Clip(what, 70), font: GUIStyle.SmallFont, textColor: Text) { CanBeFocused = false };
-            button.ToolTip = $"{b.Name}: {StateText(b.State)}\nЦель: {b.Goal ?? "нет"}\nЗанят: {b.Doing ?? "—"}\nЗадача: {b.Task ?? "—"}\nПриказ: {b.Order ?? "—"}\nРешений: {b.Decisions}, ошибок: {b.Errors}";
+            var tooltip = $"{b.Name}: {StateText(b.State)}\nЦель: {b.Goal ?? "нет"}\nЗанят: {b.Doing ?? "—"}\nЗадача: {b.Task ?? "—"}\nПриказ: {b.Order ?? "—"}\nРешений: {b.Decisions}, ошибок: {b.Errors}";
+            if (b.TaskProgress is { } progress)
+                tooltip += $"\nХод задачи #{progress.TaskId}: {TaskPhase(progress.Phase)}{TaskUnits(progress)}" +
+                    $"\nБез подтверждённого прогресса: {Duration(progress.NoProgressSeconds)}" +
+                    (!string.IsNullOrWhiteSpace(progress.BlockerCode) ? $"\nПрепятствие ({progress.BlockerCode}): {progress.Blocker ?? "причина не уточнена"}" : "");
+            button.ToolTip = tooltip;
         }
         bots.RecalculateChildren();
         bots.UpdateScrollBarSize();
@@ -274,12 +314,25 @@ internal sealed class MonitorWindow
         {
             if (d.PlanAgo != null) l.Add(new Line($"начат {Ago(d.PlanAgo.Value)}", Dim));
             if (d.PlanNow != null) l.Add(new Line("▶ сейчас: " + d.PlanNow, Good));
-            if (d.PlanTree != null) foreach (var part in TreeLines(d.PlanTree)) l.Add(new Line(part, part.Contains("<NOW>") ? Good : part.Contains("(done)") ? Dim : Text));
+            if (d.VerificationCondition != null)
+            {
+                l.Add(new Line("Проверка фактического результата: " + d.VerificationCondition +
+                    (d.VerificationRemainingSeconds is { } remaining ? $" · осталось {Duration(remaining)}" : ""), Head));
+                if (d.VerificationNativeResult != null) l.Add(new Line("Ответ действия: " + Clip(d.VerificationNativeResult, 240), Dim));
+            }
+            if (d.Plan is { Active: true } active)
+            {
+                foreach (var node in active.Nodes.Where(node => node.Kind is "action" or "wait").Take(4))
+                    l.Add(new Line(node.Id + " · " + PlanMonitorView.Title(node) + " · " + PlanMonitorView.StatusText(node.Status), PlanColor(node.Status)));
+                l.Add(new Line("Полное дерево и результаты шагов — на вкладке «План».", Head));
+            }
+            else if (d.PlanTree != null) l.Add(new Line(d.PlanTree, Text));
         }
 
         Section(l, "В игре");
         l.Add(new Line("Занят: " + (b.Doing ?? "—"), Text));
         l.Add(new Line("Задача мода: " + (b.Task ?? "—"), Text));
+        TaskProgressLines(l, d?.TaskProgress ?? b.TaskProgress);
         l.Add(new Line("Ванильный приказ: " + (b.Order ?? "—"), Text));
         l.Add(new Line("Отсек: " + (b.Room ?? "снаружи / неизвестно"), Text));
         if (d != null)
@@ -305,6 +358,26 @@ internal sealed class MonitorWindow
             Section(l, "Ждёт решения");
             foreach (var e in d.PendingEvents) l.Add(new Line("• " + e, Warn));
         }
+    }
+
+    static string TaskPhase(string phase) => phase switch
+    {
+        "running" => "выполняется", "waiting" => "ожидание", "blocked" => "есть препятствие",
+        "cleanup" => "освобождение объектов задачи", _ => phase,
+    };
+
+    static string TaskUnits(MonitorTaskProgress progress) => progress.CompletedUnits is { } done
+        ? $", подтверждено {done}" + (progress.TotalUnits is { } total ? $"/{total}" : "") : "";
+
+    static void TaskProgressLines(List<Line> lines, MonitorTaskProgress? progress)
+    {
+        if (progress == null) return;
+        bool blocked = !string.IsNullOrWhiteSpace(progress.BlockerCode);
+        lines.Add(new Line($"Ход задачи #{progress.TaskId}: {TaskPhase(progress.Phase)}{TaskUnits(progress)}", blocked ? Warn : Good));
+        if (!string.IsNullOrWhiteSpace(progress.Step)) lines.Add(new Line("Этап: " + progress.Step, Text));
+        lines.Add(new Line($"Длительность: {Duration(progress.ElapsedSeconds)}; без подтверждённого прогресса: {Duration(progress.NoProgressSeconds)}", Dim));
+        if (blocked) lines.Add(new Line($"Препятствие ({progress.BlockerCode}): {progress.Blocker ?? "причина не уточнена"}", Warn));
+        if (progress.Phase == "cleanup") lines.Add(new Line("Ожидается освобождение объектов; продолжение плана пока заблокировано.", Warn));
     }
 
     static void ActionLines(List<Line> l, MonitorBot? b, MonitorBotDetails? d)
@@ -420,32 +493,13 @@ internal sealed class MonitorWindow
         tb.CalculateHeightFromText(padding: GUI.IntScale(line.Big ? 6 : 2));
     }
 
-    /// <summary>A plan tree "n1 go_to_room(...); n2 if ... then [...]" one step per line.</summary>
-    static IEnumerable<string> TreeLines(string tree)
-    {
-        var parts = new List<string>();
-        int depth = 0, start = 0;
-        for (int i = 0; i < tree.Length; i++)
-        {
-            char c = tree[i];
-            if (c is '[' or '(') depth++;
-            else if (c is ']' or ')') depth--;
-            else if (c == ';' && depth == 0)
-            {
-                parts.Add(tree.Substring(start, i - start).Trim());
-                start = i + 1;
-            }
-        }
-        parts.Add(tree.Substring(start).Trim());
-        return parts.Where(p => p.Length > 0).Select(p => "• " + p);
-    }
-
     static string StateText(string s) => s switch
     {
         "thinking" => "думает (запрос к модели)",
         "task" => "выполняет задачу",
         "walking" => "идёт",
         "waiting" => "ждёт условия",
+        "verifying" => "проверяет результат действия",
         "plan" => "выполняет план",
         "retry" => "ошибка запроса, повтор позже",
         "queued" => "ждёт своей очереди подумать",
@@ -458,7 +512,7 @@ internal sealed class MonitorWindow
     {
         "thinking" => Warn,
         "task" or "walking" or "plan" => Good,
-        "waiting" or "queued" => Head,
+        "waiting" or "queued" or "verifying" => Head,
         "retry" or "dead" => Bad,
         _ => Dim,
     };
@@ -469,6 +523,10 @@ internal sealed class MonitorWindow
         "do" => ("сделал", Text),
         "task" => ("задача готова", Good),
         "task-failed" => ("задача не удалась", Bad),
+        "task-blocked" => ("задаче мешает препятствие", Warn),
+        "verify" => ("проверяет результат", Head),
+        "verified" => ("результат подтверждён", Good),
+        "verification-failed" => ("результат не подтверждён", Bad),
         "order" => ("приказ", Warn),
         "director" => ("директор", Head),
         "error" => ("ошибка", Bad),

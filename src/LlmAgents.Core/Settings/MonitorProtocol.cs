@@ -13,10 +13,27 @@ public static class MonitorNet
 
 public sealed class MonitorRequest
 {
+    /// <summary>get (default) or cancel_plan. A read request never mutates a plan.</summary>
+    public string Op { get; set; } = "get";
     /// <summary>The bot whose details (activity, notes, inventory, statistics) are wanted; 0 = only the overview.</summary>
     public int Bot { get; set; }
     /// <summary>Also the bot's recent actions (the longest part: only while that tab is open).</summary>
     public bool Activity { get; set; }
+    /// <summary>Null selects the active plan, or the most recent completed plan when idle.</summary>
+    public string? HistoryPlanId { get; set; }
+    public string? RequestId { get; set; }
+    public string? ExpectedPlanId { get; set; }
+    public int? ExpectedRevision { get; set; }
+    public bool ClearGoal { get; set; }
+}
+
+/// <summary>A receipt for an explicit monitor command, separate from snapshot read permissions.</summary>
+public sealed class MonitorCommandResult
+{
+    public string? RequestId { get; set; }
+    public bool Success { get; set; }
+    public string Code { get; set; } = "";
+    public string Message { get; set; } = "";
 }
 
 public sealed class MonitorSnapshot
@@ -24,6 +41,9 @@ public sealed class MonitorSnapshot
     public string Version { get; set; } = "";
     public bool Enabled { get; set; }
     public bool Allowed { get; set; } = true;
+    /// <summary>Computed by the server for the actual connection; cannot be granted by a client request.</summary>
+    public bool CanControlPlans { get; set; }
+    public MonitorCommandResult? CommandResult { get; set; }
     public string? Message { get; set; }
     public double RoundSeconds { get; set; }
     public string Autonomy { get; set; } = "";
@@ -75,13 +95,14 @@ public sealed class MonitorBot
     public bool Alive { get; set; }
     public bool AiControl { get; set; }
     public bool Directed { get; set; }
-    /// <summary>thinking / plan / task / walking / waiting / retry / idle / dead</summary>
+    /// <summary>thinking / plan / task / walking / waiting / verifying / retry / idle / dead</summary>
     public string State { get; set; } = "";
     public string? Room { get; set; }
     public int Health { get; set; } = -1;
     public string? Goal { get; set; }
     public string? Doing { get; set; }
     public string? Task { get; set; }
+    public MonitorTaskProgress? TaskProgress { get; set; }
     public string? Order { get; set; }
     public int Decisions { get; set; }
     public int Errors { get; set; }
@@ -99,6 +120,17 @@ public sealed class MonitorBotDetails
     public string? PlanNow { get; set; }
     public string? PlanTree { get; set; }
     public double? PlanAgo { get; set; }
+    /// <summary>Full structured selected plan, live or retained after completion. No display-text parsing required.</summary>
+    public MonitorPlanSnapshot? Plan { get; set; }
+    public string? ActivePlanId { get; set; }
+    /// <summary>Active plan first, followed by up to five recent terminal snapshots; only Plan contains a full tree.</summary>
+    public List<MonitorPlanSummary> PlanHistory { get; set; } = new();
+    public string? PlanSelectionMessage { get; set; }
+    /// <summary>Live task facts, independent of the age of the bot's last full observation.</summary>
+    public MonitorTaskProgress? TaskProgress { get; set; }
+    public string? VerificationCondition { get; set; }
+    public string? VerificationNativeResult { get; set; }
+    public double? VerificationRemainingSeconds { get; set; }
     public string? LastWhy { get; set; }
     public string? LastDecision { get; set; }
     public double? LastDecisionAgo { get; set; }
@@ -138,4 +170,18 @@ public sealed class MonitorActivity
     /// <summary>think / do / task / task-failed / order / director / error</summary>
     public string Kind { get; set; } = "";
     public string Text { get; set; } = "";
+}
+
+/// <summary>Independent wire DTO: the optional client compiles this protocol without Core agent types.</summary>
+public sealed class MonitorTaskProgress
+{
+    public long TaskId { get; set; }
+    public string Phase { get; set; } = "";
+    public string Step { get; set; } = "";
+    public double ElapsedSeconds { get; set; }
+    public double NoProgressSeconds { get; set; }
+    public string? BlockerCode { get; set; }
+    public string? Blocker { get; set; }
+    public int? CompletedUnits { get; set; }
+    public int? TotalUnits { get; set; }
 }

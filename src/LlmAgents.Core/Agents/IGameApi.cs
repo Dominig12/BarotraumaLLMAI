@@ -82,6 +82,9 @@ public interface IGameApi
     /// <summary>Total duration allowance of the current task, in seconds. Null means no running task or unknown.
     /// The plan executor uses this allowance when the step does not specify its own timeout.</summary>
     double? CurrentTaskTimeoutSeconds(int botId) => null;
+    /// <summary>Factual progress and blockers for the current task, including its identity. Null means unavailable.
+    /// Reading this snapshot must not advance work or reset progress/deadline clocks.</summary>
+    GameTaskProgress? TaskProgress(int botId) => null;
     /// <summary>Cancel only the current multi-step task and release its temporary objective and interactions.
     /// Ordinary orders, including player orders, stay. Does not enqueue a cancellation report that could finish a replacement plan.</summary>
     string CancelCurrentTask(int botId) => "error: task cancellation is not supported in this game backend";

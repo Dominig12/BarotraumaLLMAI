@@ -43,6 +43,7 @@ public sealed partial class GameAdapter
         o.RoomFires = hull?.FireSources?.Count ?? 0;
         o.CurrentOrder = DescribeOrders(c);
         o.CurrentTask = tasks.TryGetValue(c.ID, out var task) ? task.Describe() : null;
+        o.TaskProgress = TaskProgress(botId);
         o.Doing = DescribeActivity(c);
 
         var carried = (c.Inventory?.AllItems ?? Enumerable.Empty<Item>()).ToList();

@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Concurrent;
+using System.Threading;
 using Barotrauma;
 using Barotrauma.LuaCs;
 using Barotrauma.LuaCs.Events;
@@ -22,6 +24,9 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
     MonitorButton? monitorButton;
     INetworkingService? net;
     ControlMarks? controlMarks;
+    readonly ConcurrentQueue<(MonitorSnapshot Snapshot, long ReceivedAt)> monitorSnapshots = new();
+    volatile bool disposed;
+    int monitorOpenRequested;
 
     public void PreInitPatching() { }
 
@@ -69,8 +74,14 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
     {
         try
         {
+            if (disposed) return;
             var snap = SettingsNet.Deserialize<MonitorSnapshot>(msg.ReadString());
-            if (snap != null) monitor?.OnSnapshot(snap);
+            if (snap != null)
+            {
+                // Networking callbacks do not own GUI state. Rebuild the tree on the game thread.
+                monitorSnapshots.Enqueue((snap, Environment.TickCount64));
+                while (monitorSnapshots.Count > 16 && monitorSnapshots.TryDequeue(out _)) { }
+            }
         }
         catch (Exception e)
         {
@@ -93,7 +104,7 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
         try
         {
             var response = SettingsNet.Deserialize<SettingsResponse>(msg.ReadString());
-            if (response?.Type == "monitor") monitor?.Open();
+            if (response?.Type == "monitor") Interlocked.Exchange(ref monitorOpenRequested, 1);
             else if (response != null) window?.OnResponse(response);
         }
         catch (Exception e)
@@ -116,6 +127,16 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
 
     public void OnUpdate(double deltaTime)
     {
+        if (Interlocked.Exchange(ref monitorOpenRequested, 0) != 0)
+        {
+            try { monitor?.Open(); }
+            catch (Exception e) { LoggerService?.LogError("[LlmAgents] monitor could not open: " + e.Message); }
+        }
+        for (int i = 0; i < 16 && monitorSnapshots.TryDequeue(out var received); i++)
+        {
+            try { monitor?.OnSnapshot(received.Snapshot, Math.Max(0, Environment.TickCount64 - received.ReceivedAt) / 1000.0); }
+            catch (Exception e) { LoggerService?.LogError("[LlmAgents] monitor redraw failed: " + e.Message); }
+        }
         try
         {
             if (PlayerInput.IsCtrlDown() && PlayerInput.IsShiftDown() && PlayerInput.KeyHit(Keys.L)) window?.Toggle();
@@ -132,6 +153,8 @@ public sealed class ClientPlugin : IAssemblyPlugin, IEventUpdate
 
     public void Dispose()
     {
+        disposed = true;
+        while (monitorSnapshots.TryDequeue(out _)) { }
         try { EventService?.Unsubscribe<IEventUpdate>(this); } catch { }
         try { ContextMarkMenu.Unpatch(); } catch { }
         try { controlMarks?.Clear(); } catch { }

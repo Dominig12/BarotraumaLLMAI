@@ -74,6 +74,7 @@ public sealed class FakeGame : IGameApi
             Room = src.Room, RoomWaterPercent = src.RoomWaterPercent, RoomFires = src.RoomFires,
             CurrentOrder = src.CurrentOrder, Doing = src.Doing, Rooms = src.Rooms.ToList(), Crew = src.Crew.ToList(),
             Gear = src.Gear, Submarine = src.Submarine, CurrentTask = src.CurrentTask,
+            TaskProgress = TaskProgress(botId) ?? src.TaskProgress,
             Threats = src.Threats.ToList(), Leaks = src.Leaks.ToList(), Inventory = src.Inventory.ToList(),
             InventoryItems = src.InventoryItems?.ToList(), InventoryFreeSlots = src.InventoryFreeSlots,
             Bodies = src.Bodies.ToList(),
@@ -86,20 +87,28 @@ public sealed class FakeGame : IGameApi
     string Act(int id, string what, string result = "ok")
     {
         Actions.Enqueue($"{id}:{what}");
-        if (result.StartsWith("ok, started", StringComparison.Ordinal)) TaskIds[id] = checked(++nextTaskId);
+        if (result.StartsWith("ok, started", StringComparison.Ordinal))
+        {
+            TaskIds[id] = checked(++nextTaskId);
+            TaskProgressData.Remove(id);
+        }
         return result;
     }
 
     public readonly Dictionary<int, long> TaskIds = new();
+    public readonly Dictionary<int, GameTaskProgress> TaskProgressData = new();
     long nextTaskId;
     public long? CurrentTaskId(int botId) => TaskIds.TryGetValue(botId, out var id) ? id : null;
     public double TestTaskTimeoutSeconds = 180;
     public double? CurrentTaskTimeoutSeconds(int botId) => TaskIds.ContainsKey(botId) ? TestTaskTimeoutSeconds : null;
+    public GameTaskProgress? TaskProgress(int botId) => TaskProgressData.TryGetValue(botId, out var progress) ? progress : null;
     public string? CancelTaskError;
     public string CancelCurrentTask(int botId)
     {
         if (CancelTaskError is { } error) return error;
-        return TaskIds.Remove(botId) ? Act(botId, "cancel task", "ok, current task cancelled") : "ok (no current task)";
+        if (!TaskIds.Remove(botId)) return "ok (no current task)";
+        TaskProgressData.Remove(botId);
+        return Act(botId, "cancel task", "ok, current task cancelled");
     }
 
     static string P(int priority) => priority == Tools.TopPriority ? "" : $" p{priority}";
@@ -191,7 +200,11 @@ public sealed class FakeGame : IGameApi
         }).ToList();
         PendingReports.Clear();
         foreach (var report in r)
-            if (report.TaskId == null || CurrentTaskId(report.BotId) == report.TaskId) TaskIds.Remove(report.BotId);
+            if (report.TaskId == null || CurrentTaskId(report.BotId) == report.TaskId)
+            {
+                TaskIds.Remove(report.BotId);
+                TaskProgressData.Remove(report.BotId);
+            }
         return r;
     }
 

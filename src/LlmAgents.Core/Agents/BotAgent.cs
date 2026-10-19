@@ -324,6 +324,18 @@ public sealed class BotAgent
 
     public void ClearPlan() => Plan = null;
 
+    /// <summary>Immutable wire snapshots, bounded to this bot and round. Never retain an executable old tree.</summary>
+    public sealed record PlanHistoryEntry(string PlanId, string SnapshotJson, double EndedAt);
+    public const int MaxPlanHistory = 5;
+    readonly List<PlanHistoryEntry> planHistory = new();
+    public IReadOnlyList<PlanHistoryEntry> PlanHistory() => planHistory.ToArray();
+    public void ArchivePlan(string planId, string snapshotJson, double endedAt)
+    {
+        planHistory.RemoveAll(entry => entry.PlanId == planId);
+        planHistory.Insert(0, new PlanHistoryEntry(planId, snapshotJson, endedAt));
+        if (planHistory.Count > MaxPlanHistory) planHistory.RemoveRange(MaxPlanHistory, planHistory.Count - MaxPlanHistory);
+    }
+
     public string? PlanText() => Plan?.Describe();
 
     /// <summary>Tool of the task the plan is waiting for (or last waited for): craft, equip, come_to...</summary>

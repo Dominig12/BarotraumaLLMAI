@@ -35,6 +35,8 @@
   <ItemGroup>
     <Compile Include="..\LlmAgents.Core\Settings\SettingsProtocol.cs" Link="Core\SettingsProtocol.cs" />
     <Compile Include="..\LlmAgents.Core\Settings\MonitorProtocol.cs" Link="Core\MonitorProtocol.cs" />
+    <Compile Include="..\LlmAgents.Core\Settings\PlanMonitorProtocol.cs" Link="Core\PlanMonitorProtocol.cs" />
+    <Compile Include="..\LlmAgents.Core\Settings\PlanMonitorView.cs" Link="Core\PlanMonitorView.cs" />
   </ItemGroup>
 
   <ItemDefinitionGroup>

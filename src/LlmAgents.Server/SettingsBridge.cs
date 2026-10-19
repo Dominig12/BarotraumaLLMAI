@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Concurrent;
 using System.Linq;
+using System.Threading;
 using Barotrauma;
 using Barotrauma.LuaCs;
 using Barotrauma.Networking;
@@ -11,16 +13,22 @@ namespace LlmAgents;
 /// Server side of in-game configuration: the settings window talks to us through LuaCs networking
 /// (message <see cref="SettingsNet.MessageId"/>, a JSON string each way), and "!llm ..." chat commands
 /// are answered with a private server message. Only the server owner and clients with the
-/// "Manage settings" permission may look at or change anything.
+/// "Manage settings" permission may change configuration or control plans. The bot monitor is visible to everyone.
 /// </summary>
 internal sealed class SettingsBridge
 {
     readonly Func<SettingsService?> service;
     readonly Func<GameAdapter?> adapter;
-    readonly Func<MonitorRequest, MonitorSnapshot?> monitor;
+    readonly Func<MonitorRequest, Client, MonitorSnapshot?> monitor;
     INetworkingService? net;
+    sealed record PendingMonitor(MonitorRequest Request, Client Client, NetworkConnection Connection);
+    readonly ConcurrentQueue<PendingMonitor> pendingMonitor = new();
+    readonly object monitorQueueSync = new();
+    const int MaximumPendingMonitorRequests = 128;
+    int pendingMonitorCount;
+    volatile bool disposed;
 
-    public SettingsBridge(Func<SettingsService?> service, Func<GameAdapter?> adapter, Func<MonitorRequest, MonitorSnapshot?> monitor)
+    public SettingsBridge(Func<SettingsService?> service, Func<GameAdapter?> adapter, Func<MonitorRequest, Client, MonitorSnapshot?> monitor)
     {
         this.service = service;
         this.adapter = adapter;
@@ -46,25 +54,88 @@ internal sealed class SettingsBridge
     {
         try
         {
-            if (net == null || client == null) return;
+            if (disposed || net == null || client?.Connection is not { } connection) return;
             var req = SettingsNet.Deserialize<MonitorRequest>(msg.ReadString()) ?? new MonitorRequest();
-            var snap = monitor(req) ?? new MonitorSnapshot
+            // Only primitives/immutable strings cross the receive boundary. No game/agent state is read here.
+            var copy = new MonitorRequest
             {
-                Version = ModInfo.Version,
-                Message = "LLM-агенты не запущены: проверьте llm_config.json и консоль сервера.",
+                Op = req.Op, Bot = req.Bot, Activity = req.Activity, HistoryPlanId = req.HistoryPlanId,
+                RequestId = req.RequestId, ExpectedPlanId = req.ExpectedPlanId, ExpectedRevision = req.ExpectedRevision, ClearGoal = req.ClearGoal,
             };
-            var m = net.Start(MonitorNet.MessageId);
-            m.WriteString(SettingsNet.Serialize(snap));
-            net.SendToClient(m, client.Connection, DeliveryMethod.Reliable);
-            var now = DateTime.UtcNow;
-            if (!monitorLogged.TryGetValue(client.Name, out var at) || (now - at).TotalSeconds > 300)
-                Log.Info($"bot monitor opened by {client.Name}");
-            monitorLogged[client.Name] = now;
+            bool overflow;
+            lock (monitorQueueSync)
+            {
+                if (disposed) return;
+                overflow = Interlocked.Increment(ref pendingMonitorCount) > MaximumPendingMonitorRequests;
+                if (overflow) Interlocked.Decrement(ref pendingMonitorCount);
+                else pendingMonitor.Enqueue(new PendingMonitor(copy, client, connection));
+            }
+            if (overflow)
+            {
+                SendMonitor(client, new MonitorSnapshot
+                {
+                    Version = ModInfo.Version, Message = "Очередь монитора занята. Повторите запрос.",
+                    CommandResult = copy.Op == "get" ? null : new MonitorCommandResult
+                    { RequestId = copy.RequestId ?? "", Code = "busy", Success = false, Message = "Команда не выполнялась: очередь монитора занята." },
+                });
+                return;
+            }
         }
         catch (Exception e)
         {
             Log.Warn($"monitor request from {client?.Name} failed: {e.Message}");
         }
+    }
+
+    /// <summary>Called from Plugin.OnUpdate even in the lobby or while agents are disabled.</summary>
+    public void Tick()
+    {
+        for (int processed = 0; processed < 32 && pendingMonitor.TryDequeue(out var pending); processed++)
+        {
+            Interlocked.Decrement(ref pendingMonitorCount);
+            if (disposed || net == null) continue;
+            var client = pending.Client;
+            if (!ReferenceEquals(client.Connection, pending.Connection) || GameMain.Server?.ConnectedClients.Contains(client) != true) continue;
+            try
+            {
+                var snap = monitor(pending.Request, client) ?? new MonitorSnapshot
+                { Version = ModInfo.Version, Message = "LLM-агенты не запущены: проверьте llm_config.json и консоль сервера." };
+                snap.CanControlPlans = CanEdit(client);
+                SendMonitor(client, snap);
+                var now = DateTime.UtcNow;
+                if (!monitorLogged.TryGetValue(client.Name, out var at) || (now - at).TotalSeconds > 300)
+                    Log.Info($"bot monitor opened by {client.Name}");
+                monitorLogged[client.Name] = now;
+            }
+            catch (Exception e)
+            {
+                Log.Warn($"monitor request from {client.Name} failed: {e.Message}");
+                SendMonitor(client, new MonitorSnapshot
+                {
+                    Version = ModInfo.Version, CanControlPlans = CanEdit(client), Message = "Не удалось обновить монитор.",
+                    CommandResult = pending.Request.Op == "get" ? null : new MonitorCommandResult
+                    { RequestId = pending.Request.RequestId ?? "", Code = "unavailable", Success = false, Message = "Не удалось обработать команду монитора." },
+                });
+            }
+        }
+    }
+
+    void SendMonitor(Client client, MonitorSnapshot snapshot)
+    {
+        if (net == null || disposed) return;
+        var response = net.Start(MonitorNet.MessageId);
+        response.WriteString(SettingsNet.Serialize(snapshot));
+        net.SendToClient(response, client.Connection, DeliveryMethod.Reliable);
+    }
+
+    public void Dispose()
+    {
+        lock (monitorQueueSync)
+        {
+            disposed = true;
+            while (pendingMonitor.TryDequeue(out _)) Interlocked.Decrement(ref pendingMonitorCount);
+        }
+        net = null;
     }
 
     /// <summary>The client part asks (every few seconds during a round) which bots are under full AI control, to

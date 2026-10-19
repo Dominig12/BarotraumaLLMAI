@@ -12,6 +12,7 @@ namespace LlmAgents;
 internal sealed class TransferItemTask : BotTask
 {
     readonly Queue<Item> pending;
+    readonly List<Item> selected;
     readonly Inventory destination;
     readonly ItemContainer? container;
     readonly int? slot;
@@ -25,12 +26,15 @@ internal sealed class TransferItemTask : BotTask
     Entity? walkingTo;
     public override string Name => $"transfer {wanted} item(s) to {GameAdapter.InventoryOwnerRef(destination.Owner)}" + (slot is { } s ? $" slot {s}" : "");
     protected override double TimeoutSeconds => 90 + wanted * 90;
+    protected override int? CompletedUnits => selected.Count(IsAtDestination);
+    protected override int? TotalUnits => wanted;
     public override IEnumerable<Item> Claimed => pending.Concat(current != null ? new[] { current } : Array.Empty<Item>())
         .Concat(destination.Owner is Item holder ? new[] { holder } : Array.Empty<Item>());
 
     public TransferItemTask(Character bot, HumanAIController ai, IEnumerable<Item> items, Inventory destination, ItemContainer? container, int? slot, bool allowGearRemoval = false) : base(bot, ai)
     {
-        pending = new Queue<Item>(items.Distinct());
+        selected = items.Distinct().ToList();
+        pending = new Queue<Item>(selected);
         wanted = pending.Count;
         originallyInPlace = pending.Where(i => i.ParentInventory == destination && (slot == null || destination.GetItemsAt(slot.Value).Contains(i))).ToHashSet();
         this.destination = destination;
@@ -59,6 +63,7 @@ internal sealed class TransferItemTask : BotTask
         {
             if (originallyInPlace.Contains(item)) already.Add($"#{item.ID}");
             else moved.Add($"#{item.ID} {item.Name}");
+            MarkProgress();
             Next();
             return null;
         }
@@ -78,7 +83,7 @@ internal sealed class TransferItemTask : BotTask
         if (sourceAccessible && destinationAccessible)
         {
             ClearObjective();
-            if (TryPlace(item, out var error)) moved.Add($"#{item.ID} {item.Name}");
+            if (TryPlace(item, out var error)) { moved.Add($"#{item.ID} {item.Name}"); MarkProgress(); }
             else failures.Add($"#{item.ID}: {error}");
             Next();
             return null;
@@ -163,15 +168,21 @@ internal sealed class TransferItemTask : BotTask
     }
     void Next() { current = null; ClearObjective(); walkingTo = null; }
 
+    bool IsAtDestination(Item item) => !item.Removed && !destination.Owner.Removed && item.ParentInventory == destination
+        && (slot == null || slot >= 0 && slot < destination.Capacity && destination.GetItemsAt(slot.Value).Contains(item));
+
     string Report(string? interrupted = null)
     {
         var unresolved = pending.Count + (current != null ? 1 : 0);
-        bool complete = failures.Count == 0 && unresolved == 0 && interrupted == null;
+        var missing = selected.Where(item => !IsAtDestination(item)).Select(item => "#" + item.ID).ToList();
+        bool complete = failures.Count == 0 && unresolved == 0 && interrupted == null && missing.Count == 0;
         var result = (complete ? "ok: " : "failed: ")
             + $"transferred {moved.Count}/{wanted} to {GameAdapter.InventoryOwnerRef(destination.Owner)}"
             + (slot is { } s ? $" slot {s}" : "")
             + (moved.Count > 0 ? "; moved: " + string.Join(", ", moved) : "")
             + (already.Count > 0 ? "; already there: " + string.Join(", ", already) : "")
+            + $"; final parent/slot check: {wanted - missing.Count}/{wanted} present"
+            + (missing.Count > 0 ? "; missing from requested destination: " + string.Join(", ", missing) : "")
             + (failures.Count > 0 ? "; not moved: " + string.Join("; ", failures) : "")
             + (unresolved > 0 ? $"; {unresolved} unprocessed" : "")
             + (interrupted != null ? "; " + interrupted : "");

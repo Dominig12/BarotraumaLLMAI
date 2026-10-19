@@ -75,6 +75,7 @@ public sealed partial class GameAdapter
             try { t.Cancel(); }
             catch (Exception e) { Log.Warn("task cancellation on reset: " + e.Message); }
         tasks.Clear();
+        DeconstructionReceipts.Reset();
         taskIds.Clear(); // nextTaskId deliberately survives round resets: queued old reports cannot match a new task.
         ownOrders.Clear();
         authority.Clear();
@@ -112,6 +113,9 @@ public sealed partial class GameAdapter
 
     public double? CurrentTaskTimeoutSeconds(int botId) => botId is >= ushort.MinValue and <= ushort.MaxValue
         && tasks.TryGetValue((ushort)botId, out var task) ? task.TimeoutAllowance : null;
+
+    public GameTaskProgress? TaskProgress(int botId) => CurrentTaskId(botId) is { } taskId
+        && tasks.TryGetValue((ushort)botId, out var task) ? task.Progress(taskId) : null;
 
     public string CancelCurrentTask(int botId)
     {

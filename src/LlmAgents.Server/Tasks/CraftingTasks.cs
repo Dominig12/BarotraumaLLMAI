@@ -27,6 +27,9 @@ internal sealed class CraftTask : BotTask
     readonly List<string> droppedOutput = new();
     readonly List<Item> products = new();
     readonly double runTimeout;
+    float previousRemaining = float.NaN;
+    protected override int? CompletedUnits => products.Count;
+    protected override int? TotalUnits => amount * Yield;
     protected override double TimeoutSeconds => 120 + runTimeout * amount;
     int Yield => Crafting.Yield(recipe);
     public override string Name => $"craft {recipe.DisplayName.Value} x{amount * Yield} ({products.Count} made)";
@@ -67,6 +70,7 @@ internal sealed class CraftTask : BotTask
             if (reservations.TryGetValue(fabricator, out var owner) && owner != this || fabricator.IsActive)
             {
                 Step = "waiting for the fabricator to become free";
+                SetBlocker("machine_busy", "the selected fabricator is reserved or already active");
                 return null;
             }
             reservations[fabricator] = this;
@@ -77,6 +81,10 @@ internal sealed class CraftTask : BotTask
         if (started)
         {
             Step = $"fabricating {recipe.DisplayName.Value} (craft {made + 1}/{amount})";
+            if (!float.IsNaN(previousRemaining) && fabricator.timeUntilReady < previousRemaining - 0.05f) MarkProgress();
+            previousRemaining = fabricator.timeUntilReady;
+            if (fabricator.IsActive && fabricator.Voltage < fabricator.MinVoltage)
+                SetBlocker("no_power", "the fabricator voltage is below its minimum");
             if (fabricator.IsActive && (fabricator.fabricatedItem != recipe || fabricator.user != Bot))
                 return Failure("someone changed the fabricator's recipe or took over the machine");
             switch (cycle!.Observe(fabricator.IsActive, fabricator.timeUntilReady, Timing.TotalTime))
@@ -181,6 +189,7 @@ internal sealed class CraftTask : BotTask
                 }
             }
             if (!input.TryPutItem(fetching, Bot)) return Failure($"could not put {name} into the fabricator (input full or locked)");
+            MarkProgress();
             fetching = null;
             continue;   // re-check the count
         }
@@ -222,6 +231,8 @@ internal sealed class CraftTask : BotTask
                 : Failure("the fabricator refused to start");
         }
         started = true;
+        MarkProgress();
+        previousRemaining = fabricator.timeUntilReady;
         cycle = new FabricationCycle(Yield, fabricator.timeUntilReady, Timing.TotalTime);
         return null;
     }
@@ -230,6 +241,7 @@ internal sealed class CraftTask : BotTask
     {
         if (!started || user != Bot || item.Prefab != recipe.TargetItem || products.Contains(item)) return;
         products.Add(item);
+        MarkProgress();
         cycle?.ProductCreated();
     }
 
@@ -237,12 +249,15 @@ internal sealed class CraftTask : BotTask
 
     string Report()
     {
+        if (products.Count < amount * Yield) return Failure("native fabrication events did not confirm the requested product count");
         var outputProducts = products.Where(i => !i.Removed && i.ParentInventory == fabricator.OutputContainer?.Inventory).ToList();
         int inOutput = outputProducts.Count;
+        int remaining = products.Count(i => !i.Removed);
+        int carried = products.Count(i => !i.Removed && i.GetRootInventoryOwner() == Bot);
         var locations = products.Where(i => !i.Removed).GroupBy(i => ItemQueries.Where(i, Bot))
             .Select(g => $"{g.Count()} in/at {g.Key} ({string.Join(", ", g.Select(i => $"#{i.ID}"))})");
         string room = fabricator.Item.CurrentHull != null ? GameAdapter.RoomId(fabricator.Item.CurrentHull) : fabricator.Item.Name;
-        return $"ok: made {products.Count}x {recipe.DisplayName.Value} ({made} craft{(made > 1 ? "s" : "")}); {inOutput} newly made in the output of {fabricator.Item.Name} in {room}; products now: {string.Join("; ", locations)}" +
+        return $"ok: native fabrication confirmed {products.Count}x {recipe.DisplayName.Value} ({made} craft{(made > 1 ? "s" : "")}); {remaining} products still exist, {carried} carried, {products.Count - remaining} removed or consumed; {inOutput} newly made in the output of {fabricator.Item.Name} in {room}; products now: {string.Join("; ", locations)}" +
                (clearedOutput.Count > 0 ? $"; during crafting, cleared output into your inventory: {string.Join(", ", clearedOutput.Distinct())}" : "") +
                (droppedOutput.Count > 0 ? $"; during crafting, cleared output onto the floor by the fabricator in {room}: {string.Join(", ", droppedOutput.Distinct())}" : "") +
                OutputGuidance(outputProducts) + ". Locations are the current snapshot; if an item is no longer carried, inspect its exact #ID to locate it before issuing drop or move";
@@ -278,7 +293,12 @@ internal sealed class DeconstructTask : BotTask
 {
     readonly Item item;
     readonly ItemPrefab prefab;
+    DeconstructionReceipts.Receipt? receipt;
     double waitingSince = -1;
+    float previousProgress = float.NaN;
+    protected override int? CompletedUnits => receipt?.Confirmed == true ? 1 : 0;
+    protected override int? TotalUnits => 1;
+    public override IEnumerable<Item> Claimed => new[] { item };
     public override string Name => $"deconstruct {prefab.Name.Value}";
 
     public DeconstructTask(Character bot, HumanAIController ai, Item item) : base(bot, ai)
@@ -289,15 +309,24 @@ internal sealed class DeconstructTask : BotTask
 
     string Done()
     {
-        var y = Crafting.Yields(prefab, Crafting.Deconstructor(Bot));
-        return $"ok: {prefab.Name.Value} deconstructed" +
-               (y.Count > 0 ? $" into {string.Join(", ", y.Select(t => $"{t.Product.Name.Value} x{t.Amount}"))}{(prefab.RandomDeconstructionOutput ? " (random part of these)" : "")}" : "") +
-               " (in the deconstructor's output)";
+        return $"ok: native deconstruction confirmed consumption of #{item.ID} {prefab.Name.Value} by #{receipt?.Machine?.Item.ID}; "
+            + "actual product counts and locations are not inferred from the recipe; inspect the machine output and its linked containers";
     }
 
     protected override string? Update()
     {
-        if (item.Removed) return Done(); // the deconstructor consumed it
+        if (!DeconstructionReceipts.Patched) return "failed: native deconstruction verification hook is unavailable; no deconstruction started";
+        receipt ??= DeconstructionReceipts.Watch(item, Bot);
+        if (receipt.Confirmed && item.Removed) { MarkProgress(); return Done(); }
+        if (item.Removed) return "failed: the selected item disappeared without confirmed native deconstruction; actual products are unverified"
+            + (DeconstructionReceipts.Patched ? "" : "; native deconstruction receipt hook is unavailable");
+        if (item.ParentInventory?.Owner is Item holder && holder.GetComponent<Deconstructor>() is { } processing)
+        {
+            if (!float.IsNaN(previousProgress) && processing.progressTimer > previousProgress + 0.05f) MarkProgress();
+            previousProgress = processing.progressTimer;
+            if (processing.IsActive && processing.Voltage < processing.MinVoltage)
+                SetBlocker("no_power", "the deconstructor voltage is below its minimum");
+        }
         if (!HasObjective)
         {
             Run(new AIObjectiveDeconstructItem(item, Bot, Ai.ObjectiveManager), $"taking {item.Name} to the deconstructor");
@@ -314,6 +343,8 @@ internal sealed class DeconstructTask : BotTask
         if (!machine.IsActive && Timing.TotalTime - waitingSince > 3) return "failed: the deconstructor stopped (no power?)";
         return null;
     }
+
+    protected override void OnFinish() => receipt?.Dispose();
 }
 
 /// <summary>deconstruct(item='*', from=...): several items, one after another.</summary>
@@ -325,6 +356,10 @@ internal sealed class DeconstructManyTask : BotTask
     DeconstructTask? current;
     readonly List<string> done = new();
     readonly List<string> failed = new();
+    protected override int? CompletedUnits => done.Count;
+    protected override int? TotalUnits => total;
+    protected override BotTask? ProgressChild => current;
+    public override IEnumerable<Item> Claimed => items.Concat(current?.Claimed ?? Enumerable.Empty<Item>());
     protected override double TimeoutSeconds => 120 + 90 * total;
     public override string Name => $"deconstruct {total} item(s) from {where}";
 
@@ -340,7 +375,8 @@ internal sealed class DeconstructManyTask : BotTask
         while (current == null)
         {
             if (items.Count == 0)
-                return (done.Count > 0 ? $"ok: deconstructed {done.Count}/{total}: {string.Join("; ", done)}" : "failed: nothing was deconstructed") +
+                return (done.Count == total && failed.Count == 0 ? $"ok: deconstructed {done.Count}/{total}: {string.Join("; ", done)}"
+                    : done.Count > 0 ? $"failed: partially deconstructed {done.Count}/{total}: {string.Join("; ", done)}" : "failed: nothing was deconstructed") +
                        (failed.Count > 0 ? $". Problems: {string.Join("; ", failed.Distinct().Take(3))}" : "");
             var next = items.Dequeue();
             if (!next.Removed) current = new DeconstructTask(Bot, Ai, next);
@@ -349,6 +385,7 @@ internal sealed class DeconstructManyTask : BotTask
         Step = $"{done.Count + failed.Count + 1}/{total}: {current.Step}";
         if (r == null) return null;
         current = null;
+        MarkProgress();
         if (r.StartsWith("ok")) done.Add(r.Replace("ok: ", "").Replace(" (in the deconstructor's output)", ""));
         else
         {
@@ -374,6 +411,8 @@ internal sealed class SalvageAndCraftTask : BotTask
     BotTask? current;
     bool crafting;
     readonly List<string> salvaged = new();
+    protected override BotTask? ProgressChild => current;
+    public override IEnumerable<Item> Claimed => toSalvage.Concat(current?.Claimed ?? Enumerable.Empty<Item>());
     protected override double TimeoutSeconds => 900;
     public override string Name => $"salvage + craft {target}";
 
@@ -404,6 +443,7 @@ internal sealed class SalvageAndCraftTask : BotTask
         Step = (crafting ? "" : $"salvaging ({salvaged.Count + 1}/{salvaged.Count + 1 + toSalvage.Count}): ") + current.Step;
         if (r == null) return null;
         current = null;
+        MarkProgress();
         // Keep the child's ok/failed prefix first: task reports expose that outcome separately from the details.
         if (crafting) return r + (salvaged.Count > 0 ? $"; salvaged {string.Join(", ", salvaged)}" : "");
         if (r.StartsWith("failed")) return $"{r} (while salvaging for {target})";

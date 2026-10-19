@@ -187,6 +187,7 @@ public sealed partial class AgentManager : IDisposable
             Log.ErrorThrottled($"{agent.Id}:{what}", $"[{agent.Name}] {what} failed: {e}");
             if (agent.Plan == null) return;
             try { StopAwaitedWork(agent, agent.Plan); } catch (Exception cleanup) { Log.Warn("plan error cleanup: " + cleanup.Message); }
+            ArchivePlan(agent, agent.Plan, "failed", $"Internal error: {Tools.Clip(e.Message, 200)}", clock());
             agent.ClearPlan();
             agent.TaskTool = null;
             agent.AddEvent(EventKind.TaskFailed, $"your plan was stopped by an internal error ({Tools.Clip(e.Message, 120)}); decide again", clock());

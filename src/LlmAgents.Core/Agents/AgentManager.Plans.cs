@@ -90,6 +90,7 @@ public sealed partial class AgentManager
         if (agent.Plan is { } previous)
         {
             if (StopAwaitedWork(agent, previous) is { } stopError) { RejectPlan(agent, stopError, now); return; }
+            ArchivePlan(agent, previous, "replaced", "Replaced by a new decision", now);
             Log.Info($"[{agent.Name}] new decision replaces the plan: {agent.PlanText()}");
         }
         if (autoGoal is { } goal) agent.SetGoal(goal.Text, now, goal.Source, goal.Player);
@@ -193,7 +194,7 @@ public sealed partial class AgentManager
             plan.TravelPending = false;
         }
         var result = Run(agent, call, plan.Authority);
-        if (IsError(result) && !SoftError(agent, call.Name))
+        if (IsError(result) && (!SoftError(agent, call.Name) || act.Ensure != null))
         {
             if (plan.Tree.Report(false, result) is not { } why) return true;   // a "try" caught it
             StopPlan(agent, $"step {act.NodeId} {call.Name} failed: {Tools.Clip(why, 120)}", now);
@@ -211,7 +212,7 @@ public sealed partial class AgentManager
         else if (!IsError(result) && canonical.Name == "go_to_room" && !result.Contains("already") && !result.Contains("priority lowered"))
             plan.WaitFor(PlanWait.Arrival, now, ArrivalRoom(result) ?? Tools.Str(canonical.Arguments, "room"),
                 deadline: now + (act.TimeoutSeconds ?? Settings.Global.PlanStepTimeoutSeconds));
-        else plan.Tree.Report(true, result);   // done at once (an order, a word: a failed word does not stop the work)
+        else CompleteSuccessfulStep(agent, plan, result, now);
         return true;
     }
 
@@ -230,6 +231,7 @@ public sealed partial class AgentManager
     void Settle(BotAgent agent, ActivePlan plan, Progress progress, string last, double now)
     {
         if (progress != Progress.Done || agent.Plan != plan) return;
+        ArchivePlan(agent, plan, "completed", last, now);
         agent.ClearPlan();
         if (plan.HadWait) PlanFinished(agent, plan, last, now);
         else if (plan.Lookup) agent.AddEvent(EventKind.Lookup, "the answer to your inspect is ready (lastActionResults)", now);
@@ -255,14 +257,20 @@ public sealed partial class AgentManager
     {
         foreach (var agent in agents.Values.ToList())
         {
-            if (agent.Plan is not { Waiting: PlanWait.Arrival or PlanWait.Condition or PlanWait.Task or PlanWait.Yield } plan || now < plan.NextCheckAt) continue;
+            if (agent.Plan is not { Waiting: PlanWait.Arrival or PlanWait.Condition or PlanWait.Verification or PlanWait.Task or PlanWait.Yield } plan || now < plan.NextCheckAt) continue;
             plan.NextCheckAt = now + 1.0;
             Guarded(agent, "plan", () =>
             {
-                if (!game.IsAlive(agent.Id)) { StopAwaitedWork(agent, plan); agent.ClearPlan(); }
+                if (!game.IsAlive(agent.Id))
+                {
+                    StopAwaitedWork(agent, plan);
+                    ArchivePlan(agent, plan, "cancelled", "Bot is no longer alive", now);
+                    agent.ClearPlan();
+                }
                 else if (plan.Waiting == PlanWait.Yield) { plan.StopWaiting(); Continue(agent, plan, "plan done", now); }
                 else if (plan.Waiting == PlanWait.Task) CheckTaskWait(agent, plan, now);
                 else if (plan.Waiting == PlanWait.Arrival) CheckArrival(agent, plan, now);
+                else if (plan.Waiting == PlanWait.Verification) CheckVerification(agent, plan, now);
                 else CheckCondition(agent, plan, now);
             });
         }
@@ -276,7 +284,7 @@ public sealed partial class AgentManager
             plan.StopWaiting();
             // the next steps decide whether the bot stays there: the "stay" order goes once one takes it elsewhere
             plan.TravelPending = true;
-            plan.Tree.Report(true, $"arrived in {room}");
+            CompleteSuccessfulStep(agent, plan, $"arrived in {room}", now);
             Continue(agent, plan, $"arrived in {room}", now);
         }
         else if (now >= plan.WaitDeadline)
@@ -305,7 +313,8 @@ public sealed partial class AgentManager
     {
         plan.StopWaiting();
         agent.LastObservation = null;
-        if (plan.Tree.Report(ok, result) is { } why) StopPlan(agent, why, now);
+        if (ok) { CompleteSuccessfulStep(agent, plan, result, now); Continue(agent, plan, result, now); }
+        else if (plan.Tree.Report(false, result) is { } why) StopPlan(agent, why, now);
         else Continue(agent, plan, result, now);
     }
 
@@ -334,7 +343,12 @@ public sealed partial class AgentManager
                     bool ok = !failed && !plan.TaskTimedOut;
                     string detail = plan.TaskTimedOut ? "task timed out; " + r.Text : r.Text;
                     plan.StopWaiting();
-                    if (plan.Tree.Report(ok, detail) is { } why)
+                    if (ok)
+                    {
+                        CompleteSuccessfulStep(agent, plan, detail, now);
+                        Continue(agent, plan, detail, now);
+                    }
+                    else if (plan.Tree.Report(false, detail) is { } why)
                     {
                         StopPlan(agent, plan.Tree.HasPendingSteps ? "a task failed: " + Tools.Clip(why, 120) : detail, now);
                         agent.TaskTool = null;
@@ -355,6 +369,7 @@ public sealed partial class AgentManager
         // final state in the report even though no executable continuation remains on its stack.
         var rest = plan is { } stopped && (stopped.Tree.HasPendingSteps || stopped.Tree.HasUnfinishedSteps) ? stopped.Describe() : null;
         if (plan != null && StopAwaitedWork(agent, plan) is { } cleanupError) why += "; " + cleanupError;
+        if (plan != null) ArchivePlan(agent, plan, "failed", why, now);
         agent.ClearPlan();
         var line = $"plan stopped ({why})" + (rest != null ? "; not done: " + rest : "");
         agent.RecordResult(line);

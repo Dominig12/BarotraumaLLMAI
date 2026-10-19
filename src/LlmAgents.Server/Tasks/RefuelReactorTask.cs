@@ -75,6 +75,8 @@ internal sealed class RefuelReactorTask : BotTask
 
     string Loaded()
     {
+        if (rod.Removed || rod.ParentInventory != container.Inventory)
+            return "failed: the fuel rod is not in the selected reactor after loading; inspect its current contents";
         var hint = reactor.FissionRate < 1 ? " The reactor is not running: operate it (role=reactor, option=powerup) or ask an engineer." : "";
         var outText = removed.Count > 0 ? $" Took out the spent rod{(removed.Count > 1 ? "s" : "")} ({string.Join(", ", removed)}): it is in your inventory." : "";
         return $"ok: fuel rod ({rod.ConditionPercentage:0}%) loaded, reactor fuel now {GameAdapter.FuelInReactor(container):0}%.{outText}{hint}";

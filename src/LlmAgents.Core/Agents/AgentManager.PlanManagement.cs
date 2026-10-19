@@ -18,6 +18,10 @@ public sealed partial class AgentManager
         snapshot["task_id"] = plan.AwaitedTaskId;
         snapshot["task_timed_out"] = plan.TaskTimedOut;
         snapshot["cancellation_failure"] = plan.CancellationFailure;
+        snapshot["verification_condition"] = plan.Waiting == PlanWait.Verification ? plan.Tree.CurrentDo?.Ensure?.Text : null;
+        snapshot["verification_native_result"] = plan.VerificationResult;
+        if (ReadTaskProgress(agent.Id) is { } progress && progress.TaskId == plan.AwaitedTaskId)
+            snapshot["task_progress"] = System.Text.Json.JsonSerializer.SerializeToNode(progress, ProgressJson);
         snapshot["wait_room"] = plan.WaitRoom;
         snapshot["wait_remaining_seconds"] = plan.WaitDeadline > 0 ? Math.Max(0, plan.WaitDeadline - clock()) : null;
         snapshot["elapsed_seconds"] = Math.Max(0, clock() - plan.StartedAt);
@@ -105,6 +109,7 @@ public sealed partial class AgentManager
         if (expectedPlanId != null && plan?.Id != expectedPlanId) return "error: stale plan_id; inspect_plan before cancellation";
         if (expectedRevision != null && plan?.Tree.Revision != expectedRevision) return "error: stale plan revision; inspect_plan before cancellation";
         if (plan != null && StopAwaitedWork(agent, plan) is { } error) return "error: " + error;
+        if (plan != null) ArchivePlan(agent, plan, "cancelled", reason ?? "Plan cancelled", clock());
         agent.ClearPlan();
         agent.TaskTool = null;
         agent.Events.RemoveAll(e => e.Kind == EventKind.PlanReview);
@@ -169,6 +174,7 @@ public sealed partial class AgentManager
             }
             Resume(agent, plan, false, "task timed out", now);
         }
+        else ReviewBlockedTask(agent, plan, now);
     }
 
     static bool LegacyTaskFailed(string text)

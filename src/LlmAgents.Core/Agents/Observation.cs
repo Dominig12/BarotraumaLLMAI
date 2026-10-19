@@ -40,6 +40,8 @@ public sealed class Observation
     public string? Doing { get; set; }
     /// <summary>Multi-step task in progress (equip, refuel_reactor, craft, deconstruct, treat), if any.</summary>
     public string? CurrentTask { get; set; }
+    /// <summary>Typed native task identity, phase, confirmed work and persistent blocker. Display descriptions are not conditions.</summary>
+    public GameTaskProgress? TaskProgress { get; set; }
     /// <summary>Own injuries, e.g. "burn 30 (left arm), bleeding 12".</summary>
     public string? Injuries { get; set; }
     /// <summary>Items worn or held (equipped).</summary>
@@ -113,6 +115,7 @@ public sealed class Observation
         parts.Add($"you were in {Room ?? "outside"}, health {HealthPercent}%, order: {CurrentOrder}" + (Doing != null ? $", doing: {Doing}" : ""));
         if (Goal != null) parts.Add("goal: " + Goal);
         if (CurrentTask != null) parts.Add("task: " + CurrentTask);
+        if (TaskProgress != null) parts.Add(TaskProgressRules.Describe(TaskProgress));
         if (PlayerOrders.Count > 0) parts.Add("player orders: " + string.Join(" | ", PlayerOrders));
         if (Inbox.Count > 0) parts.Add("messages: " + string.Join(" | ", Inbox));
         if (LastActionResults.Count > 0) parts.Add("results: " + string.Join(" | ", LastActionResults.Select(r => Tools.Clip(r, 160))));

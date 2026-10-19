@@ -15,6 +15,7 @@ internal sealed class TreatTask : BotTask
     ItemQueries.TreatmentChoice? choice;
     double waitUntil;
     int applied;
+    float previousBurden = float.NaN;
     readonly List<string> used = new();
     const int MaxApplications = 8;
     public override string Name => $"treat {patient.Name}";
@@ -26,7 +27,7 @@ internal sealed class TreatTask : BotTask
         this.onlyItemQuery = onlyItemQuery;
     }
 
-    protected override void OnFinish()
+    protected override void OnStopping()
     {
         if (Bot.SelectedCharacter == patient) Bot.SelectedCharacter = null;
     }
@@ -38,10 +39,14 @@ internal sealed class TreatTask : BotTask
         if (patient.Removed || patient.IsDead) return $"failed: {patient.Name} is dead ({Summary()})";
         if (Timing.TotalTime < waitUntil) return null;   // let the last treatment take effect
 
+        float burden = ItemQueries.TreatableAfflictions(patient).Sum(affliction => affliction.Strength);
+        if (!float.IsNaN(previousBurden) && burden < previousBurden - 0.05f) MarkProgress();
+        previousBurden = burden;
+
         if (!ItemQueries.TreatableAfflictions(patient).Any())
             return $"ok: {patient.Name} needs no more treatment ({Summary()}), health {GameAdapter.HealthPercent(patient)}%";
         if (applied >= MaxApplications)
-            return $"ok: stopped after {applied} treatments ({Summary()}); remaining: {ItemQueries.DescribeInjuries(patient)}";
+            return $"failed: treatment is incomplete after {applied} applications ({Summary()}); remaining: {ItemQueries.DescribeInjuries(patient)}";
 
         if (choice == null || choice.Item.Removed || !CanUse(choice.Item))
         {
@@ -79,7 +84,9 @@ internal sealed class TreatTask : BotTask
         if (patient != Bot) Bot.SelectCharacter(patient);
         var limb = patient.CharacterHealth.GetAfflictionLimb(choice.Affliction);
         var name = choice.Item.Name;
+        float conditionBefore = choice.Item.Condition;
         choice.Item.ApplyTreatment(Bot, patient, limb);
+        if (choice.Item.Removed || choice.Item.Condition < conditionBefore) MarkProgress();
         used.Add(name);
         applied++;
         Step = $"applied {name} for {choice.Affliction.Prefab.Name.Value}";

@@ -4,7 +4,7 @@ using System.Collections.Generic;
 namespace LlmAgents.Agents;
 
 /// <summary>What a running plan is waiting for before its next step.</summary>
-public enum PlanWait { None, Task, Arrival, Condition, Yield }
+public enum PlanWait { None, Task, Arrival, Condition, Verification, Yield }
 
 /// <summary>
 /// The plan a bot is carrying out: always a <see cref="PlanTree"/>. A reply of plain calls is a tree of one sequence,
@@ -28,6 +28,10 @@ public sealed class ActivePlan
     public long? AwaitedTaskId { get; set; }
     public bool TaskTimedOut { get; set; }
     public string? CancellationFailure { get; set; }
+    /// <summary>The successful native action's result while its real-world postcondition is checked.</summary>
+    public string? VerificationResult { get; set; }
+    /// <summary>One watchdog review per unchanged blocker, cleared only when real progress resumes.</summary>
+    public string? ProgressReviewKey { get; set; }
     /// <summary>The steps carry the authority of the reply that set the plan (a player's order may override menu orders).</summary>
     public bool Authority { get; }
     public double StartedAt { get; set; }
@@ -60,10 +64,12 @@ public sealed class ActivePlan
         Waiting = what;
         TaskTimedOut = false;
         CancellationFailure = null;
+        VerificationResult = null;
+        ProgressReviewKey = null;
         WaitingSince = now;
         WaitRoom = room;
         WaitDeadline = deadline;
-        NextCheckAt = what == PlanWait.Condition ? now + 1 : now;
+        NextCheckAt = what is PlanWait.Condition or PlanWait.Verification ? now + 1 : now;
         HadWait = true;
     }
 
@@ -75,6 +81,8 @@ public sealed class ActivePlan
         AwaitedTaskId = null;
         TaskTimedOut = false;
         CancellationFailure = null;
+        VerificationResult = null;
+        ProgressReviewKey = null;
     }
 
     public void YieldUntilNextTick(double now)
@@ -93,6 +101,7 @@ public sealed class ActivePlan
             case PlanWait.Task: parts.Add("now: waiting for the current task"); break;
             case PlanWait.Arrival: parts.Add($"now: walking to {WaitRoom}"); break;
             case PlanWait.Condition: parts.Add("now: waiting for a condition"); break;
+            case PlanWait.Verification: parts.Add("now: verifying actual result: " + Tree.CurrentDo?.Ensure?.Text); break;
             case PlanWait.Yield: parts.Add("now: queued for next tick"); break;
         }
         parts.Add($"plan_id={Id}, revision={Tree.Revision}; steps: " + Tree.Describe(max));

@@ -50,6 +50,7 @@ public sealed partial class AgentManager
             // human's order. Its reservation finishes normally, but its result is now stale.
             a.RequestSeq++;
             a.Pending = false;
+            if (a.Plan is { } cancelledPlan) ArchivePlan(a, cancelledPlan, "cancelled", $"Command menu: {m.By}: {m.Order}", now);
             a.ClearPlan();
             a.TaskTool = null;
             var text = m.Dismissal

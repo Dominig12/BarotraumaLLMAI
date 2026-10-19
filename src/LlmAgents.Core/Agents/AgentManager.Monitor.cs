@@ -11,7 +11,7 @@ namespace LlmAgents.Agents;
 /// </summary>
 public sealed partial class AgentManager
 {
-    public MonitorSnapshot Monitor(int detailsFor, IReadOnlyList<FeatureStatus>? features = null, bool activity = true)
+    public MonitorSnapshot Monitor(int detailsFor, IReadOnlyList<FeatureStatus>? features = null, bool activity = true, string? historyPlanId = null)
     {
         double now = clock();
         var s = new MonitorSnapshot
@@ -49,6 +49,7 @@ public sealed partial class AgentManager
         foreach (var a in agents.Values.OrderBy(a => a.Name))
         {
             BotBrief? brief = null;
+            GameTaskProgress? taskProgress = null;
             bool alive = false;
             try
             {
@@ -56,15 +57,23 @@ public sealed partial class AgentManager
                 if (alive) brief = game.Brief(a.Id);
             }
             catch { /* the monitor must never fail */ }
+            if (alive)
+                try { taskProgress = game.TaskProgress(a.Id); }
+                catch { /* Diagnostics are optional; a broken backend must not hide the rest of the monitor. */ }
             var obs = a.LastObservation;
             s.Bots.Add(new MonitorBot
             {
                 Id = a.Id, Name = a.Name, Job = a.Job, Alive = alive, AiControl = a.AiControl, Directed = alive && IsDirected(a),
                 State = StateOf(a, alive), Room = brief?.Room, Health = obs?.HealthPercent ?? -1,
                 Goal = a.CurrentGoal?.Text, Doing = brief?.Doing, Task = brief?.CurrentTask, Order = brief?.CurrentOrder,
+                TaskProgress = MonitorProgress(taskProgress),
                 Decisions = a.Decisions, Errors = a.Stats.ToolErrors + a.Stats.FailedRequests + a.Stats.TasksFailed,
             });
-            if (a.Id == detailsFor) s.Details = Details(a, now, activity);
+            if (a.Id == detailsFor)
+            {
+                s.Details = Details(a, now, activity, taskProgress);
+                FillPlanMonitor(a, s.Details, historyPlanId, now, taskProgress);
+            }
         }
         return s;
     }
@@ -78,6 +87,7 @@ public sealed partial class AgentManager
             case PlanWait.Task: return "task";
             case PlanWait.Arrival: return "walking";
             case PlanWait.Condition: return "waiting";
+            case PlanWait.Verification: return "verifying";
             case not null: return "plan";
         }
         if (a.FailedRequests > 0) return "retry";
@@ -85,7 +95,14 @@ public sealed partial class AgentManager
         return "idle";
     }
 
-    MonitorBotDetails Details(BotAgent a, double now, bool withActivity)
+    static MonitorTaskProgress? MonitorProgress(GameTaskProgress? progress) => progress == null ? null : new MonitorTaskProgress
+    {
+        TaskId = progress.TaskId, Phase = progress.Phase, Step = progress.Step, ElapsedSeconds = progress.ElapsedSeconds,
+        NoProgressSeconds = progress.NoProgressSeconds, BlockerCode = progress.BlockerCode, Blocker = progress.Blocker,
+        CompletedUnits = progress.CompletedUnits, TotalUnits = progress.TotalUnits,
+    };
+
+    MonitorBotDetails Details(BotAgent a, double now, bool withActivity, GameTaskProgress? taskProgress)
     {
         var st = a.Stats;
         var d = new MonitorBotDetails
@@ -101,10 +118,15 @@ public sealed partial class AgentManager
                 PlanWait.Task => "waiting for the task" + (a.TaskTool != null ? $" ({a.TaskTool})" : ""),
                 PlanWait.Arrival => "walking to " + a.Plan.WaitRoom,
                 PlanWait.Condition => "waiting for: " + a.Plan.Tree.CurrentWait?.Cond.Text,
+                PlanWait.Verification => "verifying actual result: " + a.Plan.Tree.CurrentDo?.Ensure?.Text,
                 _ => null,
             },
             PlanTree = a.Plan?.Tree.Describe(1500),
             PlanAgo = a.Plan != null ? now - a.Plan.StartedAt : null,
+            TaskProgress = MonitorProgress(taskProgress),
+            VerificationCondition = a.Plan?.Waiting == PlanWait.Verification ? a.Plan.Tree.CurrentDo?.Ensure?.Text : null,
+            VerificationNativeResult = a.Plan?.Waiting == PlanWait.Verification ? a.Plan.VerificationResult : null,
+            VerificationRemainingSeconds = a.Plan?.Waiting == PlanWait.Verification ? Math.Max(0, a.Plan.WaitDeadline - now) : null,
             LastWhy = a.LastWhy,
             LastDecision = a.LastDecision,
             LastDecisionAgo = double.IsNaN(a.LastDecisionAt) ? null : now - a.LastDecisionAt,
