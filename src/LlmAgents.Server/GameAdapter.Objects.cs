@@ -193,7 +193,13 @@ public sealed partial class GameAdapter
             {
                 actions.Add(ObjectAction("drag_body", "target", reference, "Drag this exact corpse/incapacitated character. Supply destination room or crew member; the native drag and proximity rules still apply."));
                 if (character.Inventory != null)
+                {
                     actions.Add(ObjectAction("loot_body", "target", reference, "Loot this exact corpse/incapacitated character, including modded monster corpses. Limited by real loot and carrying capacity."));
+                    actions.Add(new ObjectToolBinding("mark_item", new JsonObject { ["item"] = "*", ["from"] = reference, ["mark"] = "deconstruct" },
+                        "Mark deconstructable items of this exact body and the verified loot you already carry from it. Own supplies and mixed native stacks outside this source are protected. Reports marked and skipped #IDs."));
+                    actions.Add(new ObjectToolBinding("deconstruct", new JsonObject { ["from"] = reference },
+                        "Deconstruct only this exact body's contents and its verified loot you carry. Supply item='*' or an exact item #ID. Native marks are applied to the safe selection; unrelated own items are excluded."));
+                }
             }
             else if (character != bot && character.IsHuman && character.TeamID == bot.TeamID)
             {

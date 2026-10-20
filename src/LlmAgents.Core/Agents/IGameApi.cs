@@ -126,9 +126,10 @@ public interface IGameApi
     /// <summary>destination explicitly selects auto/container/room/character/storage/self; to is an exact reference.</summary>
     /// <param name="count">0 = the whole stack.</param>
     string MoveItem(int botId, string item, string to, int count = 0, string destination = "auto", ItemFilter? filter = null, string? from = null);
-    /// <summary>Set or remove a native deconstruction marker or the crew attention marker on an exact item.
-    /// Native deconstruction marking affects the item's current stack; attention marks one instance.</summary>
-    string MarkItem(int botId, string item, string mark, bool on = true, string? note = null) => "error: not supported in this game backend";
+    /// <summary>Set or remove a native deconstruction marker or the crew attention marker.
+    /// Exact #ID selects one instance (native deconstruction covers its stack). '*' requires an exact
+    /// source container #ID or body [cID]; a body scope includes verified loot still carried by this bot.</summary>
+    string MarkItem(int botId, string item, string mark, bool on = true, string? note = null, string? from = null) => "error: not supported in this game backend";
     /// <summary>
     /// Pick up to <paramref name="count"/> matching items; filter selects categories/condition/marks explicitly.
     /// from = an exact container, room, or crew member's inventory; null = accessible items aboard.

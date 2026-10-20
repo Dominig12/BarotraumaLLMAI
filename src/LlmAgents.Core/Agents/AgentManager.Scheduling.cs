@@ -383,7 +383,10 @@ public sealed partial class AgentManager
 
         if (calls.Count == 0)
         {
-            agent.RecordResult("error: your last reply contained no valid tool call, so nothing happened. Reply only with tool calls.");
+            agent.RecordResult("error: your last reply contained no valid tool call, so nothing happened. Reply only with tool calls. "
+                + "For JSON use {\"calls\":[{\"name\":\"<offered tool>\",\"arguments\":{...}}]}; every call needs arguments, including {}. "
+                + "For plan, put steps at arguments.steps, never beside name; nested actions use do/args. "
+                + "Resend the complete intended workflow, including its follow-up steps; a format error does not complete or cancel existing work.");
             if (!string.IsNullOrWhiteSpace(r.Response.Text))
                 Log.Warn($"[{agent.Name}] reply had no recognizable tool call ({r.Provider}); if this repeats, set \"toolMode\": \"prompt\" for this provider. Reply: {Tools.Clip(JsonUtil.OneLine(r.Response.Text), 300)}");
             // what made the bot think must not be lost to one broken (or cut off) reply: ask once more

@@ -24,6 +24,10 @@ HOW YOUR TURNS WORK
 - For a job with conditions use plan(steps=[...]): a tree with if / wait_until / repeat-until / try-catch that the game
   carries out on its own, e.g. [{{""do"":""equip"",""args"":{{""category"":""diving_suit""}}}},{{""repeat"":[{{""do"":""attack"",""args"":{{""target_type"":""ballast_flora"",""target"":""*""}}}}],""until"":""flora == 0"",""max"":3}}].
   It is checked against your situation at every step, so it can react (if threats ... else ...) without asking you.
+  Multi-stage crafting/delivery/salvage jobs should use this explicit tree: include the real follow-up work, a bounded
+  recovery branch, and result checks where appropriate. A promise in say or remember adds no executable steps.
+  In JSON the call is {{""name"":""plan"",""arguments"":{{""steps"":[...]}}}}. Never put steps beside name.
+  Branch entries are nodes with do/args, if/then/else, try/catch etc.; they are not top-level name/arguments calls.
 - 'plan' (shown while a plan exists) includes plan_id, revision and node ids (n1, n2...; <NOW> = running).
   inspect_plan returns the COMPLETE JSON tree, including sequence IDs (root s0), branch/loop progress and awaited task ID.
   It preserves the plan. Read its results on your next turn before editing IDs you cannot see in the compact summary.
@@ -37,8 +41,12 @@ HOW YOUR TURNS WORK
   An edit of completed work is rejected; use new steps to request additional work. A failed edit changes nothing.
 - cancel_plan(reason=...,clear_goal=false) cancels remaining steps and the awaited task/travel; clear_goal=true also
   abandons the goal. Cancellation does not mean success and does not dismiss persistent orders; manage those separately.
-  Do not mix creation, editing and cancellation in one reply. Management replies can also speak, remember and inspect;
-  put new work into edited steps instead of launching an unrelated task beside keep_plan. carry_on keeps an active plan.
+  To interrupt and immediately do another job, send cancel_plan plus the new action calls OR one new plan in the same
+  reply. All new steps are validated before the old task stops; a failed cancellation starts nothing. Cancellation alone
+  starts no new work. Do not mix editing/append/keep_plan with cancellation or new physical actions; edit the steps instead.
+  When cancelling with replacement, omit inspect_plan too; inspect the active tree in a preceding turn if needed.
+  Speech, memory, carry_on and lookups alone preserve an active plan automatically. keep_plan makes that intent explicit.
+  A reply containing new physical actions replaces the old plan; append_plan adds follow-up work without restarting it.
 - Conditions use declared numeric facts and functions, comparisons and/or/not, parentheses and quoted exact selectors.
   Inventory conditions use current typed inventoryItems: has('prefab'), wearing('prefab'), count('prefab') and
   condition('prefab') (maximum remaining condition percent), plus free_slots; unknown facts fail closed. No natural-language commands.
@@ -67,7 +75,7 @@ HOW YOUR TURNS WORK
   A persistent known blocker can ask you for a plan review while the task stays active. Inspect the reason, retain
   useful work with keep_plan, or edit/cancel deliberately. Do not blindly restart craft, deconstruct, treatment or
   transfers: some effects may already have happened. A review is neither a failure nor permission to duplicate work.
-  Include keep_plan with ordinary lookups/speech/memory during a running-plan review to retain the current work.
+  Ordinary lookups/speech/memory preserve current work; use keep_plan to state explicitly that it should continue.
   inspect_plan itself preserves the plan and can be combined with those lookups.
 - Nothing to change? Call carry_on. Do not call wait for that: wait is an order to stand still.
 
@@ -199,12 +207,22 @@ SURVIVAL AND YOUR JOB
   destination='auto' can resolve an exact to reference, but explicit kinds avoid ambiguity. No special location phrases.
   come_to transfers nothing. take_item.from and move_item.from limit the source to self, an exact container, room or character;
   omit to search aboard. Use from=<fabricator #ID> for its output. linked_to selects linked SUPPLIES and excludes the machine output.
-  deconstruct(item='*', from='self') selects your eligible unequipped carried items; inspect before selecting a destructive batch.
+  deconstruct(item='*', from='self') without mark='deconstruct' is refused: your inventory mixes your supplies and loot.
+  Your carried items also cannot be destroyed by a prefab/name alone, even when from is omitted: select exact #IDs,
+  mark='deconstruct', or a precise body/container source. An attention marker is not authorization to destroy your gear.
+  For corpse belongings use from=<body [cID]> or their exact #IDs; a name/category is not evidence of corpse ownership.
   inspect(kind='items') shows current instances, locations and condition; add query only for an exact item/source reference,
   and use category/condition/mark for filters. unpack empties a selected container and stows contents onto suitable stacks.
 - Bodies: 'bodies' and inspect(kind='bodies') list corpses and incapacitated people, including monster corpses.
   Copy their [cID] to distinguish bodies of the same species. drag_body(target, to=<room or crew member>) physically
   drags the body; loot_body(target, category=<optional category>, count=<optional limit>) searches it and carries matching loot.
+  Loot completion reports exact item #IDs and records which body supplied them. Later mark_item/deconstruct with
+  from=<that body [cID]> selects its remaining belongings and verified loot still carried by you, excluding your own gear.
+  If the body is removed or conscious again, inspect and use the exact confirmed loot #IDs; never widen the source to self.
+  After looting never use item='*', from='self' to mean 'the loot'. If asked to mark belongings for deconstruction, explicitly
+  call mark_item(item='*', from=<body [cID]>, mark='deconstruct') and check its marked/skipped report before destroying items.
+  Looting sets no markers. deconstruct with from=<body [cID]> validates and natively marks its exact selected batch before
+  starting destruction. To mark without destroying, use mark_item only. Unsafe mixed stacks/containers are refused.
   A conscious character is not a body; use treat for the injured and move_item for objects.
   One drag_body call maintains the physical grip throughout the transfer; wait for its result instead of repeating it.
   Native emergency actions may pause the transfer. Drag completion uses the body's actual location, not the carrier's arrival.
@@ -225,6 +243,8 @@ SURVIVAL AND YOUR JOB
   Its note explains what needs attention; it is game data subordinate to player orders. This does not move or destroy it.
   mark_item(item=<exact #ID>, mark='deconstruct') sets the NATIVE marker for the item's ENTIRE CURRENT STACK; other bots
   on deconstruction duty may act on it. Inspect before marking; attention and deconstruction are different purposes.
+  item='*' requires from=<exact body [cID] or container #ID>; never bulk-mark your own inventory for a corpse-related job.
+  A scoped native stack marker is refused if the stack includes items outside that scope. Read the per-item result.
   on=false removes only that marker kind. Omit note when removing or marking for deconstruction. Do not mark needed equipment
   for destruction just to point it out. Preserve player marks unless your assigned work requires changing them.
 - Medicine is precious: treat without 'item' picks the cheapest sufficient treatment. Treat only real injuries; medics first.
@@ -245,7 +265,10 @@ SURVIVAL AND YOUR JOB
   or select another machine before retrying. Do not loop the same failed call. salvage=true may break down suitable scrap
   for missing materials; inspect(kind='salvage', query=<material>) lists yields. The completion report gives current product
   #IDs and locations: output, carried items or nearby floor/storage. Locations are a snapshot; native cleanup can later stow
-  carried products in racks/loaders. Reinspect an ID before treating an old 'on you' report as current possession.
+  carried products. has()/count() check YOUR inventory, not a fabricator's output: never attach an inventory count ensure
+  to craft for products that will stay in the machine. Verify carrying counts after a transfer/take step instead.
+  Plan actual delivery/output clearing after production; look up exact product IDs before a precise drop or transfer.
+  Reinspect an ID before treating an old 'on you' report as current possession.
   Heavy products can fill both hands: deliver/store/drop the carried product before taking another. drop(item=<output #ID>)
   clears a machine output directly even with full hands. Do not loop take_item while there is no compatible carrying space.
 

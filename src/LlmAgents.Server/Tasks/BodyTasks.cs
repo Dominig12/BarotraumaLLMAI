@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Barotrauma;
@@ -100,15 +101,18 @@ internal sealed class LootBodyTask : BodyTask
     readonly string? query;
     readonly int count;
     readonly ItemFilter? filter;
+    readonly Action<IReadOnlyList<Item>>? received;
     readonly List<Item> taken = new();
     protected override int? CompletedUnits => taken.Count(item => !item.Removed && item.GetRootInventoryOwner() == Bot);
     readonly HashSet<Item> skipped = new();
     public override string Name => $"loot {GameAdapter.BodyLabel(Target)}";
-    public LootBodyTask(Character bot, HumanAIController ai, Character target, string? query, int count, ItemFilter? filter = null) : base(bot, ai, target)
+    public LootBodyTask(Character bot, HumanAIController ai, Character target, string? query, int count, ItemFilter? filter = null,
+        Action<IReadOnlyList<Item>>? received = null) : base(bot, ai, target)
     {
         this.query = query;
         this.count = count;
         this.filter = filter;
+        this.received = received;
     }
 
     List<Item> Candidates() => (Target.Inventory?.FindAllItems(recursive: true) ?? Enumerable.Empty<Item>())
@@ -135,14 +139,26 @@ internal sealed class LootBodyTask : BodyTask
         foreach (var item in candidates)
         {
             if (item.ParentInventory == null || GameAdapter.InventoryAccessProblem(Bot, item.ParentInventory) != null) { skipped.Add(item); continue; }
+            // Snapshot children before the transfer. Items inserted into this bag later are not body loot.
+            var contents = Target.Inventory.FindAllItems(recursive: true)
+                .Where(candidate => !candidate.Removed && candidate.GetRootInventoryOwner() == Target && (candidate == item || IsInside(candidate, item))).ToArray();
             if (!PickUp(item))
                 return "failed: no inventory space for " + item.Name + "; took " + Summary() + "; remaining loot stays on the body";
+            if (item.GetRootInventoryOwner() != Bot) return "failed: pickup did not transfer the selected body item; took " + Summary();
+            received?.Invoke(contents.Where(candidate => !candidate.Removed && candidate.GetRootInventoryOwner() == Bot).ToArray());
             taken.Add(item);
             MarkProgress();
             // Transfer at most one item per tick; children of a bag already taken are no longer loot candidates.
             return null;
         }
         return taken.Count > 0 ? "ok: looted " + Summary() + "; remaining containers are inaccessible" : "failed: matching loot is inaccessible";
+    }
+    static bool IsInside(Item item, Item container)
+    {
+        var seen = new HashSet<Item>();
+        for (var parent = item.Container; parent != null && seen.Add(parent); parent = parent.Container)
+            if (parent == container) return true;
+        return false;
     }
     string Summary() => taken.Count == 0 ? "nothing" : string.Join(", ", taken.Select(item => "#" + item.ID + " " + item.Prefab.Name.Value));
 }

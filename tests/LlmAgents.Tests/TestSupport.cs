@@ -143,9 +143,11 @@ public sealed class FakeGame : IGameApi
     public string? LastMoveFrom;
     public string MoveItem(int botId, string item, string to, int count = 0, string destination = "auto", ItemFilter? filter = null, string? from = null) { LastDestination = destination; LastMoveFrom = from; return Capture(filter, Act(botId, $"move {item} -> {to}" + (count > 0 ? $" x{count}" : ""), "ok, started")); }
     public (string Item, string Mark, bool On, string? Note)? LastMark;
-    public string MarkItem(int botId, string item, string mark, bool on = true, string? note = null)
+    public string? LastMarkFrom;
+    public string MarkItem(int botId, string item, string mark, bool on = true, string? note = null, string? from = null)
     {
         LastMark = (item, mark, on, note);
+        LastMarkFrom = from;
         return Act(botId, $"mark {item} {mark} {on}");
     }
     public string GiveOrder(int botId, string orderId, string? option, string? target, int priority = Tools.TopPriority) =>

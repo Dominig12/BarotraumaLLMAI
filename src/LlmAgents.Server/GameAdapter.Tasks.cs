@@ -24,6 +24,7 @@ public sealed partial class GameAdapter
         if (Timing.TotalTime >= nextDangerCheck)
         {
             nextDangerCheck = Timing.TotalTime + 1.0;
+            PruneBodyLoot();
             try { GearLock.UpdateDanger(Settings); } catch (Exception e) { Log.Warn("danger check failed: " + e.Message); }
         }
         try { TickLoadouts(); }
@@ -70,6 +71,7 @@ public sealed partial class GameAdapter
     {
         ResetLoadouts();
         ResetObjectCatalog();
+        lootOrigins.Clear();
         GearLock.Reset();
         foreach (var t in tasks.Values)
             try { t.Cancel(); }
@@ -256,6 +258,11 @@ public sealed partial class GameAdapter
     {
         var f = from.Trim();
         if (f == "self") return (Carried(c).ToList(), "your inventory");
+        if (f.StartsWith("[c", StringComparison.Ordinal))
+        {
+            if (ExactWorldTarget(c, f) is not Character body || body == c || !IsBody(body)) return null;
+            return (BodyLootScope(c, body), "body and recorded loot of " + BodyLabel(body));
+        }
         if (ExactInventoryTarget(c, f) is Item exact && exact.GetComponents<ItemContainer>().Any())
         {
             var output = exact.GetComponent<Fabricator>()?.OutputContainer ?? exact.GetComponent<Deconstructor>()?.OutputContainer;
@@ -398,31 +405,86 @@ public sealed partial class GameAdapter
         if (Find(botId) is not { } c || !Ai(c, out var ai)) return "error: character gone";
         if (!Crafting.HasDeconstructor(c)) return "error: no deconstructor on this submarine";
         bool all = IsAll(query);
+        if (DestructiveSelectionRules.ValidateBatch(all, from, filter?.Mark) is { } unsafeBatch) return "error: " + unsafeBatch;
+        if (from?.Trim() == "self" && !DestructiveSelectionRules.AllowsItem(true, query, from, filter?.Mark))
+            return "error: deconstructing your own supplies requires an exact item #ID or mark='deconstruct'; for body loot use from='[cID]' instead of self";
 
         if (!string.IsNullOrWhiteSpace(from))
         {
             var source = ItemsAt(c, from!);
-            if (source == null) return $"error: no source '{from}'; use self, an exact #container ID, or a room reference";
+            if (source == null) return $"error: no source '{from}'; use an exact body [cID], self, an exact #container ID, or a room reference";
             var where = source.Value.Where;
             var claimed = ClaimedByOthers(c);
+            var sourceBody = from!.Trim().StartsWith("[c", StringComparison.Ordinal) ? ExactWorldTarget(c, from.Trim()) as Character : null;
             var candidates = source.Value.Items
-                .Where(i => ItemQueries.IsAvailableTo(i, c) && !claimed.Contains(i) && i.Prefab.AllowDeconstruct && i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i) && ItemQueries.Matches(c, i, filter))
+                .Where(i => (ItemQueries.IsAvailableTo(i, c) || sourceBody != null && i.GetRootInventoryOwner() == sourceBody && !ItemQueries.IsIgnored(i))
+                    && !claimed.Contains(i) && i.AllowDeconstruct && i.Prefab.AllowDeconstruct && i.Prefab.DeconstructItems.Any()
+                    && !c.HasEquippedItem(i) && ItemQueries.Matches(c, i, filter))
                 .Select(i => (i, score: all ? 1 : ItemQueries.MatchScore(i, query)))
                 .Where(t => all || t.score == 3).ToList();
             // only the best match: "Сварочный аппарат" is the welding tool, not every "Топливный бак сварочного аппарата" next to it
             int best = candidates.Count > 0 ? candidates.Max(t => t.score) : 0;
             var items = candidates.Where(t => t.score == best).Select(t => t.i)
+                .OrderByDescending(ContainmentDepth)
                 .Take(all ? (count > 0 ? count : MaxDeconstructBatch) : Math.Max(1, count)).ToList();
             if (items.Count == 0) return $"error: nothing {(all ? "" : $"matching '{query}' ")}that can be deconstructed in {where}";
-            return StartTask(c, new DeconstructManyTask(c, ai, items, where)) +
-                   $"; {items.Count} item(s): {string.Join(", ", items.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))}";
+            string markerReport = "";
+            var skipped = new List<string>();
+            HashSet<Item>? selected = null;
+            if (sourceBody != null)
+            {
+                if (!DeconstructionReceipts.Patched) return "error: native deconstruction verification hook is unavailable; no new marker was set";
+                // Deconstruction is already authorized, so expose its exact native intent even when
+                // the model did not send a separate mark_item. Prune unsafe stacks/containers until
+                // their dependencies are stable. The final task reports these omissions as partial failure.
+                selected = items.ToHashSet();
+                bool removed;
+                do
+                {
+                    removed = false;
+                    foreach (var item in items.ToArray())
+                    {
+                        var preview = MarkOne(c, item, "deconstruct", true, null, selected, out _, apply: false);
+                        if (preview.StartsWith("ok", StringComparison.Ordinal)) continue;
+                        skipped.Add($"#{item.ID}: {preview}");
+                        items.Remove(item);
+                        selected.Remove(item);
+                        removed = true;
+                    }
+                } while (removed);
+                if (items.Count == 0) return "error: no body scrap item can be safely selected; no new marker was set; skipped: " + string.Join("; ", skipped);
+            }
+            // Permission checks and previous task cleanup must finish before native destructive marks.
+            var started = StartTask(c, new DeconstructManyTask(c, ai, items, where, sourceBody,
+                sourceBody == null ? null : transferred => RecordBodyLoot(c, sourceBody, transferred), skipped));
+            if (!started.StartsWith("ok", StringComparison.Ordinal)) return started;
+            if (sourceBody != null)
+            {
+                var marked = new HashSet<Item>();
+                foreach (var item in items)
+                {
+                    if (marked.Contains(item)) continue;
+                    var result = MarkOne(c, item, "deconstruct", true, null, selected, out var affected);
+                    if (!result.StartsWith("ok", StringComparison.Ordinal))
+                    {
+                        CancelTask(c, quiet: true);
+                        return $"error: body scrap task was stopped before execution: #{item.ID}: {result}; markers already set: "
+                            + (marked.Count == 0 ? "none" : string.Join(", ", marked.Select(member => "#" + member.ID)));
+                    }
+                    marked.UnionWith(affected);
+                }
+                markerReport = "; native deconstruct markers set on exactly: " + string.Join(", ", marked.OrderBy(item => item.ID).Select(item => "#" + item.ID));
+            }
+            return started + $"; {items.Count} item(s): {string.Join(", ", items.GroupBy(i => i.Prefab).Select(g => $"{g.Key.Name.Value} x{g.Count()}"))}" + markerReport
+                + (skipped.Count > 0 ? "; partial selection, skipped: " + string.Join("; ", skipped) : "");
         }
 
         // what players marked for deconstruction (or for the AI) with the middle mouse button
         if (filter?.Mark is "ai" or "deconstruct")
         {
             var pool = ItemQueries.Marked(c, filter.Mark == "ai" ? MarkQuery.Ai : MarkQuery.Deconstruct);
-            var items = pool.Where(i => ItemQueries.IsAvailableTo(i, c) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) == 3 && i.Prefab.AllowDeconstruct && i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i))
+            var items = pool.Where(i => ItemQueries.IsAvailableTo(i, c) && ItemQueries.Matches(c, i, filter) && ItemQueries.MatchScore(i, query) == 3 && i.Prefab.AllowDeconstruct && i.Prefab.DeconstructItems.Any() && !c.HasEquippedItem(i)
+                    && DestructiveSelectionRules.AllowsItem(i.GetRootInventoryOwner() == c, query, null, filter?.Mark))
                 .OrderBy(i => Vector2.DistanceSquared(i.WorldPosition, c.WorldPosition)).Take(MaxDeconstructBatch).ToList();
             if (items.Count == 0) return "error: nothing marked that you can deconstruct (players mark items with the middle mouse button)";
             return StartTask(c, new DeconstructManyTask(c, ai, items, "marked items")) +
@@ -432,9 +494,14 @@ public sealed partial class GameAdapter
         if (all) return "error: 'all' needs 'from' (a container or room), so nothing important is broken down by accident";
         // without 'from' the item must be named: "tools" or "medical" alone would break down whatever is nearest
         // (with 'from', "инструменты из шкафа" is fine: only that cabinet)
-        var found = ItemQueries.Find(c, query, i => i.Prefab.DeconstructItems.Any() && i.Prefab.AllowDeconstruct && !c.HasEquippedItem(i), kinds: false, selection: filter);
+        var found = ItemQueries.Find(c, query, i => i.Prefab.DeconstructItems.Any() && i.Prefab.AllowDeconstruct && !c.HasEquippedItem(i)
+            && DestructiveSelectionRules.AllowsItem(i.GetRootInventoryOwner() == c, query, null, filter?.Mark), kinds: false, selection: filter);
         if (found.Count == 0)
         {
+            if (!DestructiveSelectionRules.AllowsItem(true, query, null, filter?.Mark)
+                && Carried(c).Any(item => !c.HasEquippedItem(item) && ItemQueries.Matches(c, item, filter)
+                    && ItemQueries.MatchScore(item, query) == 3 && item.Prefab.AllowDeconstruct && item.Prefab.DeconstructItems.Any()))
+                return $"error: no available '{query}' scrap aboard outside your own inventory; your own supplies require an exact item #ID or mark='deconstruct'; for body loot use from='[cID]'";
             // maybe they named the material they want
             var hint = Crafting.Salvage(c, query);
             return $"error: no '{query}' that can be deconstructed. {hint}";
@@ -446,6 +513,13 @@ public sealed partial class GameAdapter
     }
 
     const int MaxDeconstructBatch = 12;
+
+    static int ContainmentDepth(Item item)
+    {
+        var parents = new HashSet<Item>();
+        for (var parent = item.Container; parent != null && parents.Add(parent); parent = parent.Container) { }
+        return parents.Count;
+    }
 
     /// <summary>Storage containers by name or room ("cabinet", "шкаф", "Электрика [h140]", "шкаф в Электрика [h140]").</summary>
     /// <summary>In what a fabricator made or a deconstructor gave: products wait there to be taken.</summary>

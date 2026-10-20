@@ -293,18 +293,25 @@ internal sealed class DeconstructTask : BotTask
 {
     readonly Item item;
     readonly ItemPrefab prefab;
+    readonly Character? sourceBody;
+    readonly Action<IReadOnlyList<Item>>? received;
+    LootBodyTask? fetching;
     DeconstructionReceipts.Receipt? receipt;
     double waitingSince = -1;
     float previousProgress = float.NaN;
     protected override int? CompletedUnits => receipt?.Confirmed == true ? 1 : 0;
     protected override int? TotalUnits => 1;
+    protected override BotTask? ProgressChild => fetching;
     public override IEnumerable<Item> Claimed => new[] { item };
     public override string Name => $"deconstruct {prefab.Name.Value}";
 
-    public DeconstructTask(Character bot, HumanAIController ai, Item item) : base(bot, ai)
+    public DeconstructTask(Character bot, HumanAIController ai, Item item, Character? sourceBody = null,
+        Action<IReadOnlyList<Item>>? received = null) : base(bot, ai)
     {
         this.item = item;
         prefab = item.Prefab;
+        this.sourceBody = sourceBody;
+        this.received = received;
     }
 
     string Done()
@@ -316,10 +323,28 @@ internal sealed class DeconstructTask : BotTask
     protected override string? Update()
     {
         if (!DeconstructionReceipts.Patched) return "failed: native deconstruction verification hook is unavailable; no deconstruction started";
+        if (fetching != null)
+        {
+            var fetched = fetching.Tick();
+            Step = fetching.Step;
+            if (fetched == null) return null;
+            fetching = null;
+            if (!fetched.StartsWith("ok", StringComparison.Ordinal) || item.Removed || item.GetRootInventoryOwner() != Bot)
+                return "failed: could not retrieve the exact selected body item for deconstruction; " + fetched;
+            MarkProgress();
+        }
         receipt ??= DeconstructionReceipts.Watch(item, Bot);
         if (receipt.Confirmed && item.Removed) { MarkProgress(); return Done(); }
         if (item.Removed) return "failed: the selected item disappeared without confirmed native deconstruction; actual products are unverified"
             + (DeconstructionReceipts.Patched ? "" : "; native deconstruction receipt hook is unavailable");
+        if (item.GetRootInventoryOwner() is Character owner && owner != Bot)
+        {
+            if (sourceBody != owner || !GameAdapter.IsBody(owner)) return "failed: another character now owns the selected item; no deconstruction attempted";
+            fetching = new LootBodyTask(Bot, Ai, owner, "#" + item.ID, 1, received: received);
+            return null;
+        }
+        if (item.GetComponents<Barotrauma.Items.Components.ItemContainer>().Any(container => container.Inventory.AllItems.Any(inside => !inside.Removed)))
+            return "failed: the selected item is a nonempty container; remove its contents explicitly before deconstruction so unrelated supplies cannot be destroyed";
         if (item.ParentInventory?.Owner is Item holder && holder.GetComponent<Deconstructor>() is { } processing)
         {
             if (!float.IsNaN(previousProgress) && processing.progressTimer > previousProgress + 0.05f) MarkProgress();
@@ -344,6 +369,12 @@ internal sealed class DeconstructTask : BotTask
         return null;
     }
 
+    protected override void ClearOwnedWork()
+    {
+        try { fetching?.Cancel(); }
+        finally { base.ClearOwnedWork(); }
+    }
+
     protected override void OnFinish() => receipt?.Dispose();
 }
 
@@ -353,6 +384,8 @@ internal sealed class DeconstructManyTask : BotTask
     readonly Queue<Item> items;
     readonly string where;
     readonly int total;
+    readonly Character? sourceBody;
+    readonly Action<IReadOnlyList<Item>>? received;
     DeconstructTask? current;
     readonly List<string> done = new();
     readonly List<string> failed = new();
@@ -363,11 +396,15 @@ internal sealed class DeconstructManyTask : BotTask
     protected override double TimeoutSeconds => 120 + 90 * total;
     public override string Name => $"deconstruct {total} item(s) from {where}";
 
-    public DeconstructManyTask(Character bot, HumanAIController ai, List<Item> items, string where) : base(bot, ai)
+    public DeconstructManyTask(Character bot, HumanAIController ai, List<Item> items, string where,
+        Character? sourceBody = null, Action<IReadOnlyList<Item>>? received = null, IEnumerable<string>? skipped = null) : base(bot, ai)
     {
         this.items = new Queue<Item>(items);
-        total = items.Count;
+        if (skipped != null) failed.AddRange(skipped);
+        total = items.Count + failed.Count;
         this.where = where;
+        this.sourceBody = sourceBody;
+        this.received = received;
     }
 
     protected override string? Update()
@@ -379,7 +416,7 @@ internal sealed class DeconstructManyTask : BotTask
                     : done.Count > 0 ? $"failed: partially deconstructed {done.Count}/{total}: {string.Join("; ", done)}" : "failed: nothing was deconstructed") +
                        (failed.Count > 0 ? $". Problems: {string.Join("; ", failed.Distinct().Take(3))}" : "");
             var next = items.Dequeue();
-            if (!next.Removed) current = new DeconstructTask(Bot, Ai, next);
+            if (!next.Removed) current = new DeconstructTask(Bot, Ai, next, sourceBody, received);
         }
         var r = current.Tick();
         Step = $"{done.Count + failed.Count + 1}/{total}: {current.Step}";

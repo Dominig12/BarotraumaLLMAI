@@ -56,7 +56,7 @@ public static partial class Tools
         var schema = Schema(Arg("reason", "Optional brief reason for cancellation, recorded in the bot's results.", false),
             Arg("clear_goal", "true also abandons the current goal; false (default) retains it. Cancellation never claims successful completion.", false, "boolean"));
         AddPlanVersionArguments(schema);
-        return T("cancel_plan", "Cancel remaining steps and the native task/temporary travel awaited by this plan. Does not undo completed crafting/transfers or dismiss persistent orders. Player-issued orders remain protected; use the normal order tools for persistent orders. Optional clear_goal abandons the goal. Cannot be combined with plan/edit/update/append in the same reply.",
+        return T("cancel_plan", "Cancel remaining steps and the native task/temporary travel awaited by this plan. Does not undo completed crafting/transfers or dismiss persistent orders. Player-issued orders remain protected; use the normal order tools for persistent orders. Optional clear_goal abandons the old goal. To switch jobs immediately, combine one cancel_plan with new action calls OR one new plan; the whole replacement is validated before stopping anything. Cannot be combined with edit/update/append/keep_plan. When replacing, omit inspect_plan too: inspect first in a separate turn. Cancellation alone starts no new job.",
             schema, ToolKind.Plan, ToolGroup.Plans, c => c.Mgr.CancelPlan(c.Agent, c.Str("reason"), c.Bool("clear_goal") ?? false,
                 c.A["expected_revision"] == null ? null : c.Int("expected_revision", 0), c.Str("expected_plan_id")));
     }

@@ -39,15 +39,20 @@ public sealed partial class AgentManager
         bool rewrite = calls.Any(c => c.Name == "plan");
         bool editing = calls.Any(c => c.Name is "edit_plan" or "append_plan" or "update_plan");
         bool cancelling = calls.Any(c => c.Name == "cancel_plan");
+        bool retaining = calls.Any(c => c.Name is "keep_plan" or "inspect_plan");
+        bool hasActions = calls.Where(c => !IsPlanControl(c) && c.Name != "carry_on")
+            .Any(c => ResolveTool(agent, c.Name)?.Kind is not (ToolKind.Talk or ToolKind.Lookup or ToolKind.Memory));
+        bool cancelAndReplace = cancelling && (rewrite || hasActions);
         if (calls.Count(c => c.Name == "plan") > 1 || calls.Count(c => c.Name == "cancel_plan") > 1
-            || rewrite && (editing || cancelling) || editing && cancelling)
+            || rewrite && editing || editing && cancelling || cancelAndReplace && retaining)
         {
-            RejectPlan(agent, "combine edits in edit_plan; do not mix plan creation, editing and cancellation", now);
+            RejectPlan(agent, "combine edits in edit_plan; do not mix editing or retaining a plan with its replacement or cancellation", now);
             return;
         }
-        bool preserving = editing || cancelling || calls.Any(c => c.Name is "keep_plan" or "inspect_plan")
-            || agent.Plan != null && calls.All(c => c.Name == "carry_on");
-        if (!rewrite && preserving)
+        // A conversation, lookup or note does not change the running work. In particular, adding
+        // a short acknowledgement to carry_on must not silently cancel an awaited craft/task.
+        bool preserving = editing || cancelling || retaining || agent.Plan != null && !hasActions;
+        if (!rewrite && !cancelAndReplace && preserving)
         {
             if (calls.Where(c => !IsPlanControl(c) && c.Name != "carry_on")
                 .Any(c => ResolveTool(agent, c.Name)?.Kind is not (ToolKind.Talk or ToolKind.Lookup or ToolKind.Memory)))
@@ -79,7 +84,7 @@ public sealed partial class AgentManager
         {
             tree = rewrite ? PlanTree.Build(TreeSteps(calls), PlanToolNames(agent))
                            : PlanTree.FromCalls(calls.Where(c => !IsPlanControl(c) && c.Name != "carry_on"));
-            if (rewrite && ValidatePlanActions(agent, tree.Root) is { } invalid) throw new FormatException(invalid);
+            if ((rewrite || cancelAndReplace) && ValidatePlanActions(agent, tree.Root) is { } invalid) throw new FormatException(invalid);
         }
         catch (FormatException e)
         {
@@ -87,7 +92,18 @@ public sealed partial class AgentManager
             return;
         }
 
-        if (agent.Plan is { } previous)
+        if (cancelAndReplace)
+        {
+            // Validate the complete replacement before stopping anything. Failed cleanup or stale
+            // version guards leave the existing task and every sibling call untouched.
+            var call = calls.First(c => c.Name == "cancel_plan");
+            if (PlanVersionError(agent.Plan, call.Arguments) is { } versionError)
+            { RejectPlan(agent, versionError, now); return; }
+            var result = CancelPlan(agent, Tools.Str(call.Arguments, "reason"), Tools.Bool(call.Arguments, "clear_goal") ?? false);
+            RecordPlanControl(agent, "cancel_plan", result, now);
+            if (IsError(result)) return;
+        }
+        else if (agent.Plan is { } previous)
         {
             if (StopAwaitedWork(agent, previous) is { } stopError) { RejectPlan(agent, stopError, now); return; }
             ArchivePlan(agent, previous, "replaced", "Replaced by a new decision", now);

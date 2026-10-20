@@ -22,7 +22,9 @@ public sealed partial class GameAdapter
             .OrderBy(b => Vector2.DistanceSquared(bot.WorldPosition, b.WorldPosition)).Take(12).ToList();
         if (bodies.Count == 0) return "no matching corpses or incapacitated characters nearby";
         return string.Join("; ", bodies.Select(b => DescribeBody(bot, b, contents: true)))
-            + ". Use drag_body(target='[cID]', to=<room or crew member>) or loot_body(target='[cID]', item=<optional filter>).";
+            + ". Use drag_body(target='[cID]', to=<room or crew member>) or loot_body(target='[cID]', item=<optional filter>). "
+            + "For body-only scrap use mark_item(item='*',from='[cID]',mark='deconstruct') and deconstruct(item='*',from='[cID]',mark='deconstruct'); "
+            + "the body scope includes only its current contents and the exact loot you transferred from it, never your own supplies.";
     }
 
     static string DescribeBody(Character bot, Character body, bool contents)
@@ -65,6 +67,7 @@ public sealed partial class GameAdapter
         if (body == null) return $"error: no body '{target}'; inspect(kind='bodies') lists nearby bodies";
         if (BodyBusy(bot, body) is { } busy) return busy;
         if (body.Inventory == null) return $"error: {BodyLabel(body)} has no loot inventory";
-        return StartTask(bot, new LootBodyTask(bot, ai, body, item, Math.Clamp(count == 0 ? Tools.MaxMoveCount : count, 1, Tools.MaxMoveCount), filter));
+        return StartTask(bot, new LootBodyTask(bot, ai, body, item, Math.Clamp(count == 0 ? Tools.MaxMoveCount : count, 1, Tools.MaxMoveCount), filter,
+            received: items => RecordBodyLoot(bot, body, items)));
     }
 }

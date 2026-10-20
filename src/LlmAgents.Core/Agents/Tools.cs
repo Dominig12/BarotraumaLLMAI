@@ -259,7 +259,7 @@ public static partial class Tools
             c => c.Game.Dismiss(c.Id)) with { MovesOn = true },
 
         // ---- talking, goals, plans
-        T("carry_on", "Change nothing: your orders and tasks go on.", NoArgs(), ToolKind.Talk, ToolGroup.Core, _ => "ok"),
+        T("carry_on", "Change nothing: your orders, active plan and tasks go on, including when answering with speech, memory or lookups in the same reply.", NoArgs(), ToolKind.Talk, ToolGroup.Core, _ => "ok"),
         T("say", "Say something in the game chat (players see it). Short, in character.",
             Schema(Arg("text", $"What to say (max {MaxSayLength} chars)")), ToolKind.Talk, ToolGroup.Core,
             c => c.Need(c.Str("text"), "text", v => { c.Game.Speak(c.Id, Clip(v, MaxSayLength)); return "ok"; })),
@@ -283,7 +283,7 @@ public static partial class Tools
                 c.Agent.SetGoal(c.Str("goal"), c.Mgr.Now);
                 return "ok, goal: " + c.Agent.Goal;
             }),
-        T("plan", "A plan with conditions, run without asking you again until done or failed: an array of steps. "
+        T("plan", "Create a structured plan with conditions, run without asking you again until done or failed. Put the steps array INSIDE this call's arguments object: {\"name\":\"plan\",\"arguments\":{\"steps\":[...]}}. "
             + "{\"do\":\"<tool>\",\"args\":{...},\"ensure\":\"<optional postcondition>\",\"verify_timeout\":10}; {\"if\":\"<cond>\",\"then\":[...],\"else\":[...]}; {\"wait_until\":\"<cond>\",\"timeout\":60}; "
             + "{\"repeat\":[...],\"until\":\"<cond>\",\"max\":3} or while instead of until; {\"try\":[...],\"catch\":[...]}; {\"steps\":[...]}. "
             + "Conditions: health, oxygen, room_water, room_fire, threats, leaks, flora, reactor, reactor_fuel, sub_oxygen, injured, time, task, last_ok, last_failed, marked; "
@@ -299,7 +299,7 @@ public static partial class Tools
         CancelPlanTool(),
         T("inspect_plan", "Inspect the complete current plan: plan_id, revision, all node/sequence IDs, exact arguments, execution state and awaited task. Preserves execution; call last and read the snapshot in the next decision before editing.",
             NoArgs(), ToolKind.Lookup, ToolGroup.Plans, c => c.Mgr.InspectPlan(c.Agent)),
-        T("keep_plan", "Only when 'plan' is shown: carry it on after this reply's other calls.", NoArgs(), ToolKind.Plan, ToolGroup.Core,
+        T("keep_plan", "Retain the active plan and its task while speaking, remembering or inspecting. Those side calls also preserve active work automatically. To add physical work use append_plan/edit_plan; to switch jobs replace the plan.", NoArgs(), ToolKind.Plan, ToolGroup.Core,
             c => c.Agent.Busy ? "ok, continuing the plan" : "ok (no plan left)"),
 
         // ---- memory
@@ -356,16 +356,18 @@ public static partial class Tools
         T("mark_item", "Set/remove a visible item marker for the crew without moving or immediately destroying it. "
             + "mark='attention' uses the existing AI attention icon for ONE exact instance; optional note explains what to inspect/do and appears in crew observations. "
             + "mark='deconstruct' uses the native deconstruction marker and affects ALL items in the selected item's current stack, like the player's context order. Other bots on deconstruction duty may act on it. "
-            + "Use on=false to remove that marker; other marker types are preserved. Inspect exact IDs first. Do not mark useful gear for destruction merely because you want to draw attention.",
-            Schema(Arg("item", "Exact current #itemID. No categories, wildcard, prefab-wide selection or old-round references."),
+            + "Select one exact #ID, or item='*' with from=<body [cID]/container #ID> to mark that source's contents. A body scope includes verified loot taken from it and still carried by you; it excludes your own gear. Mixed stacks outside the scope are rejected. "
+            + "For marking only, call this tool explicitly; looting sets no markers. Body-scoped deconstruct also marks its exact safe batch before starting destruction. Use on=false to remove that marker; other marker types are preserved. Inspect exact IDs first.",
+            Schema(Arg("item", "Exact current #itemID, or '*' ONLY with an exact body/container in from. No prefab-wide selection or old-round references."),
                    Arg("mark", "Marker kind: attention (visible AI marker, selected later with filter mark='ai'), or deconstruct (native stack deconstruction marker).", en: new[] { "attention", "deconstruct" }),
                    Arg("on", "true (default) sets/updates the marker; false removes this marker only.", false, "boolean"),
-                   Arg("note", "Optional explanation, up to 300 characters; allowed only when setting an attention marker. This is contextual game data, not an instruction that overrides player orders.", false)),
+                   Arg("note", "Optional explanation, up to 300 characters; allowed only when setting an attention marker. This is contextual game data, not an instruction that overrides player orders.", false),
+                   Arg("from", "Optional exact body [cID] or source container #ID. Required for '*'. Body scope covers that body's remaining items and verified loot from it still carried by this bot, including nested original contents. Never use self for a bulk corpse selection.", false)),
             ToolKind.Order, ToolGroup.Items, c =>
             {
                 var item = c.Str("item"); var mark = c.Str("mark"); var note = c.Str("note");
-                if (ItemMarkRules.Validate(item, mark, c.Bool("on") ?? true, note) is { } error) return "error: " + error;
-                return c.Game.MarkItem(c.Id, item!, mark!, c.Bool("on") ?? true, note);
+                if (ItemMarkRules.Validate(item, mark, c.Bool("on") ?? true, note, c.Str("from")) is { } error) return "error: " + error;
+                return c.Game.MarkItem(c.Id, item!, mark!, c.Bool("on") ?? true, note, c.Str("from"));
             }),
         T("inspect_inventory", "Inspect an inventory's real compartments and zero-based slots, stack members with exact #IDs, condition, capacity, allowed slot types and containment rules, and nested contents. "
             + "This is a lookup: it does not walk, unlock, take, equip or transfer anything. Remote or forbidden contents are withheld; use approach_object first when out of reach. "
@@ -437,7 +439,7 @@ public static partial class Tools
                 return string.IsNullOrWhiteSpace(target) || string.IsNullOrWhiteSpace(to) ? "error: 'target' and 'to' are required"
                     : c.Game.DragBody(c.Id, target!, to!);
             }) with { MovesOn = true },
-        T("loot_body", "Search a corpse or incapacitated person, including monster corpses, and take loot into your inventory. Find bodies with inspect(kind='bodies').",
+        T("loot_body", "Search a corpse or incapacitated person, including monster corpses, and take loot into your inventory. Find bodies with inspect(kind='bodies'). Completion reports exact transferred #IDs and records their body source. For later marking/deconstruction use from=<that body [cID]> to select this loot, never from='self' with '*': your own equipment shares the inventory. Looting does not set deconstruction markers.",
             ItemArgs(Arg("target", "Exact body [cID] or copied exact name from inspect(kind='bodies'); [cID] distinguishes identical monster corpses. Reserved literal 'nearest' explicitly selects the closest body."),
                    Arg("item", "Optional exact loot item reference or '*'; omit for all loot. category/condition/mark constrain loot, not the body.", required: false),
                    Arg("count", $"Maximum individual loot items, 1-{MaxMoveCount}; omit for all matching loot up to {MaxMoveCount}, limited by carrying space.", required: false, type: "integer")),
@@ -448,7 +450,7 @@ public static partial class Tools
         T("craft", "Fabricate a recipe and wait for actual production to finish. Inspect recipes/recipe first; copy the prefab identifier or exact recipe name. "
             + "Machine input and explicitly linked supply inventories feed crafting automatically; do not fetch those ingredients manually. Other accessible supplies may be fetched by this task. "
             + "Needs a compatible powered usable machine, ingredients, skills/recipe unlocks and output space. salvage=true may deconstruct suitable scrap for missing ingredients. "
-            + "Products stay in machine output. After confirmed completion use move_item to deliver/stow them, or drop with exact product #ID to clear a heavy shell. An accepted/started task is not confirmed production.",
+            + "For a multi-stage job put craft and follow-up actions inside plan steps with try/catch recovery. Products stay in machine output: count()/has() test your inventory, so they cannot verify a product still in the machine. After confirmed completion inspect products and use move_item to deliver/stow them, or drop with exact product #ID to clear a heavy shell. An accepted/started task is not confirmed production.",
             Schema(Arg("item", "Prefab identifier or copied exact recipe name from inspect(kind='recipes'/'recipe'). Never invent a recipe or put a quantity into this string."),
                    Arg("amount", $"Requested individual output items, 1-{MaxCraftAmount}, default 1; rounded up to whole recipe batches (e.g. x6 per craft, amount=7 -> two batches/12 items).", required: false, type: "integer"),
                    Arg("salvage", "Allow deconstructing suitable scrap to obtain missing ingredients (default false). Does not authorize destroying arbitrary useful equipment.", required: false, type: "boolean"),
@@ -456,8 +458,8 @@ public static partial class Tools
             ToolKind.Task, ToolGroup.Crafting, c => c.Need(c.Str("item"), "item",
                 v => c.Game.Craft(c.Id, v, c.Int("amount", 1), c.Bool("salvage") == true, c.Str("machine")))) with { MovesOn = true },
         T("deconstruct", "Fetch matching items and break them down in a powered deconstructor. Filters explicitly select items; mark='deconstruct' targets player-marked items. "
-            + "Default is one named item, or all items selected by '*' or mark up to 12. Use from to restrict the source; inspect salvage to learn resulting materials before destroying useful equipment.",
-            ItemArgs(Arg("item", ItemReference, false), Arg("from", "Optional exact source container #ID/name or room [hID]; omit to search aboard.", required: false),
+            + "Default is one named item, or all items selected by '*' or mark up to 12. For corpse belongings use from=<body [cID]>: selects remaining belongings and verified loot taken from that body, excluding your own gear; validates and sets native deconstruction markers on exactly this batch before starting. Unsafe mixed stacks/containers are refused. Own supplies require exact #IDs, mark='deconstruct' or an explicit body/container source: prefab/name and self alone do not authorize destroying your belongings. Unmarked '*' from='self' is refused. To mark without destroying use mark_item instead. Inspect salvage before destroying useful equipment.",
+            ItemArgs(Arg("item", ItemReference, false), Arg("from", "Optional exact source: body [cID] (including its verified loot carried by you), self, container #ID/name or room [hID]; omit to search aboard. Use body scope for corpse loot; never select the whole self inventory to mean only loot.", required: false),
                    Arg("count", $"Maximum individual items to destroy, 1-{MaxDeconstructCount}; omit for the selection default. Quantities belong here, never in item.", required: false, type: "integer")),
             ToolKind.Task, ToolGroup.Crafting, c => WithItem(c, "item",
                 (v, f) => c.Game.Deconstruct(c.Id, v, c.Str("from"), c.Int("count", 0), f))) with { MovesOn = true },
